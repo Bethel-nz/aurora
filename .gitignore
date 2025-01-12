@@ -1,0 +1,3 @@
+/target
+#since aurora generates its data base like folders the best option is to git ignore the folder
+*.db
