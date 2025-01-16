@@ -197,7 +197,9 @@ db.delete_collection("books").await?;
 [ x ] Additional data structures (lists, sets, collections) - had to fall to collections
 
 [ ] Network layer for client-server operation
-[ ] Lightweight ORM
+
+[ x ] Lightweight ORM - ish
+
 [ x ] Extended querying capabilities
 
 ## Architecture
