@@ -1,6 +1,7 @@
-# Aurora DB
+# Aurora
 
-Aurora is a high-performance embedded key-value store written in Rust that combines in-memory and disk-based storage for optimal performance. It utilizes a two-tiered architecture with hot (in-memory) and cold (disk) storage.
+A hybrid embedded document database with key-value storage and search capabilities
+
 
 ## Features
 
