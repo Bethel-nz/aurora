@@ -1,3 +1,2 @@
 pub mod log;
-
-pub use log::WriteAheadLog;
+pub use log::{WriteAheadLog, Operation, LogEntry};

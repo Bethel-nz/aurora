@@ -83,4 +83,8 @@ impl HotStore {
             }
         });
     }
+
+    pub fn delete(&self, key: &str) {
+        self.data.remove(key);
+    }
 }
