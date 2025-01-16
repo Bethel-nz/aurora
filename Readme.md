@@ -72,7 +72,7 @@ let db = Aurora::open("mydb")?; // Will create mydb.db
 println!("\n=== Basic Key-Value Operations ===");
 
 // Put
-db.put("user:1".to_string(), b"John Doe".to_vec(), None)?;
+db.put("user:1".to_string(), b"John Doe".to_vec(), None)?; // None is the time to live
 
 // Get
 if let Some(value) = db.get("user:1")? {
