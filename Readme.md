@@ -190,12 +190,15 @@ db.delete_collection("books").await?;
 
 ## Roadmap
 
-[x] finish up on other operations (delete, list all data) 
-[x] Query system with indexing 
-[x] Additional data structures (lists, sets, collections) - had to fall to collections
-- Network layer for client-server operation
-- Lightweight ORM
-[x] Extended querying capabilities
+[ x ] finish up on other operations (delete, list all data)
+
+[ x ] Query system with indexing
+
+[ x ] Additional data structures (lists, sets, collections) - had to fall to collections
+
+[ ] Network layer for client-server operation
+[ ] Lightweight ORM
+[ x ] Extended querying capabilities
 
 ## Architecture
 
