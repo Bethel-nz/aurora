@@ -1,6 +1,8 @@
 use std::time::SystemTimeError;
 use thiserror::Error;
 use zip::result::ZipError;
+use bincode::Error as BincodeError;
+use csv::Error as CsvError;
 
 #[derive(Error, Debug)]
 pub enum AuroraError {
@@ -12,6 +14,18 @@ pub enum AuroraError {
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    #[error("Bincode serialization error: {0}")]
+    Bincode(#[from] BincodeError),
+
+    #[error("IO error: {0}")]
+    IoError(String),
+
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+
+    #[error("Collection not found: {0}")]
+    CollectionNotFound(String),
 
     #[error("System time error: {0}")]
     SystemTime(#[from] SystemTimeError),
@@ -35,13 +49,7 @@ pub enum AuroraError {
     Zip(#[from] ZipError),
 
     #[error("CSV error: {0}")]
-    Csv(#[from] csv::Error),
-}
-
-impl From<Box<bincode::ErrorKind>> for AuroraError {
-    fn from(err: Box<bincode::ErrorKind>) -> Self {
-        AuroraError::Protocol(err.to_string())
-    }
+    Csv(#[from] CsvError),
 }
 
 pub type Result<T> = std::result::Result<T, AuroraError>;
