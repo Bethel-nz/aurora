@@ -95,4 +95,9 @@ impl Index {
             Ok(Value::Array(values))
         }
     }
+    
+    #[allow(dead_code)]
+    pub fn full_text(&self) -> Option<Arc<FullTextIndex>> {
+        self.full_text.clone()
+    }
 } 
