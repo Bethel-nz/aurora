@@ -1,6 +1,4 @@
-use aurora::{Aurora, Result};
-use aurora::types::{FieldType, Value};
-use aurora::db::DataInfo;
+use aurora_db::{Aurora, Result, FieldType, Value, DataInfo};
 use uuid::Uuid;
 use std::path::Path;
 
@@ -152,6 +150,101 @@ async fn main() -> Result<()> {
 
         // Delete entire collection
         db.delete_collection("books").await?;
+    });
+
+    // Add this section to your existing main.rs examples
+    println!("\n=== Database Statistics ===");
+    time_operation!("Database statistics", {
+        let stats = db.get_database_stats()?;
+        println!("Total database size: {} MB", stats.estimated_size / (1024 * 1024));
+        println!("Hot cache hit ratio: {:.2}%", stats.hot_stats.hit_ratio * 100.0);
+        
+        for (collection, cstats) in stats.collections {
+            println!("Collection '{}': {} documents, {} KB total, {} bytes avg document size", 
+                collection, cstats.count, cstats.size_bytes / 1024, cstats.avg_doc_size);
+        }
+    });
+
+    // Test batch operations
+    println!("\n=== Batch Operations ===");
+    time_operation!("Batch write", {
+        let batch = (0..100).map(|i| {
+            (format!("batch:key:{}", i), format!("value-{}", i).into_bytes())
+        }).collect();
+        
+        db.batch_write(batch)?;
+    });
+
+    // Test prefix scanning
+    println!("\n=== Prefix Scan ===");
+    time_operation!("Scan batch keys", {
+        let keys: Vec<String> = db.scan_with_prefix("batch:key:")
+            .filter_map(Result::ok)
+            .map(|(k, _)| k)
+            .collect();
+        
+        println!("Found {} keys with prefix 'batch:key:'", keys.len());
+    });
+
+    // Test hot cache operations
+    println!("\n=== Hot Cache Operations ===");
+    time_operation!("Hot cache operations", {
+        // Store a key that will be accessed frequently
+        db.put("hot:key".to_string(), b"frequently accessed value".to_vec(), None)?;
+        
+        // Access it multiple times to keep it hot
+        for _ in 0..10 {
+            db.get("hot:key")?;
+        }
+        
+        // Check if it's in the hot cache
+        println!("Is 'hot:key' in hot cache: {}", db.is_in_hot_cache("hot:key"));
+        
+        // Clear the hot cache
+        db.clear_hot_cache();
+        
+        // Check again
+        println!("Is 'hot:key' in hot cache after clearing: {}", db.is_in_hot_cache("hot:key"));
+    });
+
+    // Add this section to your existing main.rs examples
+    println!("\n=== Search Operations ===");
+    time_operation!("Search and indexing", {
+        // First create a collection with text data
+        db.new_collection("articles", vec![
+            ("title", FieldType::String, false),
+            ("content", FieldType::String, false),
+            ("author", FieldType::String, false),
+            ("tags", FieldType::String, false),
+        ])?;
+        
+        // Insert some test articles
+        let articles = vec![
+            ("Rust Programming", "Learn about Rust's memory safety and zero-cost abstractions", "Jane Smith", "programming,rust,learning"),
+            ("Database Systems", "Modern database design principles and architecture", "John Doe", "databases,architecture,design"),
+            ("Machine Learning", "Introduction to machine learning algorithms", "Alice Johnson", "ai,machine-learning,algorithms"),
+        ];
+        
+        for (title, content, author, tags) in articles {
+            db.insert_into("articles", vec![
+                ("title", Value::String(title.to_string())),
+                ("content", Value::String(content.to_string())),
+                ("author", Value::String(author.to_string())),
+                ("tags", Value::String(tags.to_string())),
+            ])?;
+        }
+        
+        // Create a full-text index on the content field
+        db.create_text_index("articles", "content", true)?;
+        
+        // Perform a full-text search
+        let results = db.full_text_search("articles", "content", "database")?;
+        println!("Articles about databases: {:?}", results);
+        
+        // Search by exact value
+        let author_value = Value::String("Jane Smith".to_string());
+        let by_author = db.search_by_value("articles", "author", &author_value)?;
+        println!("Articles by Jane Smith: {:?}", by_author);
     });
 
     Ok(())
