@@ -3,14 +3,15 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::time::interval;
 use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
-use crate::types::AuroraConfig;
 
 // Cache statistics structure
+#[derive(Debug)]
 pub struct CacheStats {
-    pub item_count: usize,
+     pub item_count: usize,
     pub memory_usage: usize,
     pub hit_count: u64,
     pub miss_count: u64,
+    pub hit_ratio: f64,
 }
 
 // Metadata for each cached item
@@ -29,6 +30,20 @@ pub struct HotStore {
     current_size: Arc<AtomicUsize>,
 }
 
+// Implement Clone for HotStore
+impl Clone for HotStore {
+    fn clone(&self) -> Self {
+        Self {
+            data: Arc::clone(&self.data),
+            access_count: Arc::clone(&self.access_count),
+            hit_count: Arc::clone(&self.hit_count),
+            miss_count: Arc::clone(&self.miss_count),
+            max_size: self.max_size,
+            current_size: Arc::clone(&self.current_size),
+        }
+    }
+}
+
 impl HotStore {
     pub fn new() -> Self {
         Self::new_with_size_limit(128) // Default to 128MB
@@ -36,7 +51,7 @@ impl HotStore {
 
     pub fn with_config(
         cache_size_mb: usize,
-        cleanup_interval_secs: u64,
+        _cleanup_interval_secs: u64,
     ) -> Self {
         Self {
             data: Arc::new(DashMap::new()),
@@ -270,11 +285,22 @@ impl HotStore {
 
     // Get statistics about the cache
     pub fn get_stats(&self) -> CacheStats {
+        let hits = self.hit_count.load(Ordering::Relaxed);
+        let misses = self.miss_count.load(Ordering::Relaxed);
+        let total = hits + misses;
+        
+        let hit_ratio = if total == 0 {
+            0.0
+        } else {
+            hits as f64 / total as f64
+        };
+        
         CacheStats {
             item_count: self.data.len(),
             memory_usage: self.current_size.load(Ordering::Relaxed),
-            hit_count: self.hit_count.load(Ordering::Relaxed),
-            miss_count: self.miss_count.load(Ordering::Relaxed),
+            hit_count: hits,
+            miss_count: misses,
+            hit_ratio,
         }
     }
 
