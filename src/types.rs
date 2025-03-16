@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum FieldType {
@@ -214,50 +215,6 @@ impl Ord for Value {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueryBuilder {
-    pub collection: String,
-    pub filters: Vec<Filter>,
-}
-
-impl QueryBuilder {
-    pub fn new(collection: String) -> Self {
-        Self {
-            collection,
-            filters: Vec::new(),
-        }
-    }
-
-    pub fn filter(mut self, filter: Filter) -> Self {
-        self.filters.push(filter);
-        self
-    }
-
-    pub fn eq(self, field: &str, value: Value) -> Self {
-        self.filter(Filter::Eq(field.to_string(), value))
-    }
-
-    pub fn gt(self, field: &str, value: Value) -> Self {
-        self.filter(Filter::Gt(field.to_string(), value))
-    }
-
-    pub fn lt(self, field: &str, value: Value) -> Self {
-        self.filter(Filter::Lt(field.to_string(), value))
-    }
-
-    pub fn contains(self, field: &str, value: &str) -> Self {
-        self.filter(Filter::Contains(field.to_string(), value.to_string()))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Filter {
-    Eq(String, Value),
-    Gt(String, Value),
-    Lt(String, Value),
-    Contains(String, String),
-}
-
 pub type InsertData = Vec<(&'static str, Value)>; 
 
 // Add From implementations for common types
@@ -312,5 +269,60 @@ impl From<HashMap<String, Value>> for Value {
 impl From<Uuid> for Value {
     fn from(v: Uuid) -> Self {
         Value::Uuid(v)
+    }
+}
+
+/// Configuration for Aurora database
+#[derive(Debug, Clone)]
+pub struct AuroraConfig {
+    // Database location settings
+    pub db_path: PathBuf,
+    pub create_dirs: bool,      // Create parent directories if they don't exist
+    
+    // Hot store config
+    pub hot_cache_size_mb: usize,
+    pub hot_cache_cleanup_interval_secs: u64,
+    
+    // Cold store config
+    pub cold_cache_capacity_mb: usize,
+    pub cold_flush_interval_ms: Option<u64>,
+    pub cold_mode: ColdStoreMode,
+    
+    // General config
+    pub auto_compact: bool,
+    pub compact_interval_mins: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ColdStoreMode {
+    HighThroughput,
+    LowSpace,
+}
+
+impl Default for AuroraConfig {
+    fn default() -> Self {
+        Self {
+            db_path: PathBuf::from("aurora.db"),
+            create_dirs: true,
+            
+            hot_cache_size_mb: 128,
+            hot_cache_cleanup_interval_secs: 30,
+            
+            cold_cache_capacity_mb: 64,
+            cold_flush_interval_ms: Some(100),
+            cold_mode: ColdStoreMode::HighThroughput,
+            
+            auto_compact: true,
+            compact_interval_mins: 60,
+        }
+    }
+}
+
+impl AuroraConfig {
+    /// Create a new configuration with a specific database path
+    pub fn with_path<P: AsRef<Path>>(path: P) -> Self {
+        let mut config = Self::default();
+        config.db_path = path.as_ref().to_path_buf();
+        config
     }
 } 
