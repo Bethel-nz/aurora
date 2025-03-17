@@ -7,7 +7,7 @@ description = "Aurora: An embedded document database with tiered storage archite
 license = "MIT OR Apache-2.0"
 keywords = ["database", "document-db", "embedded"]
 categories = ["database"]
-readme = "README.md"
+readme = "Readme.md"
 repository = "https://github.com/Bethel-nz/aurora"
 
 [dependencies]
