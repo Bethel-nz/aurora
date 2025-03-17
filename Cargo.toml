@@ -39,3 +39,5 @@ full-text-search = []
 [[bench]]
 name = "aurora_benchmarks"
 harness = false
+
+exclude = ["benches/*"]
