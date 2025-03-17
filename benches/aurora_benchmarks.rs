@@ -1,9 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use aurora::{error::AuroraError, Aurora, Result};
+use aurora_db::{AuroraError, Aurora, Result};
 // use std::path::Path;
 use uuid::Uuid;
-use aurora::types::{FieldType, Value};
+use aurora_db::{FieldType, Value};
 use std::time::Duration;
+use tokio::runtime::Runtime;
 
 // const VIDEO_PATH: &str = "/home/kylo_ren/Videos/Complete Guide to Full Stack Solana Development (2024) [vUHF1X48zM4].webm";
 const BULK_SIZE: usize = 100;
@@ -176,11 +177,205 @@ fn bench_blob_operations(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_index_operations(c: &mut Criterion) {
+    let db = setup().unwrap();
+    let mut group = c.benchmark_group("index_operations");
+    group.measurement_time(Duration::from_secs(10));
+    
+    // Create a runtime for async setup
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Setup collection with indexes
+        db.new_collection("products", vec![
+            ("id", FieldType::Uuid, true),
+            ("name", FieldType::String, false),
+            ("price", FieldType::Float, false),
+            ("category", FieldType::String, false),
+            ("in_stock", FieldType::Boolean, false),
+        ]).unwrap();
+        
+        // Create indexes using await
+        db.create_index("products", "price").await.unwrap();
+        db.create_index("products", "category").await.unwrap();
+        db.create_index("products", "name").await.unwrap();
+        db.create_index("products", "id").await.unwrap();
+        
+        // Insert test data
+        let categories = ["Electronics", "Clothing", "Food", "Books", "Home"];
+        for i in 0..500 {
+            db.insert_into("products", vec![
+                ("id", Value::Uuid(Uuid::new_v4())),
+                ("name", Value::String(format!("Product {}", i))),
+                ("price", Value::Float((i as f64) * 10.5)),
+                ("category", Value::String(categories[i % 5].to_string())),
+                ("in_stock", Value::Bool(i % 3 == 0)),
+            ]).unwrap();
+        }
+    });
+    
+    group.bench_function("query_btree_index", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                db.query("products")
+                    .filter(|f| f.gt("price", Value::Float(1000.0)) && f.lt("price", Value::Float(2000.0)))
+                    .collect()
+                    .await
+                    .unwrap()
+            })
+        })
+    });
+    
+    group.bench_function("query_hash_index", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                db.query("products")
+                    .filter(|f| f.eq("category", Value::String("Electronics".to_string())))
+                    .collect()
+                    .await
+                    .unwrap()
+            })
+        })
+    });
+    
+    group.bench_function("query_composite_index", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+            db.query("products")
+                .filter(|f| f.eq("category", Value::String("Books".to_string())) && 
+                       f.lt("price", Value::Float(500.0)))
+                    .collect()
+                    .await
+                    .unwrap()
+            })
+        })
+    });
+    
+    group.bench_function("insert_with_indexes", |b| {
+        b.iter(|| {
+            db.insert_into("products", vec![
+                ("id", Value::Uuid(Uuid::new_v4())),
+                ("name", Value::String("Test Product".to_string())),
+                ("price", Value::Float(999.99)),
+                ("category", Value::String("Test".to_string())),
+                ("in_stock", Value::Bool(true)),
+            ]).unwrap()
+        })
+    });
+    
+    group.finish();
+}
+
+fn bench_complex_queries(c: &mut Criterion) {
+    let db = setup().unwrap();
+    let mut group = c.benchmark_group("complex_queries");
+    group.measurement_time(Duration::from_secs(10));
+    
+    // Create a runtime for async setup
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Setup collection 
+        db.new_collection("orders", vec![
+            ("id", FieldType::String, true),
+            ("customer_id", FieldType::String, false),
+            ("total", FieldType::Float, false),
+            ("date", FieldType::String, false),
+            ("status", FieldType::String, false),
+            ("items", FieldType::Int, false),
+        ]).unwrap();
+        
+        // Create indexes with the simple format
+        db.create_index("orders", "customer_id").await.unwrap();
+        db.create_index("orders", "date").await.unwrap();
+        db.create_index("orders", "status").await.unwrap();
+        db.create_index("orders", "total").await.unwrap();
+        
+        // Insert test data
+        let statuses = ["pending", "processing", "shipped", "delivered", "cancelled"];
+        let dates = ["2023-01", "2023-02", "2023-03", "2023-04", "2023-05", "2023-06"];
+        
+        for i in 0..1000 {
+            db.insert_into("orders", vec![
+                ("id", Value::String(format!("ord-{}", i))),
+                ("customer_id", Value::String(format!("cust-{}", i % 100))),
+                ("total", Value::Float((i as f64) * 5.75 + 10.0)),
+                ("date", Value::String(format!("{}-{:02}", dates[i % 6], (i % 28) + 1))),
+                ("status", Value::String(statuses[i % 5].to_string())),
+                ("items", Value::Int(((i % 10) + 1) as i64)),
+            ]).unwrap();
+        }
+    });
+    
+    group.bench_function("query_with_multiple_filters", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                db.query("orders")
+                    .filter(|f| f.eq("status", Value::String("shipped".to_string())) && 
+                           f.gt("total", Value::Float(100.0)) && 
+                           f.gt("items", Value::Int(3)))
+                    .collect()
+                    .await
+                    .unwrap()
+            })
+        })
+    });
+    
+    group.bench_function("query_with_sorting", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                db.query("orders")
+                    .filter(|f| f.eq("customer_id", Value::String("cust-7".to_string())))
+                    .order_by("date", true)
+                    .collect()
+                    .await
+                    .unwrap()
+            })
+        })
+    });
+    
+    group.bench_function("query_with_limit_offset", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                db.query("orders")
+                    .filter(|f| f.gt("total", Value::Float(500.0)))
+                    .order_by("total", false)
+                    .limit(20)
+                    .offset(10)
+                    .collect()
+                    .await
+                    .unwrap()
+            })
+        })
+    });
+    
+    group.bench_function("query_date_range", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                db.query("orders")
+                    .filter(|f| f.gt("date", Value::String("2023-03-01".to_string())) && 
+                           f.lt("date", Value::String("2023-04-01".to_string())))
+                    .collect()
+                    .await
+                    .unwrap()
+            })
+        })
+    });
+    
+    group.finish();
+}
+
 criterion_group!(
     name = benches;
     config = Criterion::default()
         .sample_size(10)
         .warm_up_time(Duration::from_secs(5));
-    targets = bench_basic_operations, bench_collection_operations, bench_blob_operations
+    targets = bench_basic_operations, bench_collection_operations, bench_blob_operations, 
+             bench_index_operations, bench_complex_queries
 );
 criterion_main!(benches); 
