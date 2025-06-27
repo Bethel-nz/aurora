@@ -1,11 +1,11 @@
 //! # Aurora Database
-//! 
+//!
 //! Aurora is an embedded document database with tiered storage architecture.
 //! It provides document storage, querying, indexing, and search capabilities
 //! while optimizing for both performance and durability.
-//! 
+//!
 //! ## Key Features
-//! 
+//!
 //! * **Tiered Storage**: Hot in-memory cache + persistent cold storage
 //! * **Document Model**: Schema-flexible JSON-like document storage
 //! * **Querying**: Rich query capabilities with filtering and sorting
@@ -14,27 +14,27 @@
 //! * **Blob Storage**: Efficient storage for large binary objects
 //!
 //! ## Usage Example
-//! 
+//!
 //! ```rust
 //! use aurora::Aurora;
-//! 
+//!
 //! // Open a database
 //! let db = Aurora::open("my_database.db")?;
-//! 
+//!
 //! // Create a collection with schema
 //! db.new_collection("users", vec![
 //!     ("name", FieldType::String, false),
 //!     ("email", FieldType::String, true),  // unique field
 //!     ("age", FieldType::Int, false),
 //! ])?;
-//! 
+//!
 //! // Insert a document
 //! let user_id = db.insert_into("users", vec![
 //!     ("name", Value::String("Jane Doe".to_string())),
 //!     ("email", Value::String("jane@example.com".to_string())),
 //!     ("age", Value::Int(28)),
 //! ])?;
-//! 
+//!
 //! // Query for documents
 //! let adult_users = db.query("users")
 //!     .filter(|f| f.gt("age", 18))
@@ -45,22 +45,27 @@
 
 use crate::error::{AuroraError, Result};
 use crate::index::{Index, IndexDefinition, IndexType};
+use crate::network::http_models::{
+    document_to_json, json_to_value, Filter as HttpFilter, FilterOperator, QueryPayload,
+};
+use crate::query::{Filter, FilterBuilder, QueryBuilder, SearchBuilder, SimpleQueryBuilder};
 use crate::storage::{ColdStore, HotStore};
-use crate::types::{Collection, Document, FieldDefinition, FieldType, InsertData, Value, AuroraConfig};
+use crate::types::{
+    AuroraConfig, Collection, Document, FieldDefinition, FieldType, InsertData, Value,
+};
+use dashmap::DashMap;
+use serde_json::from_str;
+use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::fs::File as StdFile;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use dashmap::DashMap;
+use tokio::fs::read_to_string;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
-use serde_json::Value as JsonValue;
-use std::fs::File as StdFile;
-use crate::query::{QueryBuilder, SearchBuilder, FilterBuilder};
-use tokio::fs::read_to_string;
-use serde_json::from_str;
 // Index types for faster lookups
 type PrimaryIndex = DashMap<String, Vec<u8>>;
 type SecondaryIndex = DashMap<String, Vec<String>>;
@@ -68,16 +73,9 @@ type SecondaryIndex = DashMap<String, Vec<String>>;
 // Move DataInfo enum outside impl block
 #[derive(Debug)]
 pub enum DataInfo {
-    Data { 
-        size: usize,
-        preview: String 
-    },
-    Blob { 
-        size: usize 
-    },
-    Compressed { 
-        size: usize 
-    },
+    Data { size: usize, preview: String },
+    Blob { size: usize },
+    Compressed { size: usize },
 }
 
 impl DataInfo {
@@ -148,18 +146,18 @@ impl Aurora {
     /// ```
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = Self::resolve_path(path)?;
-        
+
         // Create parent directory if needed
         if let Some(parent) = path.parent() {
             if !parent.exists() {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        
+
         // Initialize hot and cold stores with the path
         let cold = ColdStore::new(path.to_str().unwrap())?;
         let hot = HotStore::new();
-        
+
         // Initialize the rest of Aurora...
         let db = Self {
             hot,
@@ -171,27 +169,28 @@ impl Aurora {
             transaction_ops: DashMap::new(),
             indices: Arc::new(DashMap::new()),
         };
-        
+
         // Load or initialize indices...
         // Rest of your existing open() code...
-        
+
         Ok(db)
     }
 
     /// Helper method to resolve database path
     fn resolve_path<P: AsRef<Path>>(path: P) -> Result<PathBuf> {
         let path = path.as_ref();
-        
+
         // If it's an absolute path, use it directly
         if path.is_absolute() {
             return Ok(path.to_path_buf());
         }
-        
+
         // Otherwise, resolve relative to current directory
         match std::env::current_dir() {
             Ok(current_dir) => Ok(current_dir.join(path)),
             Err(e) => Err(AuroraError::IoError(format!(
-                "Failed to resolve current directory: {}", e
+                "Failed to resolve current directory: {}",
+                e
             ))),
         }
     }
@@ -199,7 +198,7 @@ impl Aurora {
     /// Open a database with custom configuration
     pub fn with_config(config: AuroraConfig) -> Result<Self> {
         let path = Self::resolve_path(&config.db_path)?;
-        
+
         if config.create_dirs {
             if let Some(parent) = path.parent() {
                 if !parent.exists() {
@@ -207,7 +206,7 @@ impl Aurora {
                 }
             }
         }
-        
+
         // Fix method calls to pass all required parameters
         let cold = ColdStore::with_config(
             path.to_str().unwrap(),
@@ -215,12 +214,12 @@ impl Aurora {
             config.cold_flush_interval_ms,
             config.cold_mode,
         )?;
-        
+
         let hot = HotStore::with_config(
             config.hot_cache_size_mb,
             config.hot_cache_cleanup_interval_secs,
         );
-        
+
         // Initialize the rest using the config...
         let db = Self {
             hot,
@@ -232,13 +231,13 @@ impl Aurora {
             transaction_ops: DashMap::new(),
             indices: Arc::new(DashMap::new()),
         };
-        
+
         // Set up auto-compaction if enabled
         if config.auto_compact {
             // Implementation for auto-compaction scheduling
             // ...
         }
-        
+
         Ok(db)
     }
 
@@ -263,7 +262,7 @@ impl Aurora {
             let (key, value) = result?;
             let key_str = std::str::from_utf8(&key.as_bytes())
                 .map_err(|_| AuroraError::InvalidKey("Invalid UTF-8".into()))?;
-            
+
             if let Some(collection_name) = key_str.split(':').next() {
                 self.index_value(collection_name, key_str, &value)?;
             }
@@ -299,25 +298,36 @@ impl Aurora {
 
     pub fn put(&self, key: String, value: Vec<u8>, ttl: Option<Duration>) -> Result<()> {
         const MAX_BLOB_SIZE: usize = 50 * 1024 * 1024; // 50MB limit
-        
+
         if value.len() > MAX_BLOB_SIZE {
-            return Err(AuroraError::InvalidOperation(
-                format!("Blob size {} exceeds maximum allowed size of {}MB", 
-                    value.len() / (1024 * 1024), 
-                    MAX_BLOB_SIZE / (1024 * 1024)
-                )
-            ));
+            return Err(AuroraError::InvalidOperation(format!(
+                "Blob size {} exceeds maximum allowed size of {}MB",
+                value.len() / (1024 * 1024),
+                MAX_BLOB_SIZE / (1024 * 1024)
+            )));
         }
 
         // Track transaction if needed
-        if self.in_transaction.load(std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .in_transaction
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
             self.transaction_ops.insert(key.clone(), value.clone());
             return Ok(());
         }
 
         // Write directly to storage (sled handles WAL internally)
         self.cold.set(key.clone(), value.clone())?;
-        self.hot.set(key, value, ttl);
+        self.hot.set(key.clone(), value.clone(), ttl);
+
+        // FIX: Update the in-memory indices immediately after a successful write.
+        if let Some(collection_name) = key.split(':').next() {
+            // Don't index internal data like _collection or _index definitions
+            if !collection_name.starts_with('_') {
+                self.index_value(collection_name, &key, &value)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -361,24 +371,23 @@ impl Aurora {
     // Restore missing methods
     pub async fn put_blob(&self, key: String, file_path: &Path) -> Result<()> {
         const MAX_FILE_SIZE: usize = 50 * 1024 * 1024; // 50MB limit
-        
+
         // Get file metadata to check size before reading
         let metadata = tokio::fs::metadata(file_path).await?;
         let file_size = metadata.len() as usize;
 
         if file_size > MAX_FILE_SIZE {
-            return Err(AuroraError::InvalidOperation(
-                format!("File size {} MB exceeds maximum allowed size of {} MB",
-                    file_size / (1024 * 1024),
-                    MAX_FILE_SIZE / (1024 * 1024)
-                )
-            ));
+            return Err(AuroraError::InvalidOperation(format!(
+                "File size {} MB exceeds maximum allowed size of {} MB",
+                file_size / (1024 * 1024),
+                MAX_FILE_SIZE / (1024 * 1024)
+            )));
         }
 
         let mut file = File::open(file_path).await?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
-        
+
         self.put(key, buffer, None)
     }
 
@@ -406,18 +415,20 @@ impl Aurora {
     ///     ("in_stock", FieldType::Boolean, false),
     /// ])?;
     /// ```
-    pub fn new_collection(&self, name: &str, fields: Vec<(&str, FieldType, bool)>) -> Result<()> {
+    pub fn new_collection(&self, name: &str, fields: Vec<(String, FieldType, bool)>) -> Result<()> {
         let collection = Collection {
             name: name.to_string(),
             fields: fields
                 .into_iter()
                 .map(|(name, field_type, unique)| {
-                    (name.to_string(), 
-                     FieldDefinition {
-                        field_type,
-                        unique,
-                        indexed: unique,
-                    })
+                    (
+                        name,
+                        FieldDefinition {
+                            field_type,
+                            unique,
+                            indexed: unique,
+                        },
+                    )
                 })
                 .collect(),
             unique_fields: Vec::new(),
@@ -450,15 +461,29 @@ impl Aurora {
     /// ])?;
     /// ```
     pub fn insert_into(&self, collection: &str, data: InsertData) -> Result<String> {
-        let data_map: HashMap<String, Value> = data
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect();
+        let data_map: HashMap<String, Value> =
+            data.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
 
         let doc_id = Uuid::new_v4().to_string();
         let document = Document {
             id: doc_id.clone(),
             data: data_map,
+        };
+
+        self.put(
+            format!("{}:{}", collection, doc_id),
+            serde_json::to_vec(&document)?,
+            None,
+        )?;
+
+        Ok(doc_id)
+    }
+
+    pub fn insert_map(&self, collection: &str, data: HashMap<String, Value>) -> Result<String> {
+        let doc_id = Uuid::new_v4().to_string();
+        let document = Document {
+            id: doc_id.clone(),
+            data,
         };
 
         self.put(
@@ -477,27 +502,29 @@ impl Aurora {
 
     pub fn get_data_by_pattern(&self, pattern: &str) -> Result<Vec<(String, DataInfo)>> {
         let mut data = Vec::new();
-        
-        if let Some(index) = self.primary_indices.get(pattern.split(':').next().unwrap_or("")) {
+
+        if let Some(index) = self
+            .primary_indices
+            .get(pattern.split(':').next().unwrap_or(""))
+        {
             for entry in index.iter() {
                 if entry.key().contains(pattern) {
                     let value = entry.value();
                     let info = if value.starts_with(b"BLOB:") {
-                        DataInfo::Blob { 
-                            size: value.len() 
-                        }
+                        DataInfo::Blob { size: value.len() }
                     } else {
-                        DataInfo::Data { 
+                        DataInfo::Data {
                             size: value.len(),
-                            preview: String::from_utf8_lossy(&value[..value.len().min(50)]).into_owned()
+                            preview: String::from_utf8_lossy(&value[..value.len().min(50)])
+                                .into_owned(),
                         }
                     };
-                    
+
                     data.push((entry.key().clone(), info));
                 }
             }
         }
-        
+
         Ok(data)
     }
 
@@ -514,11 +541,11 @@ impl Aurora {
     /// ```
     /// // Start a transaction for atomic operations
     /// db.begin_transaction()?;
-    /// 
+    ///
     /// // Perform multiple operations
     /// db.insert_into("accounts", vec![("user_id", Value::String(user_id)), ("balance", Value::Float(100.0))])?;
     /// db.insert_into("audit_log", vec![("action", Value::String("account_created".to_string()))])?;
-    /// 
+    ///
     /// // Commit all changes or roll back if there's an error
     /// if all_ok {
     ///     db.commit_transaction()?;
@@ -527,12 +554,18 @@ impl Aurora {
     /// }
     /// ```
     pub fn begin_transaction(&self) -> Result<()> {
-        if self.in_transaction.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(AuroraError::InvalidOperation("Transaction already in progress".into()));
+        if self
+            .in_transaction
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(AuroraError::InvalidOperation(
+                "Transaction already in progress".into(),
+            ));
         }
-        
+
         // Mark as in transaction
-        self.in_transaction.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.in_transaction
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -543,23 +576,29 @@ impl Aurora {
     /// # Returns
     /// Success or an error (e.g., if no transaction is active)
     pub fn commit_transaction(&self) -> Result<()> {
-        if !self.in_transaction.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(AuroraError::InvalidOperation("No transaction in progress".into()));
+        if !self
+            .in_transaction
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(AuroraError::InvalidOperation(
+                "No transaction in progress".into(),
+            ));
         }
-        
+
         // Apply all pending transaction operations
         for item in self.transaction_ops.iter() {
             self.cold.set(item.key().clone(), item.value().clone())?;
             self.hot.set(item.key().clone(), item.value().clone(), None);
         }
-        
+
         // Clear transaction data
         self.transaction_ops.clear();
-        self.in_transaction.store(false, std::sync::atomic::Ordering::SeqCst);
-        
+        self.in_transaction
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+
         // Ensure durability by forcing a sync
         self.cold.compact()?;
-        
+
         Ok(())
     }
 
@@ -570,14 +609,20 @@ impl Aurora {
     /// # Returns
     /// Success or an error (e.g., if no transaction is active)
     pub fn rollback_transaction(&self) -> Result<()> {
-        if !self.in_transaction.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(AuroraError::InvalidOperation("No transaction in progress".into()));
+        if !self
+            .in_transaction
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(AuroraError::InvalidOperation(
+                "No transaction in progress".into(),
+            ));
         }
-        
+
         // Simply discard the transaction operations
         self.transaction_ops.clear();
-        self.in_transaction.store(false, std::sync::atomic::Ordering::SeqCst);
-        
+        self.in_transaction
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+
         Ok(())
     }
 
@@ -586,22 +631,22 @@ impl Aurora {
         if self.get(&format!("_collection:{}", collection))?.is_none() {
             return Err(AuroraError::CollectionNotFound(collection.to_string()));
         }
-        
+
         // Generate a default index name
         let index_name = format!("idx_{}_{}", collection, field);
-        
+
         // Create index definition
         let definition = IndexDefinition {
             name: index_name.clone(),
             collection: collection.to_string(),
             fields: vec![field.to_string()],
-            index_type: IndexType::BTree, 
+            index_type: IndexType::BTree,
             unique: false,
         };
-        
+
         // Create the index
         let index = Index::new(definition.clone());
-        
+
         // Index all existing documents in the collection
         let prefix = format!("{}:", collection);
         for result in self.cold.scan_prefix(&prefix) {
@@ -611,14 +656,14 @@ impl Aurora {
                 }
             }
         }
-        
+
         // Store the index
         self.indices.insert(index_name, index);
-        
+
         // Store the index definition for persistence
         let index_key = format!("_index:{}:{}", collection, field);
         self.put(index_key, serde_json::to_vec(&definition)?, None)?;
-        
+
         Ok(())
     }
 
@@ -716,29 +761,34 @@ impl Aurora {
         if self.hot.get(key).is_some() {
             self.hot.delete(key);
         }
-        
+
         self.cold.delete(key)?;
-        
+
         // Update indices
         if let Some(collection) = key.split(':').next() {
             if let Some(index) = self.primary_indices.get_mut(collection) {
                 index.remove(key);
             }
         }
-        
+
         // If in transaction, record the operation (with null value to indicate deletion)
-        if self.in_transaction.load(std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .in_transaction
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
             self.transaction_ops.insert(key.to_string(), Vec::new());
         }
-        
+
         Ok(())
     }
 
     pub async fn delete_collection(&self, collection: &str) -> Result<()> {
         let prefix = format!("{}:", collection);
-        
+
         // Get all keys in collection
-        let keys: Vec<String> = self.cold.scan()
+        let keys: Vec<String> = self
+            .cold
+            .scan()
             .filter_map(|r| r.ok())
             .filter(|(k, _)| k.starts_with(&prefix))
             .map(|(k, _)| k)
@@ -751,7 +801,8 @@ impl Aurora {
 
         // Remove collection indices
         self.primary_indices.remove(collection);
-        self.secondary_indices.retain(|k, _| !k.starts_with(&prefix));
+        self.secondary_indices
+            .retain(|k, _| !k.starts_with(&prefix));
 
         Ok(())
     }
@@ -776,10 +827,15 @@ impl Aurora {
         Ok(())
     }
 
-    pub async fn search_text(&self, collection: &str, field: &str, query: &str) -> Result<Vec<Document>> {
+    pub async fn search_text(
+        &self,
+        collection: &str,
+        field: &str,
+        query: &str,
+    ) -> Result<Vec<Document>> {
         let mut results = Vec::new();
         let docs = self.get_all_collection(collection).await?;
-        
+
         for doc in docs {
             if let Some(Value::String(text)) = doc.data.get(field) {
                 if text.to_lowercase().contains(&query.to_lowercase()) {
@@ -787,7 +843,7 @@ impl Aurora {
                 }
             }
         }
-        
+
         Ok(results)
     }
 
@@ -818,7 +874,7 @@ impl Aurora {
         // Get all documents from the specified collection
         for result in self.cold.scan() {
             let (key, value) = result?;
-            
+
             // Only process documents from the specified collection
             if let Some(key_collection) = key.split(':').next() {
                 if key_collection == collection && !key.starts_with("_collection:") {
@@ -835,10 +891,11 @@ impl Aurora {
                                     } else {
                                         clean_doc.insert(k, JsonValue::Null)
                                     }
-                                },
+                                }
                                 Value::Bool(b) => clean_doc.insert(k, JsonValue::Bool(b)),
                                 Value::Array(arr) => {
-                                    let clean_arr: Vec<JsonValue> = arr.into_iter()
+                                    let clean_arr: Vec<JsonValue> = arr
+                                        .into_iter()
                                         .map(|v| match v {
                                             Value::String(s) => JsonValue::String(s),
                                             Value::Int(i) => JsonValue::Number(i.into()),
@@ -851,8 +908,10 @@ impl Aurora {
                                         })
                                         .collect();
                                     clean_doc.insert(k, JsonValue::Array(clean_arr))
-                                },
-                                Value::Uuid(u) => clean_doc.insert(k, JsonValue::String(u.to_string())),
+                                }
+                                Value::Uuid(u) => {
+                                    clean_doc.insert(k, JsonValue::String(u.to_string()))
+                                }
                                 Value::Null => clean_doc.insert(k, JsonValue::Null),
                                 Value::Object(_) => None, // Handle nested objects if needed
                             };
@@ -863,9 +922,10 @@ impl Aurora {
             }
         }
 
-        let output = JsonValue::Object(serde_json::Map::from_iter(vec![
-            (collection.to_string(), JsonValue::Array(docs))
-        ]));
+        let output = JsonValue::Object(serde_json::Map::from_iter(vec![(
+            collection.to_string(),
+            JsonValue::Array(docs),
+        )]));
 
         let mut file = StdFile::create(&output_path)?;
         serde_json::to_writer_pretty(&mut file, &output)?;
@@ -888,7 +948,7 @@ impl Aurora {
         // Get all documents from the specified collection
         for result in self.cold.scan() {
             let (key, value) = result?;
-            
+
             // Only process documents from the specified collection
             if let Some(key_collection) = key.split(':').next() {
                 if key_collection == collection && !key.starts_with("_collection:") {
@@ -901,9 +961,11 @@ impl Aurora {
                         }
 
                         // Write the document values
-                        let values: Vec<String> = headers.iter()
+                        let values: Vec<String> = headers
+                            .iter()
                             .map(|header| {
-                                doc.data.get(header)
+                                doc.data
+                                    .get(header)
                                     .map(|v| v.to_string())
                                     .unwrap_or_default()
                             })
@@ -923,65 +985,71 @@ impl Aurora {
     pub fn find<'a>(&'a self, collection: &str) -> QueryBuilder<'a> {
         self.query(collection)
     }
-    
+
     // Convenience methods that build on top of the FilterBuilder
-    
+
     pub async fn find_by_id(&self, collection: &str, id: &str) -> Result<Option<Document>> {
         self.query(collection)
             .filter(|f| f.eq("id", id))
             .first_one()
             .await
     }
-    
-    pub async fn find_one<F>(&self, collection: &str, filter_fn: F) -> Result<Option<Document>> 
-    where 
-        F: Fn(&FilterBuilder) -> bool + 'static
+
+    pub async fn find_one<F>(&self, collection: &str, filter_fn: F) -> Result<Option<Document>>
+    where
+        F: Fn(&FilterBuilder) -> bool + 'static,
     {
-        self.query(collection)
-            .filter(filter_fn)
-            .first_one()
-            .await
+        self.query(collection).filter(filter_fn).first_one().await
     }
-    
-    pub async fn find_by_field<T: Into<Value> + Clone + 'static>(&self, collection: &str, field: &'static str, value: T) -> Result<Vec<Document>> {
+
+    pub async fn find_by_field<T: Into<Value> + Clone + 'static>(
+        &self,
+        collection: &str,
+        field: &'static str,
+        value: T,
+    ) -> Result<Vec<Document>> {
         let value_clone = value.clone();
         self.query(collection)
             .filter(move |f| f.eq(field, value_clone.clone()))
             .collect()
             .await
     }
-    
-    pub async fn find_by_fields(&self, collection: &str, fields: Vec<(&str, Value)>) -> Result<Vec<Document>> {
+
+    pub async fn find_by_fields(
+        &self,
+        collection: &str,
+        fields: Vec<(&str, Value)>,
+    ) -> Result<Vec<Document>> {
         let mut query = self.query(collection);
-        
+
         for (field, value) in fields {
             let field_owned = field.to_owned();
             let value_owned = value.clone();
             query = query.filter(move |f| f.eq(&field_owned, value_owned.clone()));
         }
-        
+
         query.collect().await
     }
-    
+
     // Advanced example: find documents with a field value in a specific range
     pub async fn find_in_range<T: Into<Value> + Clone + 'static>(
-        &self, 
-        collection: &str, 
-        field: &'static str, 
-        min: T, 
-        max: T
+        &self,
+        collection: &str,
+        field: &'static str,
+        min: T,
+        max: T,
     ) -> Result<Vec<Document>> {
         self.query(collection)
             .filter(move |f| f.between(field, min.clone(), max.clone()))
             .collect()
             .await
     }
-    
+
     // Complex query example: build with multiple combined filters
     pub async fn find_complex<'a>(&'a self, collection: &str) -> QueryBuilder<'a> {
         self.query(collection)
     }
-    
+
     // Create a full-text search query with added filter options
     pub fn advanced_search<'a>(&'a self, collection: &str) -> SearchBuilder<'a> {
         self.search(collection)
@@ -995,14 +1063,14 @@ impl Aurora {
             for (key, value) in data {
                 doc.data.insert(key.to_string(), value);
             }
-            
+
             // Save changes
             self.put(
                 format!("{}:{}", collection, id),
                 serde_json::to_vec(&doc)?,
-                None
+                None,
             )?;
-            
+
             Ok(id.to_string())
         } else {
             // Create new document
@@ -1011,40 +1079,53 @@ impl Aurora {
             self.insert_into(collection, data_with_id)
         }
     }
-    
+
     // Atomic increment/decrement
-    pub async fn increment(&self, collection: &str, id: &str, field: &str, amount: i64) -> Result<i64> {
+    pub async fn increment(
+        &self,
+        collection: &str,
+        id: &str,
+        field: &str,
+        amount: i64,
+    ) -> Result<i64> {
         if let Some(mut doc) = self.get_document(collection, id)? {
             // Get current value
             let current = match doc.data.get(field) {
                 Some(Value::Int(i)) => *i,
                 _ => 0,
             };
-            
+
             // Increment
             let new_value = current + amount;
             doc.data.insert(field.to_string(), Value::Int(new_value));
-            
+
             // Save changes
             self.put(
                 format!("{}:{}", collection, id),
                 serde_json::to_vec(&doc)?,
-                None
+                None,
             )?;
-            
+
             Ok(new_value)
         } else {
-            Err(AuroraError::NotFound(format!("Document {}:{} not found", collection, id)))
+            Err(AuroraError::NotFound(format!(
+                "Document {}:{} not found",
+                collection, id
+            )))
         }
     }
-    
+
     // Batch operations
-    pub async fn batch_insert(&self, collection: &str, docs: Vec<InsertData>) -> Result<Vec<String>> {
+    pub async fn batch_insert(
+        &self,
+        collection: &str,
+        docs: Vec<InsertData>,
+    ) -> Result<Vec<String>> {
         // Begin transaction
         self.begin_transaction()?;
-        
+
         let mut ids = Vec::with_capacity(docs.len());
-        
+
         // Insert all documents
         for data in docs {
             match self.insert_into(collection, data) {
@@ -1056,36 +1137,33 @@ impl Aurora {
                 }
             }
         }
-        
+
         // Commit transaction
         self.commit_transaction()?;
-        
+
         Ok(ids)
     }
-    
+
     // Delete documents by query
     pub async fn delete_by_query<F>(&self, collection: &str, filter_fn: F) -> Result<usize>
     where
-        F: Fn(&FilterBuilder) -> bool + 'static
+        F: Fn(&FilterBuilder) -> bool + 'static,
     {
-        let docs = self.query(collection)
-            .filter(filter_fn)
-            .collect()
-            .await?;
-        
+        let docs = self.query(collection).filter(filter_fn).collect().await?;
+
         let mut deleted_count = 0;
-        
+
         for doc in docs {
             let key = format!("{}:{}", collection, doc.id);
             self.delete(&key).await?;
             deleted_count += 1;
         }
-        
+
         Ok(deleted_count)
     }
 
     /// Import documents from a JSON file into a collection
-    /// 
+    ///
     /// This method validates documents against the collection schema
     /// and skips documents that already exist in the database.
     ///
@@ -1101,112 +1179,122 @@ impl Aurora {
     /// ```
     /// // Import documents from JSON
     /// let stats = db.import_from_json("users", "./data/new_users.json").await?;
-    /// println!("Imported: {}, Skipped: {}, Failed: {}", 
+    /// println!("Imported: {}, Skipped: {}, Failed: {}",
     ///     stats.imported, stats.skipped, stats.failed);
     /// ```
     pub async fn import_from_json(&self, collection: &str, filename: &str) -> Result<ImportStats> {
         // Validate that the collection exists
         let collection_def = self.get_collection_definition(collection)?;
-        
+
         // Load JSON file
-        let json_string = read_to_string(filename).await
+        let json_string = read_to_string(filename)
+            .await
             .map_err(|e| AuroraError::IoError(format!("Failed to read import file: {}", e)))?;
-        
+
         // Parse JSON
         let documents: Vec<JsonValue> = from_str(&json_string)
             .map_err(|e| AuroraError::SerializationError(format!("Failed to parse JSON: {}", e)))?;
-        
+
         let mut stats = ImportStats::default();
-        
+
         // Process each document
         for doc_json in documents {
-            match self.import_document(collection, &collection_def, doc_json).await {
+            match self
+                .import_document(collection, &collection_def, doc_json)
+                .await
+            {
                 Ok(ImportResult::Imported) => stats.imported += 1,
                 Ok(ImportResult::Skipped) => stats.skipped += 1,
                 Err(_) => stats.failed += 1,
             }
         }
-        
+
         Ok(stats)
     }
-    
+
     /// Import a single document, performing schema validation and duplicate checking
-    async fn import_document(&self, 
-                      collection: &str, 
-                      collection_def: &Collection, 
-                      doc_json: JsonValue) -> Result<ImportResult> {
+    async fn import_document(
+        &self,
+        collection: &str,
+        collection_def: &Collection,
+        doc_json: JsonValue,
+    ) -> Result<ImportResult> {
         if !doc_json.is_object() {
             return Err(AuroraError::InvalidOperation("Expected JSON object".into()));
         }
-        
+
         // Extract document ID if present
-        let doc_id = doc_json.get("id")
+        let doc_id = doc_json
+            .get("id")
             .and_then(|id| id.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-            
+
         // Check if document with this ID already exists
         if let Some(_) = self.get_document(collection, &doc_id)? {
             return Ok(ImportResult::Skipped);
         }
-        
+
         // Convert JSON to our document format and validate against schema
         let mut data_map = HashMap::new();
-        
+
         if let Some(obj) = doc_json.as_object() {
             for (field_name, field_def) in &collection_def.fields {
                 if let Some(json_value) = obj.get(field_name) {
                     // Validate value against field type
                     if !self.validate_field_value(json_value, &field_def.field_type) {
-                        return Err(AuroraError::InvalidOperation(
-                            format!("Field '{}' has invalid type", field_name)
-                        ));
+                        return Err(AuroraError::InvalidOperation(format!(
+                            "Field '{}' has invalid type",
+                            field_name
+                        )));
                     }
-                    
+
                     // Convert JSON value to our Value type
                     let value = self.json_to_value(json_value)?;
                     data_map.insert(field_name.clone(), value);
                 } else if field_def.unique {
                     // Missing required unique field
-                    return Err(AuroraError::InvalidOperation(
-                        format!("Missing required unique field '{}'", field_name)
-                    ));
+                    return Err(AuroraError::InvalidOperation(format!(
+                        "Missing required unique field '{}'",
+                        field_name
+                    )));
                 }
             }
         }
-        
+
         // Check for duplicates by unique fields
         for unique_field in &collection_def.unique_fields {
             if let Some(value) = data_map.get(unique_field) {
                 // Query for existing documents with this unique value
-                let query_results = self.query(collection)
+                let query_results = self
+                    .query(collection)
                     .filter(move |f| f.eq(unique_field, value.clone()))
                     .limit(1)
                     .collect()
                     .await?;
-                    
+
                 if !query_results.is_empty() {
                     // Found duplicate by unique field
                     return Ok(ImportResult::Skipped);
                 }
             }
         }
-        
+
         // Create and insert document
         let document = Document {
             id: doc_id,
             data: data_map,
         };
-        
+
         self.put(
             format!("{}:{}", collection, document.id),
             serde_json::to_vec(&document)?,
             None,
         )?;
-        
+
         Ok(ImportResult::Imported)
     }
-    
+
     /// Validate that a JSON value matches the expected field type
     fn validate_field_value(&self, value: &JsonValue, field_type: &FieldType) -> bool {
         match field_type {
@@ -1215,11 +1303,12 @@ impl Aurora {
             FieldType::Float => value.is_number(),
             FieldType::Boolean => value.is_boolean(),
             FieldType::Array => value.is_array(),
-            FieldType::Uuid => value.is_string() && 
-                Uuid::parse_str(value.as_str().unwrap_or("")).is_ok(),
+            FieldType::Uuid => {
+                value.is_string() && Uuid::parse_str(value.as_str().unwrap_or("")).is_ok()
+            }
         }
     }
-    
+
     /// Convert a JSON value to our internal Value type
     fn json_to_value(&self, json_value: &JsonValue) -> Result<Value> {
         match json_value {
@@ -1233,7 +1322,7 @@ impl Aurora {
                 } else {
                     Err(AuroraError::InvalidOperation("Invalid number value".into()))
                 }
-            },
+            }
             JsonValue::String(s) => {
                 // Try parsing as UUID first
                 if let Ok(uuid) = Uuid::parse_str(s) {
@@ -1241,24 +1330,24 @@ impl Aurora {
                 } else {
                     Ok(Value::String(s.clone()))
                 }
-            },
+            }
             JsonValue::Array(arr) => {
                 let mut values = Vec::new();
                 for item in arr {
                     values.push(self.json_to_value(item)?);
                 }
                 Ok(Value::Array(values))
-            },
+            }
             JsonValue::Object(obj) => {
                 let mut map = HashMap::new();
                 for (k, v) in obj {
                     map.insert(k.clone(), self.json_to_value(v)?);
                 }
                 Ok(Value::Object(map))
-            },
+            }
         }
     }
-    
+
     /// Get collection definition
     fn get_collection_definition(&self, collection: &str) -> Result<Collection> {
         if let Some(data) = self.get(&format!("_collection:{}", collection))? {
@@ -1273,7 +1362,7 @@ impl Aurora {
     pub fn get_database_stats(&self) -> Result<DatabaseStats> {
         let hot_stats = self.hot.get_stats();
         let cold_stats = self.cold.get_stats()?;
-        
+
         Ok(DatabaseStats {
             hot_stats,
             cold_stats,
@@ -1281,83 +1370,101 @@ impl Aurora {
             collections: self.get_collection_stats()?,
         })
     }
-    
+
     /// Get a direct reference to a value in the hot cache
     pub fn get_hot_ref(&self, key: &str) -> Option<Arc<Vec<u8>>> {
         self.hot.get_ref(key)
     }
-    
+
     /// Check if a key is currently stored in the hot cache
     pub fn is_in_hot_cache(&self, key: &str) -> bool {
         self.hot.is_hot(key)
     }
-    
+
     /// Start background cleanup of hot cache with specified interval
     pub async fn start_hot_cache_maintenance(&self, interval_secs: u64) {
         let hot_store = Arc::new(self.hot.clone());
         hot_store.start_cleanup_with_interval(interval_secs).await;
     }
-    
+
     /// Clear the hot cache (useful when memory needs to be freed)
     pub fn clear_hot_cache(&self) {
         self.hot.clear();
-        println!("Hot cache cleared, current hit ratio: {:.2}%", self.hot.hit_ratio() * 100.0);
+        println!(
+            "Hot cache cleared, current hit ratio: {:.2}%",
+            self.hot.hit_ratio() * 100.0
+        );
     }
-    
+
     /// Store multiple key-value pairs efficiently in a single batch operation
     pub fn batch_write(&self, pairs: Vec<(String, Vec<u8>)>) -> Result<()> {
         self.cold.batch_set(pairs)
     }
-    
+
     /// Scan for keys with a specific prefix
-    pub fn scan_with_prefix(&self, prefix: &str) -> impl Iterator<Item = Result<(String, Vec<u8>)>> + '_ {
+    pub fn scan_with_prefix(
+        &self,
+        prefix: &str,
+    ) -> impl Iterator<Item = Result<(String, Vec<u8>)>> + '_ {
         self.cold.scan_prefix(prefix)
     }
-    
+
     /// Get storage efficiency metrics for the database
     pub fn get_collection_stats(&self) -> Result<HashMap<String, CollectionStats>> {
         let mut stats = HashMap::new();
-        
+
         // Scan all collections
-        let collections: Vec<String> = self.cold.scan()
+        let collections: Vec<String> = self
+            .cold
+            .scan()
             .filter_map(|r| r.ok())
             .map(|(k, _)| k)
             .filter(|k| k.starts_with("_collection:"))
             .map(|k| k.trim_start_matches("_collection:").to_string())
             .collect();
-            
+
         for collection in collections {
             let prefix = format!("{}:", collection);
-            
+
             // Count documents
             let count = self.cold.scan_prefix(&prefix).count();
-            
+
             // Estimate size
-            let size: usize = self.cold.scan_prefix(&prefix)
+            let size: usize = self
+                .cold
+                .scan_prefix(&prefix)
                 .filter_map(|r| r.ok())
                 .map(|(_, v)| v.len())
                 .sum();
-                
-            stats.insert(collection, CollectionStats {
-                count,
-                size_bytes: size,
-                avg_doc_size: if count > 0 { size / count } else { 0 },
-            });
+
+            stats.insert(
+                collection,
+                CollectionStats {
+                    count,
+                    size_bytes: size,
+                    avg_doc_size: if count > 0 { size / count } else { 0 },
+                },
+            );
         }
-        
+
         Ok(stats)
     }
 
     /// Search for documents by exact value using an index
-    /// 
+    ///
     /// This method performs a fast lookup using a pre-created index
-    pub fn search_by_value(&self, collection: &str, field: &str, value: &Value) -> Result<Vec<Document>> {
+    pub fn search_by_value(
+        &self,
+        collection: &str,
+        field: &str,
+        value: &Value,
+    ) -> Result<Vec<Document>> {
         let index_key = format!("_index:{}:{}", collection, field);
-        
+
         if let Some(index_data) = self.get(&index_key)? {
             let index_def: IndexDefinition = serde_json::from_slice(&index_data)?;
             let index = Index::new(index_def);
-            
+
             // Use the previously unused search method
             if let Some(doc_ids) = index.search(value) {
                 // Load the documents by ID
@@ -1371,30 +1478,36 @@ impl Aurora {
                 return Ok(docs);
             }
         }
-        
+
         // Return empty result if no index or no matches
         Ok(Vec::new())
     }
-    
+
     /// Perform a full-text search on an indexed text field
-    /// 
+    ///
     /// This provides more advanced text search capabilities including
     /// relevance ranking of results
-    pub fn full_text_search(&self, collection: &str, field: &str, query: &str) -> Result<Vec<Document>> {
+    pub fn full_text_search(
+        &self,
+        collection: &str,
+        field: &str,
+        query: &str,
+    ) -> Result<Vec<Document>> {
         let index_key = format!("_index:{}:{}", collection, field);
-        
+
         if let Some(index_data) = self.get(&index_key)? {
             let index_def: IndexDefinition = serde_json::from_slice(&index_data)?;
-            
+
             // Ensure this is a full-text index
             if !matches!(index_def.index_type, IndexType::FullText) {
-                return Err(AuroraError::InvalidOperation(
-                    format!("Field '{}' is not indexed as full-text", field)
-                ));
+                return Err(AuroraError::InvalidOperation(format!(
+                    "Field '{}' is not indexed as full-text",
+                    field
+                )));
             }
-            
+
             let index = Index::new(index_def);
-            
+
             // Use the previously unused search_text method
             if let Some(doc_id_scores) = index.search_text(query) {
                 // Load the documents by ID, preserving score order
@@ -1408,18 +1521,23 @@ impl Aurora {
                 return Ok(docs);
             }
         }
-        
+
         // Return empty result if no index or no matches
         Ok(Vec::new())
     }
-    
+
     /// Create a full-text search index on a text field
-    pub fn create_text_index(&self, collection: &str, field: &str, _enable_stop_words: bool) -> Result<()> {
+    pub fn create_text_index(
+        &self,
+        collection: &str,
+        field: &str,
+        _enable_stop_words: bool,
+    ) -> Result<()> {
         // Check if collection exists
         if self.get(&format!("_collection:{}", collection))?.is_none() {
             return Err(AuroraError::CollectionNotFound(collection.to_string()));
         }
-        
+
         // Create index definition
         let index_def = IndexDefinition {
             name: format!("{}_{}_fulltext", collection, field),
@@ -1428,14 +1546,14 @@ impl Aurora {
             index_type: IndexType::FullText,
             unique: false,
         };
-        
+
         // Store index definition
         let index_key = format!("_index:{}:{}", collection, field);
         self.put(index_key, serde_json::to_vec(&index_def)?, None)?;
-        
+
         // Create the actual index
         let index = Index::new(index_def);
-        
+
         // Index all existing documents in the collection
         let prefix = format!("{}:", collection);
         for result in self.cold.scan_prefix(&prefix) {
@@ -1444,11 +1562,182 @@ impl Aurora {
                 index.insert(&doc)?;
             }
         }
-        
+
         Ok(())
     }
 
+    pub async fn execute_simple_query(
+        &self,
+        builder: &SimpleQueryBuilder,
+    ) -> Result<Vec<Document>> {
+        let mut docs = self.get_all_collection(&builder.collection).await?;
 
+        docs.retain(|doc| {
+            builder.filters.iter().all(|f| match f {
+                Filter::Eq(field, value) => doc.data.get(field).map_or(false, |v| v == value),
+                Filter::Gt(field, value) => doc.data.get(field).map_or(false, |v| v > value),
+                Filter::Lt(field, value) => doc.data.get(field).map_or(false, |v| v < value),
+                Filter::Contains(field, value_str) => {
+                    doc.data.get(field).map_or(false, |v| match v {
+                        Value::String(s) => s.contains(value_str),
+                        Value::Array(arr) => arr.contains(&Value::String(value_str.clone())),
+                        _ => false,
+                    })
+                }
+            })
+        });
+
+        // NOTE: This implementation does not yet support ordering, limits, or offsets.
+        Ok(docs)
+    }
+
+    pub async fn execute_dynamic_query(
+        &self,
+        collection: &str,
+        payload: &QueryPayload,
+    ) -> Result<Vec<Document>> {
+        let mut docs = self.get_all_collection(collection).await?;
+
+        // 1. Apply Filters
+        if let Some(filters) = &payload.filters {
+            docs.retain(|doc| {
+                filters.iter().all(|filter| {
+                    doc.data
+                        .get(&filter.field)
+                        .map_or(false, |doc_val| check_filter(doc_val, filter))
+                })
+            });
+        }
+
+        // 2. Apply Sorting
+        if let Some(sort_options) = &payload.sort {
+            docs.sort_by(|a, b| {
+                let a_val = a.data.get(&sort_options.field);
+                let b_val = b.data.get(&sort_options.field);
+                let ordering = a_val
+                    .partial_cmp(&b_val)
+                    .unwrap_or(std::cmp::Ordering::Equal);
+                if sort_options.ascending {
+                    ordering
+                } else {
+                    ordering.reverse()
+                }
+            });
+        }
+
+        // 3. Apply Pagination
+        let mut docs = docs;
+        if let Some(offset) = payload.offset {
+            docs = docs.into_iter().skip(offset).collect();
+        }
+        if let Some(limit) = payload.limit {
+            docs = docs.into_iter().take(limit).collect();
+        }
+
+        // 4. Apply Field Selection (Projection)
+        if let Some(select_fields) = &payload.select {
+            if !select_fields.is_empty() {
+                docs = docs
+                    .into_iter()
+                    .map(|mut doc| {
+                        doc.data.retain(|key, _| select_fields.contains(key));
+                        doc
+                    })
+                    .collect();
+            }
+        }
+
+        Ok(docs)
+    }
+
+    pub async fn process_network_request(
+        &self,
+        request: crate::network::protocol::Request,
+    ) -> crate::network::protocol::Response {
+        use crate::network::protocol::Response;
+
+        match request {
+            crate::network::protocol::Request::Get(key) => match self.get(&key) {
+                Ok(value) => Response::Success(value),
+                Err(e) => Response::Error(e.to_string()),
+            },
+            crate::network::protocol::Request::Put(key, value) => {
+                match self.put(key, value, None) {
+                    Ok(_) => Response::Done,
+                    Err(e) => Response::Error(e.to_string()),
+                }
+            }
+            crate::network::protocol::Request::Delete(key) => match self.delete(&key).await {
+                Ok(_) => Response::Done,
+                Err(e) => Response::Error(e.to_string()),
+            },
+            crate::network::protocol::Request::NewCollection { name, fields } => {
+                let fields_for_db: Vec<(String, crate::types::FieldType, bool)> = fields
+                    .iter()
+                    .map(|(name, ft, unique)| (name.clone(), ft.clone(), *unique))
+                    .collect();
+
+                match self.new_collection(&name, fields_for_db) {
+                    Ok(_) => Response::Done,
+                    Err(e) => Response::Error(e.to_string()),
+                }
+            }
+            crate::network::protocol::Request::Insert { collection, data } => {
+                match self.insert_map(&collection, data) {
+                    Ok(id) => Response::Message(id),
+                    Err(e) => Response::Error(e.to_string()),
+                }
+            }
+            crate::network::protocol::Request::GetDocument { collection, id } => {
+                match self.get_document(&collection, &id) {
+                    Ok(doc) => Response::Document(doc),
+                    Err(e) => Response::Error(e.to_string()),
+                }
+            }
+            crate::network::protocol::Request::Query(builder) => {
+                match self.execute_simple_query(&builder).await {
+                    Ok(docs) => Response::Documents(docs),
+                    Err(e) => Response::Error(e.to_string()),
+                }
+            }
+            crate::network::protocol::Request::BeginTransaction => match self.begin_transaction() {
+                Ok(_) => Response::Done,
+                Err(e) => Response::Error(e.to_string()),
+            },
+            crate::network::protocol::Request::CommitTransaction => match self.commit_transaction()
+            {
+                Ok(_) => Response::Done,
+                Err(e) => Response::Error(e.to_string()),
+            },
+            crate::network::protocol::Request::RollbackTransaction => {
+                match self.rollback_transaction() {
+                    Ok(_) => Response::Done,
+                    Err(e) => Response::Error(e.to_string()),
+                }
+            }
+        }
+    }
+}
+
+fn check_filter(doc_val: &Value, filter: &HttpFilter) -> bool {
+    let filter_val = match json_to_value(&filter.value) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    match filter.operator {
+        FilterOperator::Eq => doc_val == &filter_val,
+        FilterOperator::Ne => doc_val != &filter_val,
+        FilterOperator::Gt => doc_val > &filter_val,
+        FilterOperator::Gte => doc_val >= &filter_val,
+        FilterOperator::Lt => doc_val < &filter_val,
+        FilterOperator::Lte => doc_val <= &filter_val,
+        FilterOperator::Contains => match (doc_val, &filter_val) {
+            (Value::String(s), Value::String(fv)) => s.contains(fv),
+            (Value::Array(arr), _) => arr.contains(&filter_val),
+            _ => false,
+        },
+    }
 }
 
 /// Results of importing a document
@@ -1504,22 +1793,31 @@ mod tests {
         let db = Aurora::open(db_path.to_str().unwrap())?;
 
         // Test collection creation
-        db.new_collection("users", vec![
-            ("name", FieldType::String, false),
-            ("age", FieldType::Int, false),
-            ("email", FieldType::String, true),
-        ])?;
+        db.new_collection(
+            "users",
+            vec![
+                ("name".to_string(), FieldType::String, false),
+                ("age".to_string(), FieldType::Int, false),
+                ("email".to_string(), FieldType::String, true),
+            ],
+        )?;
 
         // Test document insertion
-        let doc_id = db.insert_into("users", vec![
-            ("name", Value::String("John Doe".to_string())),
-            ("age", Value::Int(30)),
-            ("email", Value::String("john@example.com".to_string())),
-        ])?;
+        let doc_id = db.insert_into(
+            "users",
+            vec![
+                ("name", Value::String("John Doe".to_string())),
+                ("age", Value::Int(30)),
+                ("email", Value::String("john@example.com".to_string())),
+            ],
+        )?;
 
         // Test document retrieval
         let doc = db.get_document("users", &doc_id)?.unwrap();
-        assert_eq!(doc.data.get("name").unwrap(), &Value::String("John Doe".to_string()));
+        assert_eq!(
+            doc.data.get("name").unwrap(),
+            &Value::String("John Doe".to_string())
+        );
         assert_eq!(doc.data.get("age").unwrap(), &Value::Int(30));
 
         Ok(())
@@ -1535,16 +1833,17 @@ mod tests {
         db.begin_transaction()?;
 
         // Insert document
-        let doc_id = db.insert_into("test", vec![
-            ("field", Value::String("value".to_string())),
-        ])?;
+        let doc_id = db.insert_into("test", vec![("field", Value::String("value".to_string()))])?;
 
         // Commit transaction
         db.commit_transaction()?;
 
         // Verify document exists
         let doc = db.get_document("test", &doc_id)?.unwrap();
-        assert_eq!(doc.data.get("field").unwrap(), &Value::String("value".to_string()));
+        assert_eq!(
+            doc.data.get("field").unwrap(),
+            &Value::String("value".to_string())
+        );
 
         Ok(())
     }
@@ -1556,27 +1855,37 @@ mod tests {
         let db = Aurora::open(db_path.to_str().unwrap())?;
 
         // Test collection creation
-        db.new_collection("books", vec![
-            ("title", FieldType::String, false),
-            ("author", FieldType::String, false),
-            ("year", FieldType::Int, false),
-        ])?;
+        db.new_collection(
+            "books",
+            vec![
+                ("title".to_string(), FieldType::String, false),
+                ("author".to_string(), FieldType::String, false),
+                ("year".to_string(), FieldType::Int, false),
+            ],
+        )?;
 
         // Test document insertion
-        db.insert_into("books", vec![
-            ("title", Value::String("Book 1".to_string())),
-            ("author", Value::String("Author 1".to_string())),
-            ("year", Value::Int(2020)),
-        ])?;
+        db.insert_into(
+            "books",
+            vec![
+                ("title", Value::String("Book 1".to_string())),
+                ("author", Value::String("Author 1".to_string())),
+                ("year", Value::Int(2020)),
+            ],
+        )?;
 
-        db.insert_into("books", vec![
-            ("title", Value::String("Book 2".to_string())),
-            ("author", Value::String("Author 2".to_string())),
-            ("year", Value::Int(2021)),
-        ])?;
+        db.insert_into(
+            "books",
+            vec![
+                ("title", Value::String("Book 2".to_string())),
+                ("author", Value::String("Author 2".to_string())),
+                ("year", Value::Int(2021)),
+            ],
+        )?;
 
         // Test query
-        let results = db.query("books")
+        let results = db
+            .query("books")
             .filter(|f| f.gt("year", Value::Int(2019)))
             .order_by("year", true)
             .collect()
@@ -1624,8 +1933,10 @@ mod tests {
         std::fs::write(&large_file_path, &large_data)?;
 
         // Attempt to store the large file
-        let result = db.put_blob("test:large_blob".to_string(), &large_file_path).await;
-        
+        let result = db
+            .put_blob("test:large_blob".to_string(), &large_file_path)
+            .await;
+
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),

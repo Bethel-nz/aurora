@@ -43,21 +43,24 @@
 
 // Re-export primary types and modules
 pub use crate::db::Aurora;
-pub use crate::types::{
-    Document, Value, Collection, FieldType, FieldDefinition, InsertData,
-    AuroraConfig, ColdStoreMode
-};
-pub use crate::error::{AuroraError, Result};
-pub use crate::query::{QueryBuilder, FilterBuilder, SearchBuilder};
 pub use crate::db::DataInfo;
+pub use crate::error::{AuroraError, Result};
+pub use crate::query::{FilterBuilder, QueryBuilder, SearchBuilder};
+pub use crate::types::{
+    AuroraConfig, ColdStoreMode, Collection, Document, FieldDefinition, FieldType, InsertData,
+    Value,
+};
 
 // Re-export query module for direct access to query API
 pub mod query;
 
 // Module declarations
-mod db;
-mod error;
-mod index;
-mod search;
-mod storage;
-mod types;
+pub mod client;
+pub mod db;
+pub mod error;
+pub mod index;
+pub mod network;
+pub mod search;
+pub mod storage;
+pub mod types;
+pub mod wal;

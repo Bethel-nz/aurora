@@ -20,6 +20,7 @@ use crate::Aurora;
 use crate::error::Result;
 use crate::error::AuroraError;
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 
 /// Trait for objects that can filter documents.
 ///
@@ -619,7 +620,7 @@ impl<'a> SearchBuilder<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SimpleQueryBuilder {
     pub collection: String,
     pub filters: Vec<Filter>,
@@ -655,7 +656,7 @@ impl SimpleQueryBuilder {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Filter {
     Eq(String, Value),
     Gt(String, Value),
