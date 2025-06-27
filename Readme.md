@@ -10,10 +10,11 @@ A hybrid embedded document database with key-value storage and document collecti
 - **Blob Storage**: Efficient handling of binary objects
 - **Async API**: High-performance operations with async/await support
 - **Durability**: Write-ahead logging for crash recovery
+- **Network Support**: Optional HTTP JSON and high-performance binary servers
 
-## Installation
+## Library Usage
 
-Add to your Cargo.toml:
+To use Aurora DB as an embedded library in your Rust project, add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -21,49 +22,71 @@ aurora_db = "0.1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
-## Basic Usage
+### Basic Example
 
 ```rust
 use aurora_db::{Aurora, FieldType, Value};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Open database
+    // Open database in a temporary directory
     let db = Aurora::open("my_database")?;
-    
-    // Create collection
+
+    // Create a new collection for users
     db.new_collection("users", vec![
         ("name", FieldType::String, false),
         ("email", FieldType::String, true), // unique field
         ("age", FieldType::Int, false),
     ])?;
-    
-    // Insert document
+
+    // Insert a document
     db.insert_into("users", vec![
-        ("name", Value::String("Jane Doe".to_string())),
-        ("email", Value::String("jane@example.com".to_string())),
-        ("age", Value::Int(28)),
+        ("name", Value::from("Jane Doe")),
+        ("email", Value::from("jane@example.com")),
+        ("age", Value::from(28)),
     ])?;
-    
-    // Query documents
+
+    // Query for users older than 25
     let users = db.query("users")
         .filter(|f| f.gt("age", 25))
         .collect()
         .await?;
-    
-    println!("Found {} users", users.len());
-    
+
+    println!("Found {} user(s).", users.len());
+    // -> Found 1 user(s).
+
     Ok(())
 }
 ```
 
+## Running as a Server
+
+Aurora DB can also run as a standalone server, accessible over the network. The server is provided as a separate binary within the crate, enabled by feature flags.
+
+### Server Features
+
+- `http`: Enables the Actix-powered HTTP/JSON REST API.
+- `binary`: Enables the high-performance Bincode-based TCP server.
+- `full`: Enables both servers.
+
+### Running the Server
+
+To run the server binary, use the `--features` flag with Cargo:
+
+```bash
+# Run the HTTP server on port 7879
+cargo run --bin aurora-db --features http
+
+# Run the binary server on port 7878
+cargo run --bin aurora-db --features binary
+
+# Run both servers simultaneously
+cargo run --bin aurora-db --features full
+```
+
 ## Documentation
 
-See the [docs directory](src/docs/) for detailed guides:
-
-- [CRUD Operations](src/docs/crud.md)
-- [Querying](src/docs/querying.md) 
-- [Schema Management](src/docs/schema.md)
+See the [docs directory](src/docs/) for detailed guides on CRUD operations, querying, and schema management.
 
 ## Performance
 
