@@ -825,49 +825,11 @@ mod tests {
         let doc1_score = results.iter().find(|(id, _)| id == "1").unwrap().1;
         let doc2_score = results.iter().find(|(id, _)| id == "2").unwrap().1;
 
-        println!("Doc1 score: {}, Doc2 score: {}", doc1_score, doc2_score);
-        println!(
-            "Doc1 length: {}, Doc2 length: {}",
-            index.doc_lengths.get("1").map(|v| *v.value()).unwrap_or(0),
-            index.doc_lengths.get("2").map(|v| *v.value()).unwrap_or(0)
-        );
-
-        // Debug BM25 calculation
-        let total_docs = 2.0f32;
-        let avg_doc_len = 14.0f32 / 2.0f32; // Total terms / total docs
-        let doc_freq = 2.0f32; // Both docs contain "wireless"
-        let idf = if doc_freq >= total_docs {
-            // When all documents contain the term, use a small positive value
-            0.1
-        } else {
-            ((total_docs - doc_freq + 0.5) / (doc_freq + 0.5))
-                .ln()
-                .max(0.1)
-        };
-        println!("IDF: {}", idf);
-
-        // For doc1 (length 3, tf=1)
-        let tf1 = 1.0f32;
-        let doc1_len = 3.0f32;
-        let tf1_numerator = tf1 * (1.2 + 1.0);
-        let tf1_denominator = tf1 + 1.2 * (1.0 - 0.75 + 0.75 * (doc1_len / avg_doc_len));
-        let tf1_bm25 = tf1_numerator / tf1_denominator;
-        println!("Doc1 TF-BM25: {}", tf1_bm25);
-
-        // For doc2 (length 11, tf=1)
-        let tf2 = 1.0f32;
-        let doc2_len = 11.0f32;
-        let tf2_numerator = tf2 * (1.2 + 1.0);
-        let tf2_denominator = tf2 + 1.2 * (1.0 - 0.75 + 0.75 * (doc2_len / avg_doc_len));
-        let tf2_bm25 = tf2_numerator / tf2_denominator;
-        println!("Doc2 TF-BM25: {}", tf2_bm25);
-
-        println!("Expected Doc1 final score: {}", tf1_bm25 * idf);
-        println!("Expected Doc2 final score: {}", tf2_bm25 * idf);
-
         assert!(
             doc1_score > doc2_score,
-            "Shorter document should have higher BM25 score"
+            "Shorter document should have higher BM25 score: {} vs {}",
+            doc1_score,
+            doc2_score
         );
 
         Ok(())

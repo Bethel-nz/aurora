@@ -386,7 +386,12 @@ impl Aurora {
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
 
-        self.put(key, buffer, None)
+        // Add BLOB: prefix to mark this as blob data
+        let mut blob_data = Vec::with_capacity(5 + buffer.len());
+        blob_data.extend_from_slice(b"BLOB:");
+        blob_data.extend_from_slice(&buffer);
+
+        self.put(key, blob_data, None)
     }
 
     /// Create a new collection with the given schema
@@ -1699,7 +1704,6 @@ impl Aurora {
                         }
                     }
                 }
-                _ => continue,
             }
         }
 

@@ -1,5 +1,3 @@
-use aurora_db::db::Aurora;
-use std::sync::Arc;
 
 #[cfg(any(feature = "http", feature = "binary"))]
 fn setup_database() -> std::io::Result<Arc<Aurora>> {

@@ -1,6 +1,6 @@
 [package]
 name = "aurora-db"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["Bethel Nzekea <bethelnzekea@gmail.com>"]
 description = "A hybrid embedded document database with key-value storage, document collections, and optional network servers."
@@ -51,5 +51,3 @@ path = "examples/contains_query_demo.rs"
 [[bench]]
 name = "aurora_benchmarks"
 harness = false
-
-exclude = ["benches/*"]
