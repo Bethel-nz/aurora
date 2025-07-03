@@ -1,8 +1,8 @@
+use bincode::Error as BincodeError;
+use csv::Error as CsvError;
 use std::time::SystemTimeError;
 use thiserror::Error;
 use zip::result::ZipError;
-use bincode::Error as BincodeError;
-use csv::Error as CsvError;
 
 #[derive(Error, Debug)]
 pub enum AuroraError {
@@ -26,6 +26,12 @@ pub enum AuroraError {
 
     #[error("Collection not found: {0}")]
     CollectionNotFound(String),
+
+    #[error("Collection already exists: {0}")]
+    CollectionAlreadyExists(String),
+
+    #[error("Unique constraint violation on field '{0}' with value '{1}'")]
+    UniqueConstraintViolation(String, String),
 
     #[error("System time error: {0}")]
     SystemTime(#[from] SystemTimeError),

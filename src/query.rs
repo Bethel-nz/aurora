@@ -1,10 +1,10 @@
 //! # Aurora Query System
-//! 
+//!
 //! This module provides a powerful, fluent query interface for filtering, sorting,
 //! and retrieving documents from Aurora collections.
-//! 
+//!
 //! ## Examples
-//! 
+//!
 //! ```rust
 //! // Get all active users over 21
 //! let users = db.query("users")
@@ -15,16 +15,16 @@
 //!     .await?;
 //! ```
 
-use crate::types::{Document, Value};
 use crate::Aurora;
-use crate::error::Result;
 use crate::error::AuroraError;
-use std::collections::HashMap;
+use crate::error::Result;
+use crate::types::{Document, Value};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Trait for objects that can filter documents.
 ///
-/// This trait is implemented for closures that take a reference to a 
+/// This trait is implemented for closures that take a reference to a
 /// `FilterBuilder` and return a boolean, allowing for a natural filter syntax.
 pub trait Queryable {
     fn matches(&self, doc: &Document) -> bool;
@@ -32,12 +32,12 @@ pub trait Queryable {
 
 impl<F> Queryable for F
 where
-    F: Fn(&Document) -> bool
+    F: Fn(&Document) -> bool,
 {
     fn matches(&self, doc: &Document) -> bool {
         self(doc)
     }
-} 
+}
 
 /// Builder for creating and executing document queries.
 ///
@@ -58,7 +58,8 @@ where
 pub struct QueryBuilder<'a> {
     db: &'a Aurora,
     collection: String,
-    filters: Vec<Box<dyn Fn(&Document) -> bool + 'a>>,
+    // CHANGE 1: Add `+ Send` to make the boxed closure thread-safe.
+    filters: Vec<Box<dyn Fn(&Document) -> bool + Send + 'a>>,
     order_by: Option<(String, bool)>,
     limit: Option<usize>,
     offset: Option<usize>,
@@ -76,8 +77,8 @@ pub struct QueryBuilder<'a> {
 /// // Combine multiple filter conditions
 /// db.query("products")
 ///     .filter(|f| {
-///         f.gte("price", 10.0) && 
-///         f.lte("price", 50.0) && 
+///         f.gte("price", 10.0) &&
+///         f.lte("price", 50.0) &&
 ///         f.contains("name", "widget")
 ///     })
 ///     .collect()
@@ -112,22 +113,44 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     ///
     /// # Examples
     /// ```
-    /// .filter(|f| f.gt("age", 18))
+    /// .filter(|f| f.gt("age", 21))
     /// ```
     pub fn gt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
         self.doc.data.get(field).map_or(false, |v| v > &value)
     }
 
+    /// Check if a field is greater than or equal to a value
+    ///
+    /// # Examples
+    /// ```
+    /// .filter(|f| f.gte("age", 21))
+    /// ```
+    pub fn gte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
+        let value = value.into();
+        self.doc.data.get(field).map_or(false, |v| v >= &value)
+    }
+
     /// Check if a field is less than a value
     ///
     /// # Examples
     /// ```
-    /// .filter(|f| f.lt("age", 18))
+    /// .filter(|f| f.lt("age", 65))
     /// ```
     pub fn lt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
         self.doc.data.get(field).map_or(false, |v| v < &value)
+    }
+
+    /// Check if a field is less than or equal to a value
+    ///
+    /// # Examples
+    /// ```
+    /// .filter(|f| f.lte("age", 65))
+    /// ```
+    pub fn lte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
+        let value = value.into();
+        self.doc.data.get(field).map_or(false, |v| v <= &value)
     }
 
     /// Check if a field contains a value
@@ -137,12 +160,10 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.contains("name", "widget"))
     /// ```
     pub fn contains(&self, field: &str, value: &str) -> bool {
-        self.doc.data.get(field).map_or(false, |v| {
-            match v {
-                Value::String(s) => s.contains(value),
-                Value::Array(arr) => arr.contains(&Value::String(value.to_string())),
-                _ => false,
-            }
+        self.doc.data.get(field).map_or(false, |v| match v {
+            Value::String(s) => s.contains(value),
+            Value::Array(arr) => arr.contains(&Value::String(value.to_string())),
+            _ => false,
         })
     }
 
@@ -154,7 +175,10 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn in_values<T: Into<Value> + Clone>(&self, field: &str, values: &[T]) -> bool {
         let values: Vec<Value> = values.iter().map(|v| v.clone().into()).collect();
-        self.doc.data.get(field).map_or(false, |v| values.contains(v))
+        self.doc
+            .data
+            .get(field)
+            .map_or(false, |v| values.contains(v))
     }
 
     /// Check if a field is between two values (inclusive)
@@ -164,11 +188,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.between("age", 18, 65))
     /// ```
     pub fn between<T: Into<Value> + Clone>(&self, field: &str, min: T, max: T) -> bool {
-        let min_val = min.into();
-        let max_val = max.into();
-        self.doc.data.get(field).map_or(false, |v| {
-            v >= &min_val && v <= &max_val
-        })
+        self.gte(field, min) && self.lte(field, max)
     }
 
     /// Check if a field exists and is not null
@@ -178,7 +198,10 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.exists("email"))
     /// ```
     pub fn exists(&self, field: &str) -> bool {
-        self.doc.data.get(field).map_or(false, |v| !matches!(v, Value::Null))
+        self.doc
+            .data
+            .get(field)
+            .map_or(false, |v| !matches!(v, Value::Null))
     }
 
     /// Check if a field doesn't exist or is null
@@ -188,7 +211,10 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.is_null("email"))
     /// ```
     pub fn is_null(&self, field: &str) -> bool {
-        self.doc.data.get(field).map_or(true, |v| matches!(v, Value::Null))
+        self.doc
+            .data
+            .get(field)
+            .map_or(true, |v| matches!(v, Value::Null))
     }
 
     /// Check if a field starts with a prefix
@@ -198,11 +224,9 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.starts_with("name", "John"))
     /// ```
     pub fn starts_with(&self, field: &str, prefix: &str) -> bool {
-        self.doc.data.get(field).map_or(false, |v| {
-            match v {
-                Value::String(s) => s.starts_with(prefix),
-                _ => false,
-            }
+        self.doc.data.get(field).map_or(false, |v| match v {
+            Value::String(s) => s.starts_with(prefix),
+            _ => false,
         })
     }
 
@@ -213,11 +237,9 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.ends_with("name", "son"))
     /// ```
     pub fn ends_with(&self, field: &str, suffix: &str) -> bool {
-        self.doc.data.get(field).map_or(false, |v| {
-            match v {
-                Value::String(s) => s.ends_with(suffix),
-                _ => false,
-            }
+        self.doc.data.get(field).map_or(false, |v| match v {
+            Value::String(s) => s.ends_with(suffix),
+            _ => false,
         })
     }
 
@@ -229,11 +251,9 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn array_contains(&self, field: &str, value: impl Into<Value>) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| {
-            match v {
-                Value::Array(arr) => arr.contains(&value),
-                _ => false,
-            }
+        self.doc.data.get(field).map_or(false, |v| match v {
+            Value::Array(arr) => arr.contains(&value),
+            _ => false,
         })
     }
 
@@ -244,11 +264,9 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.array_len_eq("status", 2))
     /// ```
     pub fn array_len_eq(&self, field: &str, len: usize) -> bool {
-        self.doc.data.get(field).map_or(false, |v| {
-            match v {
-                Value::Array(arr) => arr.len() == len,
-                _ => false,
-            }
+        self.doc.data.get(field).map_or(false, |v| match v {
+            Value::Array(arr) => arr.len() == len,
+            _ => false,
         })
     }
 
@@ -261,7 +279,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     pub fn get_nested_value(&self, path: &str) -> Option<&Value> {
         let parts: Vec<&str> = path.split('.').collect();
         let mut current = self.doc.data.get(parts[0])?;
-        
+
         for &part in &parts[1..] {
             if let Value::Object(map) = current {
                 current = map.get(part)?;
@@ -269,10 +287,10 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
                 return None;
             }
         }
-        
+
         Some(current)
     }
-    
+
     /// Check if a nested field equals a value
     ///
     /// # Examples
@@ -283,7 +301,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
         let value = value.into();
         self.get_nested_value(path).map_or(false, |v| v == &value)
     }
-    
+
     /// Check if a field matches a regular expression
     ///
     /// # Examples
@@ -292,13 +310,11 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn matches_regex(&self, field: &str, pattern: &str) -> bool {
         use regex::Regex;
-        
+
         if let Ok(re) = Regex::new(pattern) {
-            self.doc.data.get(field).map_or(false, |v| {
-                match v {
-                    Value::String(s) => re.is_match(s),
-                    _ => false
-                }
+            self.doc.data.get(field).map_or(false, |v| match v {
+                Value::String(s) => re.is_match(s),
+                _ => false,
             })
         } else {
             false
@@ -336,7 +352,8 @@ impl<'a> QueryBuilder<'a> {
     /// ```
     pub fn filter<F>(mut self, filter_fn: F) -> Self
     where
-        F: Fn(&FilterBuilder) -> bool + 'a,
+        // CHANGE 2: Require the closure `F` to be `Send`.
+        F: Fn(&FilterBuilder) -> bool + Send + 'a,
     {
         self.filters.push(Box::new(move |doc| {
             let filter_builder = FilterBuilder::new(doc);
@@ -413,50 +430,55 @@ impl<'a> QueryBuilder<'a> {
     ///     .await?;
     /// ```
     pub async fn collect(self) -> Result<Vec<Document>> {
+        // Ensure indices are initialized
+        self.db.ensure_indices_initialized().await?;
+
         let mut docs = self.db.get_all_collection(&self.collection).await?;
-        
+
         // Apply filters
         docs.retain(|doc| self.filters.iter().all(|f| f(doc)));
 
         // Apply ordering
         if let Some((field, ascending)) = self.order_by {
-            docs.sort_by(|a, b| {
-                match (a.data.get(&field), b.data.get(&field)) {
-                    (Some(v1), Some(v2)) => {
-                        let cmp = v1.cmp(v2);
-                        if ascending { cmp } else { cmp.reverse() }
-                    },
-                    (None, Some(_)) => std::cmp::Ordering::Less,
-                    (Some(_), None) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
+            docs.sort_by(|a, b| match (a.data.get(&field), b.data.get(&field)) {
+                (Some(v1), Some(v2)) => {
+                    let cmp = v1.cmp(v2);
+                    if ascending { cmp } else { cmp.reverse() }
                 }
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
             });
         }
 
         // Apply field selection if specified
         if let Some(fields) = self.fields {
             // Create new documents with only selected fields
-            docs = docs.into_iter().map(|doc| {
-                let mut new_data = HashMap::new();
-                // Always include the ID
-                for field in &fields {
-                    if let Some(value) = doc.data.get(field) {
-                        new_data.insert(field.clone(), value.clone());
+            docs = docs
+                .into_iter()
+                .map(|doc| {
+                    let mut new_data = HashMap::new();
+                    // Always include the ID
+                    for field in &fields {
+                        if let Some(value) = doc.data.get(field) {
+                            new_data.insert(field.clone(), value.clone());
+                        }
                     }
-                }
-                Document {
-                    id: doc.id,
-                    data: new_data,
-                }
-            }).collect();
+                    Document {
+                        id: doc.id,
+                        data: new_data,
+                    }
+                })
+                .collect();
         }
 
         // Apply offset and limit safely
         let start = self.offset.unwrap_or(0);
-        let end = self.limit
+        let end = self
+            .limit
             .map(|l| start.saturating_add(l))
             .unwrap_or(docs.len());
-        
+
         // Ensure we don't go out of bounds
         let end = end.min(docs.len());
         Ok(docs.get(start..end).unwrap_or(&[]).to_vec())
@@ -507,30 +529,30 @@ impl<'a> QueryBuilder<'a> {
         // Store a reference to the db and collection before consuming self
         let db = self.db;
         let collection = self.collection.clone();
-        
+
         let docs = self.collect().await?;
         let mut updated_count = 0;
-        
+
         for doc in docs {
             let mut updated_doc = doc.clone();
             let mut changed = false;
-            
+
             for (field, value) in &updates {
                 updated_doc.data.insert(field.to_string(), value.clone());
                 changed = true;
             }
-            
+
             if changed {
                 // Update document in the database
                 db.put(
                     format!("{}:{}", collection, updated_doc.id),
                     serde_json::to_vec(&updated_doc)?,
-                    None
+                    None,
                 )?;
                 updated_count += 1;
             }
         }
-        
+
         Ok(updated_count)
     }
 }
@@ -613,9 +635,13 @@ impl<'a> SearchBuilder<'a> {
     ///     .await?;
     /// ```
     pub async fn collect(self) -> Result<Vec<Document>> {
-        let field = self.field.ok_or_else(|| AuroraError::InvalidOperation("Search field not specified".into()))?;
-        let query = self.query.ok_or_else(|| AuroraError::InvalidOperation("Search query not specified".into()))?;
-        
+        let field = self
+            .field
+            .ok_or_else(|| AuroraError::InvalidOperation("Search field not specified".into()))?;
+        let query = self
+            .query
+            .ok_or_else(|| AuroraError::InvalidOperation("Search query not specified".into()))?;
+
         self.db.search_text(&self.collection, &field, &query).await
     }
 }
@@ -647,12 +673,26 @@ impl SimpleQueryBuilder {
         self.filter(Filter::Gt(field.to_string(), value))
     }
 
+    pub fn gte(self, field: &str, value: Value) -> Self {
+        self.filter(Filter::Gte(field.to_string(), value))
+    }
+
     pub fn lt(self, field: &str, value: Value) -> Self {
         self.filter(Filter::Lt(field.to_string(), value))
     }
 
+    pub fn lte(self, field: &str, value: Value) -> Self {
+        self.filter(Filter::Lte(field.to_string(), value))
+    }
+
     pub fn contains(self, field: &str, value: &str) -> Self {
         self.filter(Filter::Contains(field.to_string(), value.to_string()))
+    }
+
+    /// Convenience method for range queries
+    pub fn between(self, field: &str, min: Value, max: Value) -> Self {
+        self.filter(Filter::Gte(field.to_string(), min))
+            .filter(Filter::Lte(field.to_string(), max))
     }
 }
 
@@ -660,6 +700,8 @@ impl SimpleQueryBuilder {
 pub enum Filter {
     Eq(String, Value),
     Gt(String, Value),
+    Gte(String, Value),
     Lt(String, Value),
+    Lte(String, Value),
     Contains(String, String),
 }

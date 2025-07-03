@@ -46,9 +46,8 @@ pub use crate::db::Aurora;
 pub use crate::db::DataInfo;
 pub use crate::error::{AuroraError, Result};
 pub use crate::query::{FilterBuilder, QueryBuilder, SearchBuilder};
-pub use crate::types::{
-    AuroraConfig, ColdStoreMode, Collection, Document, FieldDefinition, FieldType, InsertData,
-    Value,
+pub use types::{
+    AuroraConfig, ColdStoreMode, Collection, Document, FieldDefinition, FieldType, Value,
 };
 
 // Re-export query module for direct access to query API

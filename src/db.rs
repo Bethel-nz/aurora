@@ -46,23 +46,21 @@
 use crate::error::{AuroraError, Result};
 use crate::index::{Index, IndexDefinition, IndexType};
 use crate::network::http_models::{
-    document_to_json, json_to_value, Filter as HttpFilter, FilterOperator, QueryPayload,
+    Filter as HttpFilter, FilterOperator, QueryPayload, json_to_value,
 };
 use crate::query::{Filter, FilterBuilder, QueryBuilder, SearchBuilder, SimpleQueryBuilder};
 use crate::storage::{ColdStore, HotStore};
-use crate::types::{
-    AuroraConfig, Collection, Document, FieldDefinition, FieldType, InsertData, Value,
-};
+use crate::types::{AuroraConfig, Collection, Document, FieldDefinition, FieldType, Value};
 use dashmap::DashMap;
-use serde_json::from_str;
 use serde_json::Value as JsonValue;
+use serde_json::from_str;
 use std::collections::HashMap;
 use std::fs::File as StdFile;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::fs::read_to_string;
 use tokio::fs::File;
+use tokio::fs::read_to_string;
 use tokio::io::AsyncReadExt;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
@@ -242,7 +240,7 @@ impl Aurora {
     }
 
     // Lazy index initialization
-    async fn ensure_indices_initialized(&self) -> Result<()> {
+    pub async fn ensure_indices_initialized(&self) -> Result<()> {
         self.indices_initialized
             .get_or_init(|| async {
                 println!("Initializing indices...");
@@ -416,29 +414,36 @@ impl Aurora {
     /// ])?;
     /// ```
     pub fn new_collection(&self, name: &str, fields: Vec<(String, FieldType, bool)>) -> Result<()> {
+        let collection_key = format!("collection:{}", name);
+
+        // Check if collection already exists
+        if self.get(&collection_key)?.is_some() {
+            return Err(AuroraError::CollectionAlreadyExists(name.to_string()));
+        }
+
+        // Create field definitions
+        let mut field_definitions = HashMap::new();
+        for (field_name, field_type, unique) in fields {
+            field_definitions.insert(
+                field_name,
+                FieldDefinition {
+                    field_type,
+                    unique,
+                    indexed: unique, // Auto-index unique fields
+                },
+            );
+        }
+
         let collection = Collection {
             name: name.to_string(),
-            fields: fields
-                .into_iter()
-                .map(|(name, field_type, unique)| {
-                    (
-                        name,
-                        FieldDefinition {
-                            field_type,
-                            unique,
-                            indexed: unique,
-                        },
-                    )
-                })
-                .collect(),
-            unique_fields: Vec::new(),
+            fields: field_definitions,
+            // REMOVED: unique_fields is now derived from fields
         };
 
-        self.put(
-            format!("_collection:{}", name),
-            serde_json::to_vec(&collection)?,
-            None,
-        )
+        let collection_data = serde_json::to_vec(&collection)?;
+        self.put(collection_key, collection_data, None)?;
+
+        Ok(())
     }
 
     /// Insert a document into a collection
@@ -460,7 +465,8 @@ impl Aurora {
     ///     ("active", Value::Bool(true)),
     /// ])?;
     /// ```
-    pub fn insert_into(&self, collection: &str, data: InsertData) -> Result<String> {
+    pub fn insert_into(&self, collection: &str, data: Vec<(&str, Value)>) -> Result<String> {
+        // Convert Vec<(&str, Value)> to HashMap<String, Value>
         let data_map: HashMap<String, Value> =
             data.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
 
@@ -997,12 +1003,12 @@ impl Aurora {
 
     pub async fn find_one<F>(&self, collection: &str, filter_fn: F) -> Result<Option<Document>>
     where
-        F: Fn(&FilterBuilder) -> bool + 'static,
+        F: Fn(&FilterBuilder) -> bool + Send + 'static,
     {
         self.query(collection).filter(filter_fn).first_one().await
     }
 
-    pub async fn find_by_field<T: Into<Value> + Clone + 'static>(
+    pub async fn find_by_field<T: Into<Value> + Clone + Send + 'static>(
         &self,
         collection: &str,
         field: &'static str,
@@ -1032,7 +1038,7 @@ impl Aurora {
     }
 
     // Advanced example: find documents with a field value in a specific range
-    pub async fn find_in_range<T: Into<Value> + Clone + 'static>(
+    pub async fn find_in_range<T: Into<Value> + Clone + Send + 'static>(
         &self,
         collection: &str,
         field: &'static str,
@@ -1056,27 +1062,42 @@ impl Aurora {
     }
 
     // Utility methods for common operations
-    pub async fn upsert(&self, collection: &str, id: &str, data: InsertData) -> Result<String> {
+    pub async fn upsert(
+        &self,
+        collection: &str,
+        id: &str,
+        data: Vec<(&str, Value)>,
+    ) -> Result<String> {
+        // Convert Vec<(&str, Value)> to HashMap<String, Value>
+        let data_map: HashMap<String, Value> =
+            data.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+
         // Check if document exists
         if let Some(mut doc) = self.get_document(collection, id)? {
             // Update existing document
-            for (key, value) in data {
-                doc.data.insert(key.to_string(), value);
+            for (key, value) in data_map {
+                doc.data.insert(key, value);
             }
 
-            // Save changes
             self.put(
                 format!("{}:{}", collection, id),
                 serde_json::to_vec(&doc)?,
                 None,
             )?;
-
             Ok(id.to_string())
         } else {
-            // Create new document
-            let mut data_with_id = data;
-            data_with_id.push(("id", Value::String(id.to_string())));
-            self.insert_into(collection, data_with_id)
+            // Insert new document with specified ID
+            let document = Document {
+                id: id.to_string(),
+                data: data_map,
+            };
+
+            self.put(
+                format!("{}:{}", collection, id),
+                serde_json::to_vec(&document)?,
+                None,
+            )?;
+            Ok(id.to_string())
         }
     }
 
@@ -1119,19 +1140,30 @@ impl Aurora {
     pub async fn batch_insert(
         &self,
         collection: &str,
-        docs: Vec<InsertData>,
+        docs: Vec<Vec<(&str, Value)>>,
     ) -> Result<Vec<String>> {
+        // Convert each Vec<(&str, Value)> to HashMap<String, Value>
+        let doc_maps: Vec<HashMap<String, Value>> = docs
+            .into_iter()
+            .map(|doc| doc.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+            .collect();
+
         // Begin transaction
         self.begin_transaction()?;
 
-        let mut ids = Vec::with_capacity(docs.len());
+        let mut ids = Vec::with_capacity(doc_maps.len());
 
         // Insert all documents
-        for data in docs {
-            match self.insert_into(collection, data) {
+        for data_map in doc_maps {
+            // Convert HashMap back to Vec for insert_into method
+            let data_vec: Vec<(&str, Value)> = data_map
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.clone()))
+                .collect();
+
+            match self.insert_into(collection, data_vec) {
                 Ok(id) => ids.push(id),
                 Err(e) => {
-                    // Rollback on error
                     self.rollback_transaction()?;
                     return Err(e);
                 }
@@ -1147,7 +1179,7 @@ impl Aurora {
     // Delete documents by query
     pub async fn delete_by_query<F>(&self, collection: &str, filter_fn: F) -> Result<usize>
     where
-        F: Fn(&FilterBuilder) -> bool + 'static,
+        F: Fn(&FilterBuilder) -> bool + Send + 'static,
     {
         let docs = self.query(collection).filter(filter_fn).collect().await?;
 
@@ -1263,7 +1295,8 @@ impl Aurora {
         }
 
         // Check for duplicates by unique fields
-        for unique_field in &collection_def.unique_fields {
+        let unique_fields = self.get_unique_fields(&collection_def);
+        for unique_field in &unique_fields {
             if let Some(value) = data_map.get(unique_field) {
                 // Query for existing documents with this unique value
                 let query_results = self
@@ -1303,6 +1336,7 @@ impl Aurora {
             FieldType::Float => value.is_number(),
             FieldType::Boolean => value.is_boolean(),
             FieldType::Array => value.is_array(),
+            FieldType::Object => value.is_object(),
             FieldType::Uuid => {
                 value.is_string() && Uuid::parse_str(value.as_str().unwrap_or("")).is_ok()
             }
@@ -1570,25 +1604,190 @@ impl Aurora {
         &self,
         builder: &SimpleQueryBuilder,
     ) -> Result<Vec<Document>> {
-        let mut docs = self.get_all_collection(&builder.collection).await?;
+        // Ensure indices are initialized
+        self.ensure_indices_initialized().await?;
 
-        docs.retain(|doc| {
-            builder.filters.iter().all(|f| match f {
-                Filter::Eq(field, value) => doc.data.get(field).map_or(false, |v| v == value),
-                Filter::Gt(field, value) => doc.data.get(field).map_or(false, |v| v > value),
-                Filter::Lt(field, value) => doc.data.get(field).map_or(false, |v| v < value),
-                Filter::Contains(field, value_str) => {
-                    doc.data.get(field).map_or(false, |v| match v {
-                        Value::String(s) => s.contains(value_str),
-                        Value::Array(arr) => arr.contains(&Value::String(value_str.clone())),
-                        _ => false,
-                    })
+        // A place to store the IDs of the documents we need to fetch
+        let mut doc_ids_to_load: Option<Vec<String>> = None;
+        let mut used_filter_index: Option<usize> = None;
+
+        // --- The "Query Planner" ---
+        // Look for an opportunity to use an index
+        for (filter_idx, filter) in builder.filters.iter().enumerate() {
+            match filter {
+                Filter::Eq(field, value) => {
+                    let index_key = format!("{}:{}", &builder.collection, field);
+
+                    // Do we have a secondary index for this field?
+                    if let Some(index) = self.secondary_indices.get(&index_key) {
+                        // Yes! Let's use it.
+                        if let Some(matching_ids) = index.get(&value.to_string()) {
+                            doc_ids_to_load = Some(matching_ids.clone());
+                            used_filter_index = Some(filter_idx);
+                            break; // Stop searching for other indexes for now
+                        }
+                    }
+                }
+                Filter::Gt(field, value)
+                | Filter::Gte(field, value)
+                | Filter::Lt(field, value)
+                | Filter::Lte(field, value) => {
+                    let index_key = format!("{}:{}", &builder.collection, field);
+
+                    // Do we have a secondary index for this field?
+                    if let Some(index) = self.secondary_indices.get(&index_key) {
+                        // For range queries, we need to scan through the index values
+                        let mut matching_ids = Vec::new();
+
+                        for entry in index.iter() {
+                            let index_value_str = entry.key();
+
+                            // Try to parse the index value to compare with our filter value
+                            if let Ok(index_value) =
+                                self.parse_value_from_string(index_value_str, value)
+                            {
+                                let matches = match filter {
+                                    Filter::Gt(_, filter_val) => index_value > *filter_val,
+                                    Filter::Gte(_, filter_val) => index_value >= *filter_val,
+                                    Filter::Lt(_, filter_val) => index_value < *filter_val,
+                                    Filter::Lte(_, filter_val) => index_value <= *filter_val,
+                                    _ => false,
+                                };
+
+                                if matches {
+                                    matching_ids.extend(entry.value().clone());
+                                }
+                            }
+                        }
+
+                        if !matching_ids.is_empty() {
+                            doc_ids_to_load = Some(matching_ids);
+                            used_filter_index = Some(filter_idx);
+                            break;
+                        }
+                    }
+                }
+                Filter::Contains(field, search_term) => {
+                    let index_key = format!("{}:{}", &builder.collection, field);
+
+                    // Do we have a secondary index for this field?
+                    if let Some(index) = self.secondary_indices.get(&index_key) {
+                        // For Contains queries, we need to scan through the index keys
+                        // to find those that contain the search term
+                        let mut matching_ids = Vec::new();
+
+                        for entry in index.iter() {
+                            let index_value_str = entry.key();
+
+                            // Check if this indexed value contains our search term
+                            if index_value_str
+                                .to_lowercase()
+                                .contains(&search_term.to_lowercase())
+                            {
+                                matching_ids.extend(entry.value().clone());
+                            }
+                        }
+
+                        if !matching_ids.is_empty() {
+                            // Remove duplicates since a document could match multiple indexed values
+                            matching_ids.sort();
+                            matching_ids.dedup();
+
+                            doc_ids_to_load = Some(matching_ids);
+                            used_filter_index = Some(filter_idx);
+                            break;
+                        }
+                    }
+                }
+                _ => continue,
+            }
+        }
+
+        let mut final_docs: Vec<Document>;
+
+        if let Some(ids) = doc_ids_to_load {
+            // --- Path 1: Index-based Fetch ---
+            // We have a specific list of IDs to load. This is fast.
+            println!("📊 Loading {} documents via index", ids.len());
+            final_docs = Vec::with_capacity(ids.len());
+
+            for id in ids {
+                let doc_key = format!("{}:{}", &builder.collection, id);
+                if let Some(data) = self.get(&doc_key)? {
+                    if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                        final_docs.push(doc);
+                    }
+                }
+            }
+        } else {
+            // --- Path 2: Full Collection Scan (Fallback) ---
+            // No suitable index was found, so we must do the slow scan
+            println!(
+                "⚠️  INDEX MISS. Falling back to full collection scan for '{}'",
+                &builder.collection
+            );
+            final_docs = self.get_all_collection(&builder.collection).await?;
+        }
+
+        // Now, apply the *rest* of the filters in memory
+        // This is important for queries with multiple filters, where only one might be indexed
+        // Skip the filter we already used for the index lookup
+        final_docs.retain(|doc| {
+            builder.filters.iter().enumerate().all(|(idx, filter)| {
+                // Skip the filter we already used for index lookup
+                if Some(idx) == used_filter_index {
+                    return true;
+                }
+
+                match filter {
+                    Filter::Eq(field, value) => doc.data.get(field).map_or(false, |v| v == value),
+                    Filter::Gt(field, value) => doc.data.get(field).map_or(false, |v| v > value),
+                    Filter::Gte(field, value) => doc.data.get(field).map_or(false, |v| v >= value),
+                    Filter::Lt(field, value) => doc.data.get(field).map_or(false, |v| v < value),
+                    Filter::Lte(field, value) => doc.data.get(field).map_or(false, |v| v <= value),
+                    Filter::Contains(field, value_str) => {
+                        doc.data.get(field).map_or(false, |v| match v {
+                            Value::String(s) => s.contains(value_str),
+                            Value::Array(arr) => arr.contains(&Value::String(value_str.clone())),
+                            _ => false,
+                        })
+                    }
                 }
             })
         });
 
+        println!(
+            "✅ Query completed. Returning {} documents",
+            final_docs.len()
+        );
+
         // NOTE: This implementation does not yet support ordering, limits, or offsets.
-        Ok(docs)
+        // Those would be added here in a production system.
+        Ok(final_docs)
+    }
+
+    /// Helper method to parse a string value back to a Value for comparison
+    fn parse_value_from_string(&self, value_str: &str, reference_value: &Value) -> Result<Value> {
+        match reference_value {
+            Value::Int(_) => {
+                if let Ok(i) = value_str.parse::<i64>() {
+                    Ok(Value::Int(i))
+                } else {
+                    Err(AuroraError::InvalidOperation("Failed to parse int".into()))
+                }
+            }
+            Value::Float(_) => {
+                if let Ok(f) = value_str.parse::<f64>() {
+                    Ok(Value::Float(f))
+                } else {
+                    Err(AuroraError::InvalidOperation(
+                        "Failed to parse float".into(),
+                    ))
+                }
+            }
+            Value::String(_) => Ok(Value::String(value_str.to_string())),
+            _ => Ok(Value::String(value_str.to_string())),
+        }
     }
 
     pub async fn execute_dynamic_query(
@@ -1717,6 +1916,123 @@ impl Aurora {
             }
         }
     }
+
+    /// Create indices for commonly queried fields automatically
+    ///
+    /// This is a convenience method that creates indices for fields that are
+    /// likely to be queried frequently, improving performance.
+    ///
+    /// # Arguments
+    /// * `collection` - Name of the collection
+    /// * `fields` - List of field names to create indices for
+    ///
+    /// # Examples
+    /// ```
+    /// // Create indices for commonly queried fields
+    /// db.create_indices("users", &["email", "status", "created_at"]).await?;
+    /// ```
+    pub async fn create_indices(&self, collection: &str, fields: &[&str]) -> Result<()> {
+        for field in fields {
+            if let Err(e) = self.create_index(collection, field).await {
+                eprintln!(
+                    "Warning: Failed to create index for {}.{}: {}",
+                    collection, field, e
+                );
+            } else {
+                println!("✅ Created index for {}.{}", collection, field);
+            }
+        }
+        Ok(())
+    }
+
+    /// Get index statistics for a collection
+    ///
+    /// This helps understand which indices exist and how effective they are.
+    pub fn get_index_stats(&self, collection: &str) -> HashMap<String, IndexStats> {
+        let mut stats = HashMap::new();
+
+        for entry in self.secondary_indices.iter() {
+            let key = entry.key();
+            if key.starts_with(&format!("{}:", collection)) {
+                let field = key.split(':').nth(1).unwrap_or("unknown");
+                let index = entry.value();
+
+                let unique_values = index.len();
+                let total_documents: usize = index.iter().map(|entry| entry.value().len()).sum();
+
+                stats.insert(
+                    field.to_string(),
+                    IndexStats {
+                        unique_values,
+                        total_documents,
+                        avg_docs_per_value: if unique_values > 0 {
+                            total_documents / unique_values
+                        } else {
+                            0
+                        },
+                    },
+                );
+            }
+        }
+
+        stats
+    }
+
+    /// Optimize a collection by creating indices for frequently filtered fields
+    ///
+    /// This analyzes common query patterns and suggests/creates optimal indices.
+    pub async fn optimize_collection(&self, collection: &str) -> Result<()> {
+        // For now, this is a simple implementation that creates indices for all fields
+        // In a more sophisticated version, this would analyze query logs
+
+        if let Ok(collection_def) = self.get_collection_definition(collection) {
+            let field_names: Vec<&str> = collection_def.fields.keys().map(|s| s.as_str()).collect();
+            self.create_indices(collection, &field_names).await?;
+            println!(
+                "🚀 Optimized collection '{}' with {} indices",
+                collection,
+                field_names.len()
+            );
+        }
+
+        Ok(())
+    }
+
+    // Helper method to get unique fields from a collection
+    fn get_unique_fields(&self, collection: &Collection) -> Vec<String> {
+        collection
+            .fields
+            .iter()
+            .filter(|(_, def)| def.unique)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    // Update the validation method to use the helper
+    fn validate_unique_constraints(
+        &self,
+        collection: &str,
+        data: &HashMap<String, Value>,
+    ) -> Result<()> {
+        let collection_def = self.get_collection_definition(collection)?;
+        let unique_fields = self.get_unique_fields(&collection_def);
+
+        for unique_field in &unique_fields {
+            if let Some(value) = data.get(unique_field) {
+                let index_key = format!("{}:{}", collection, unique_field);
+                if let Some(index) = self.secondary_indices.get(&index_key) {
+                    let value_str = value.to_string();
+                    if index.contains_key(&value_str) {
+                        return Err(AuroraError::UniqueConstraintViolation(
+                            unique_field.clone(),
+                            value_str,
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn check_filter(doc_val: &Value, filter: &HttpFilter) -> bool {
@@ -1766,6 +2082,17 @@ pub struct CollectionStats {
     pub size_bytes: usize,
     /// Average document size in bytes
     pub avg_doc_size: usize,
+}
+
+/// Statistics for an index
+#[derive(Debug)]
+pub struct IndexStats {
+    /// Number of unique values in the index
+    pub unique_values: usize,
+    /// Total number of documents covered by the index
+    pub total_documents: usize,
+    /// Average number of documents per unique value
+    pub avg_docs_per_value: usize,
 }
 
 /// Combined database statistics
