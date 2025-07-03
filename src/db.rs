@@ -339,10 +339,15 @@ impl Aurora {
         // Update secondary indices if it's a JSON document
         if let Ok(doc) = serde_json::from_slice::<Document>(value) {
             for (field, value) in doc.data {
+                // Use consistent string formatting for indexing
+                let value_str = match &value {
+                    Value::String(s) => s.clone(),
+                    _ => value.to_string(),
+                };
                 self.secondary_indices
                     .entry(format!("{}:{}", collection, field))
                     .or_insert_with(DashMap::new)
-                    .entry(value.to_string())
+                    .entry(value_str)
                     .or_insert_with(Vec::new)
                     .push(key.to_string());
             }
@@ -419,7 +424,7 @@ impl Aurora {
     /// ])?;
     /// ```
     pub fn new_collection(&self, name: &str, fields: Vec<(String, FieldType, bool)>) -> Result<()> {
-        let collection_key = format!("collection:{}", name);
+        let collection_key = format!("_collection:{}", name);
 
         // Check if collection already exists
         if self.get(&collection_key)?.is_some() {
@@ -470,10 +475,14 @@ impl Aurora {
     ///     ("active", Value::Bool(true)),
     /// ])?;
     /// ```
-    pub fn insert_into(&self, collection: &str, data: Vec<(&str, Value)>) -> Result<String> {
+    pub async fn insert_into(&self, collection: &str, data: Vec<(&str, Value)>) -> Result<String> {
         // Convert Vec<(&str, Value)> to HashMap<String, Value>
         let data_map: HashMap<String, Value> =
             data.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+
+        // Validate unique constraints before inserting
+        self.validate_unique_constraints(collection, &data_map)
+            .await?;
 
         let doc_id = Uuid::new_v4().to_string();
         let document = Document {
@@ -490,7 +499,14 @@ impl Aurora {
         Ok(doc_id)
     }
 
-    pub fn insert_map(&self, collection: &str, data: HashMap<String, Value>) -> Result<String> {
+    pub async fn insert_map(
+        &self,
+        collection: &str,
+        data: HashMap<String, Value>,
+    ) -> Result<String> {
+        // Validate unique constraints before inserting
+        self.validate_unique_constraints(collection, &data).await?;
+
         let doc_id = Uuid::new_v4().to_string();
         let document = Document {
             id: doc_id.clone(),
@@ -1079,10 +1095,15 @@ impl Aurora {
 
         // Check if document exists
         if let Some(mut doc) = self.get_document(collection, id)? {
-            // Update existing document
+            // Update existing document - merge new data
             for (key, value) in data_map {
                 doc.data.insert(key, value);
             }
+
+            // Validate unique constraints for the updated document
+            // We need to exclude the current document from the uniqueness check
+            self.validate_unique_constraints_excluding(collection, &doc.data, id)
+                .await?;
 
             self.put(
                 format!("{}:{}", collection, id),
@@ -1091,7 +1112,10 @@ impl Aurora {
             )?;
             Ok(id.to_string())
         } else {
-            // Insert new document with specified ID
+            // Insert new document with specified ID - validate unique constraints
+            self.validate_unique_constraints(collection, &data_map)
+                .await?;
+
             let document = Document {
                 id: id.to_string(),
                 data: data_map,
@@ -1166,7 +1190,7 @@ impl Aurora {
                 .map(|(k, v)| (k.as_str(), v.clone()))
                 .collect();
 
-            match self.insert_into(collection, data_vec) {
+            match self.insert_into(collection, data_vec).await {
                 Ok(id) => ids.push(id),
                 Err(e) => {
                     self.rollback_transaction()?;
@@ -1886,7 +1910,7 @@ impl Aurora {
                 }
             }
             crate::network::protocol::Request::Insert { collection, data } => {
-                match self.insert_map(&collection, data) {
+                match self.insert_map(&collection, data).await {
                     Ok(id) => Response::Message(id),
                     Err(e) => Response::Error(e.to_string()),
                 }
@@ -2013,11 +2037,12 @@ impl Aurora {
     }
 
     // Update the validation method to use the helper
-    fn validate_unique_constraints(
+    async fn validate_unique_constraints(
         &self,
         collection: &str,
         data: &HashMap<String, Value>,
     ) -> Result<()> {
+        self.ensure_indices_initialized().await?;
         let collection_def = self.get_collection_definition(collection)?;
         let unique_fields = self.get_unique_fields(&collection_def);
 
@@ -2025,12 +2050,54 @@ impl Aurora {
             if let Some(value) = data.get(unique_field) {
                 let index_key = format!("{}:{}", collection, unique_field);
                 if let Some(index) = self.secondary_indices.get(&index_key) {
-                    let value_str = value.to_string();
+                    // Get the raw string value without JSON formatting
+                    let value_str = match value {
+                        Value::String(s) => s.clone(),
+                        _ => value.to_string(),
+                    };
                     if index.contains_key(&value_str) {
                         return Err(AuroraError::UniqueConstraintViolation(
                             unique_field.clone(),
                             value_str,
                         ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate unique constraints excluding a specific document ID (for updates)
+    async fn validate_unique_constraints_excluding(
+        &self,
+        collection: &str,
+        data: &HashMap<String, Value>,
+        exclude_id: &str,
+    ) -> Result<()> {
+        self.ensure_indices_initialized().await?;
+        let collection_def = self.get_collection_definition(collection)?;
+        let unique_fields = self.get_unique_fields(&collection_def);
+
+        for unique_field in &unique_fields {
+            if let Some(value) = data.get(unique_field) {
+                let index_key = format!("{}:{}", collection, unique_field);
+                if let Some(index) = self.secondary_indices.get(&index_key) {
+                    // Get the raw string value without JSON formatting
+                    let value_str = match value {
+                        Value::String(s) => s.clone(),
+                        _ => value.to_string(),
+                    };
+                    if let Some(doc_ids) = index.get(&value_str) {
+                        // Check if any document other than the excluded one has this value
+                        let exclude_key = format!("{}:{}", collection, exclude_id);
+                        for doc_key in doc_ids.value() {
+                            if doc_key != &exclude_key {
+                                return Err(AuroraError::UniqueConstraintViolation(
+                                    unique_field.clone(),
+                                    value_str,
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -2134,14 +2201,16 @@ mod tests {
         )?;
 
         // Test document insertion
-        let doc_id = db.insert_into(
-            "users",
-            vec![
-                ("name", Value::String("John Doe".to_string())),
-                ("age", Value::Int(30)),
-                ("email", Value::String("john@example.com".to_string())),
-            ],
-        )?;
+        let doc_id = db
+            .insert_into(
+                "users",
+                vec![
+                    ("name", Value::String("John Doe".to_string())),
+                    ("age", Value::Int(30)),
+                    ("email", Value::String("john@example.com".to_string())),
+                ],
+            )
+            .await?;
 
         // Test document retrieval
         let doc = db.get_document("users", &doc_id)?.unwrap();
@@ -2164,7 +2233,9 @@ mod tests {
         db.begin_transaction()?;
 
         // Insert document
-        let doc_id = db.insert_into("test", vec![("field", Value::String("value".to_string()))])?;
+        let doc_id = db
+            .insert_into("test", vec![("field", Value::String("value".to_string()))])
+            .await?;
 
         // Commit transaction
         db.commit_transaction()?;
@@ -2203,7 +2274,8 @@ mod tests {
                 ("author", Value::String("Author 1".to_string())),
                 ("year", Value::Int(2020)),
             ],
-        )?;
+        )
+        .await?;
 
         db.insert_into(
             "books",
@@ -2212,7 +2284,8 @@ mod tests {
                 ("author", Value::String("Author 2".to_string())),
                 ("year", Value::Int(2021)),
             ],
-        )?;
+        )
+        .await?;
 
         // Test query
         let results = db
@@ -2273,6 +2346,101 @@ mod tests {
             result.unwrap_err(),
             AuroraError::InvalidOperation(_)
         ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_unique_constraints() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let db_path = temp_dir.path().join("test.aurora");
+        let db = Aurora::open(db_path.to_str().unwrap())?;
+
+        // Create collection with unique email field
+        db.new_collection(
+            "users",
+            vec![
+                ("name".to_string(), FieldType::String, false),
+                ("email".to_string(), FieldType::String, true), // unique field
+                ("age".to_string(), FieldType::Int, false),
+            ],
+        )?;
+
+        // Insert first document
+        let _doc_id1 = db
+            .insert_into(
+                "users",
+                vec![
+                    ("name", Value::String("John Doe".to_string())),
+                    ("email", Value::String("john@example.com".to_string())),
+                    ("age", Value::Int(30)),
+                ],
+            )
+            .await?;
+
+        // Try to insert second document with same email - should fail
+        let result = db
+            .insert_into(
+                "users",
+                vec![
+                    ("name", Value::String("Jane Doe".to_string())),
+                    ("email", Value::String("john@example.com".to_string())), // duplicate email
+                    ("age", Value::Int(25)),
+                ],
+            )
+            .await;
+
+        assert!(result.is_err());
+        if let Err(AuroraError::UniqueConstraintViolation(field, value)) = result {
+            assert_eq!(field, "email");
+            assert_eq!(value, "john@example.com");
+        } else {
+            panic!("Expected UniqueConstraintViolation error");
+        }
+
+        // Test upsert with unique constraint
+        // Should succeed for new document
+        let _doc_id2 = db
+            .upsert(
+                "users",
+                "user2",
+                vec![
+                    ("name", Value::String("Alice Smith".to_string())),
+                    ("email", Value::String("alice@example.com".to_string())),
+                    ("age", Value::Int(28)),
+                ],
+            )
+            .await?;
+
+        // Should fail when trying to upsert with duplicate email
+        let result = db
+            .upsert(
+                "users",
+                "user3",
+                vec![
+                    ("name", Value::String("Bob Wilson".to_string())),
+                    ("email", Value::String("alice@example.com".to_string())), // duplicate
+                    ("age", Value::Int(35)),
+                ],
+            )
+            .await;
+
+        assert!(result.is_err());
+
+        // Should succeed when updating existing document with same email (no change)
+        let result = db
+            .upsert(
+                "users",
+                "user2",
+                vec![
+                    ("name", Value::String("Alice Updated".to_string())),
+                    ("email", Value::String("alice@example.com".to_string())), // same email, same doc
+                    ("age", Value::Int(29)),
+                ],
+            )
+            .await;
+
+        assert!(result.is_ok());
 
         Ok(())
     }
