@@ -38,7 +38,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
                 ("salary", Value::Float(50000.0 + (i as f64 * 1000.0))),
             ],
-        )?;
+        )
+        .await?;
     }
 
     let insert_time = start.elapsed();

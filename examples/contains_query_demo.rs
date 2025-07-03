@@ -95,16 +95,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut product_ids = Vec::new();
 
     for (name, description, category, price) in &sample_products {
-        let id = db.insert_into(
-            "products",
-            vec![
-                ("name", Value::String(name.to_string())),
-                ("description", Value::String(description.to_string())),
-                ("category", Value::String(category.to_string())),
-                ("price", Value::Float(*price)),
-                ("in_stock", Value::Bool(true)),
-            ],
-        )?;
+        let id = db
+            .insert_into(
+                "products",
+                vec![
+                    ("name", Value::String(name.to_string())),
+                    ("description", Value::String(description.to_string())),
+                    ("category", Value::String(category.to_string())),
+                    ("price", Value::Float(*price)),
+                    ("in_stock", Value::Bool(true)),
+                ],
+            )
+            .await?;
         product_ids.push(id);
     }
 
@@ -133,7 +135,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("price", Value::Float(price)),
                 ("in_stock", Value::Bool(i % 3 != 0)),
             ],
-        )?;
+        )
+        .await?;
     }
 
     println!(
@@ -348,7 +351,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("price", Value::Float(price)),
                 ("in_stock", Value::Bool(true)),
             ],
-        )?;
+        )
+        .await?;
     }
 
     // Test performance with larger dataset

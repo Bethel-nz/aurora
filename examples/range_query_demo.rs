@@ -38,7 +38,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("rating", Value::Float(1.0 + ((i % 50) as f64) / 10.0)), // Ratings 1.0 to 5.9
                 ("stock_quantity", Value::Int(i % 1000)),                 // Stock 0 to 999
             ],
-        )?;
+        )
+        .await?;
     }
 
     let insert_time = start.elapsed();

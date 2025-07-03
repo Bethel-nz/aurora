@@ -49,10 +49,11 @@ async fn main() -> Result<()> {
                 ("name".to_string(), FieldType::String, false),
                 ("email".to_string(), FieldType::String, true),
                 ("age".to_string(), FieldType::Int, false),
+                ("premium".to_string(), FieldType::Boolean, false),
             ]
         )
     )?;
-    println!("Collection 'users' created.");
+    println!("-> Created collection '{}'", collection_name);
 
     let user_id = time_operation!(
         "Insert user",
@@ -60,12 +61,14 @@ async fn main() -> Result<()> {
             collection_name,
             vec![
                 ("name", "Jane Doe".into()),
-                ("email", "jane@example.com".into()),
-                ("age", 28.into()),
-            ]
+                ("email", "jane.doe@example.com".into()),
+                ("age", Value::Int(32)),
+                ("premium", true.into()),
+            ],
         )
+        .await
     )?;
-    println!("Inserted user with ID: {}", user_id);
+    println!("-> Inserted user with ID: {}", user_id);
 
     let user_doc =
         time_operation!("Get document", db.get_document(collection_name, &user_id))?.unwrap();
@@ -77,22 +80,28 @@ async fn main() -> Result<()> {
 
     // 3. Querying
     println!("\n=== 3. Querying Operations ===");
+    println!("\n[Batch Inserting More Users...]");
     db.insert_into(
         collection_name,
         vec![
             ("name", "John Smith".into()),
-            ("email", "john@example.com".into()),
-            ("age", 35.into()),
+            ("email", "john.smith@example.com".into()),
+            ("age", Value::Int(45)),
+            ("premium", false.into()),
         ],
-    )?;
+    )
+    .await?;
     db.insert_into(
         collection_name,
         vec![
             ("name", "Peter Jones".into()),
-            ("email", "peter@example.com".into()),
-            ("age", 19.into()),
+            ("email", "peter.jones@example.com".into()),
+            ("age", Value::Int(28)),
+            ("premium", true.into()),
         ],
-    )?;
+    )
+    .await?;
+    println!("-> Batch insert complete.");
 
     println!("Querying for users older than 21...");
     let adult_users = time_operation!(
@@ -120,23 +129,27 @@ async fn main() -> Result<()> {
     )?;
     db.create_text_index(articles_collection, "content", true)?;
 
+    println!("\n[Indexing Articles...]");
     db.insert_into(
         articles_collection,
         vec![
             ("title", "Aurora DB".into()),
             ("content", "Aurora is a fast, embedded database.".into()),
         ],
-    )?;
+    )
+    .await?;
     db.insert_into(
         articles_collection,
         vec![
             ("title", "Rust Programming".into()),
             (
                 "content",
-                "Rust provides great safety and performance.".into(),
+                "Rust is a systems programming language that runs blazingly fast.".into(),
             ),
         ],
-    )?;
+    )
+    .await?;
+    println!("-> Articles indexed.");
 
     println!("Searching for articles about 'database'...");
     let search_results = time_operation!(
