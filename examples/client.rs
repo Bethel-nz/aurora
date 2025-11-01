@@ -17,7 +17,7 @@ async fn main() -> anyhow::Result<()> {
             vec![
                 ("name".to_string(), FieldType::String, false),
                 ("price".to_string(), FieldType::Float, false),
-                ("in_stock".to_string(), FieldType::Boolean, false),
+                ("in_stock".to_string(), FieldType::Bool, false),
             ],
         )
         .await?;

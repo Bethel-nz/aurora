@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
                 ("name".to_string(), FieldType::String, false),
                 ("email".to_string(), FieldType::String, true),
                 ("age".to_string(), FieldType::Int, false),
-                ("premium".to_string(), FieldType::Boolean, false),
+                ("premium".to_string(), FieldType::Bool, false),
             ]
         )
     )?;

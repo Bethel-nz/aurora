@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ("description".to_string(), FieldType::String, false),
             ("category".to_string(), FieldType::String, false),
             ("price".to_string(), FieldType::Float, false),
-            ("in_stock".to_string(), FieldType::Boolean, false),
+            ("in_stock".to_string(), FieldType::Bool, false),
         ],
     )?;
 
