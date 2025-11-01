@@ -14,7 +14,7 @@ db.new_collection("users", vec![
     ("name", FieldType::String, false),
     ("email", FieldType::String, true),  // unique field
     ("age", FieldType::Int, false),
-    ("active", FieldType::Boolean, false),
+    ("active", FieldType::Bool, false),
 ])?;
 ```
 
@@ -138,7 +138,7 @@ if let Some(mut user) = db.get_document("users", &user_id)? {
     // Modify fields
     user.data.insert("age".to_string(), Value::Int(33));
     user.data.insert("last_login".to_string(), Value::String("2023-10-20".to_string()));
-    
+
     // Save changes
     db.put(
         format!("users:{}", user.id),
@@ -176,7 +176,7 @@ db.delete("users", &user_id)?;
 
 ```rust
 // Delete old logs
-let deleted_count = db.delete_by_query("logs", |f| 
+let deleted_count = db.delete_by_query("logs", |f|
     f.lt("timestamp", "2023-01-01")
 ).await?;
 
@@ -198,25 +198,25 @@ try {
         Some(Value::Float(bal)) => *bal,
         _ => 0.0,
     };
-    
+
     // Create updated account with new balance
     let mut updated_account = account.clone();
     updated_account.data.insert("balance".to_string(), Value::Float(current_balance - 50.0));
-    
+
     // Save the updated account
     db.put(
         format!("accounts:{}", account_id),
         serde_json::to_vec(&updated_account)?,
         None
     )?;
-    
+
     // Record the transaction
     db.insert_into("transactions", vec![
         ("account_id", account_id),
         ("amount", Value::Float(-50.0)),
         ("timestamp", Value::String(chrono::Utc::now().to_rfc3339())),
     ])?;
-    
+
     // Commit the transaction
     db.commit_transaction()?;
 } catch (error) {
@@ -236,8 +236,8 @@ db.export_as_json("users", "./backups/users.json")?;
 
 // Import documents from JSON
 let stats = db.import_from_json("users", "./backups/users.json").await?;
-println!("Import completed: {} imported, {} skipped, {} failed", 
+println!("Import completed: {} imported, {} skipped, {} failed",
     stats.imported, stats.skipped, stats.failed);
 ```
 
-This guide covers the basic operations with Aurora. Refer to the API documentation for more advanced features and options. 
+This guide covers the basic operations with Aurora. Refer to the API documentation for more advanced features and options.

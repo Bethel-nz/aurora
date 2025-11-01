@@ -15,11 +15,12 @@ db.new_collection("users", vec![
     ("name", FieldType::String, false),
     ("email", FieldType::String, true),  // unique field
     ("age", FieldType::Int, false),
-    ("active", FieldType::Boolean, false),
+    ("active", FieldType::Bool, false),
 ])?;
 ```
 
 The method takes:
+
 1. Collection name
 2. Vector of field definitions, each containing:
    - Field name
@@ -30,16 +31,16 @@ The method takes:
 
 Aurora DB supports the following field types:
 
-| Type | Description | Example |
-|------|-------------|---------|
-| `String` | Text data | `"John Doe"` |
-| `Int` | 64-bit integer | `42` |
-| `Float` | 64-bit floating point | `3.14159` |
-| `Boolean` | True/false value | `true` |
-| `Uuid` | Universally unique identifier | `Uuid::new_v4()` |
-| `Array` | List of values | `["tag1", "tag2"]` |
-| `Object` | Nested document | `{"x": 1, "y": 2}` |
-| `Null` | Absence of value | `null` |
+| Type      | Description                   | Example            |
+| --------- | ----------------------------- | ------------------ |
+| `String`  | Text data                     | `"John Doe"`       |
+| `Int`     | 64-bit integer                | `42`               |
+| `Float`   | 64-bit floating point         | `3.14159`          |
+| `Boolean` | True/false value              | `true`             |
+| `Uuid`    | Universally unique identifier | `Uuid::new_v4()`   |
+| `Array`   | List of values                | `["tag1", "tag2"]` |
+| `Object`  | Nested document               | `{"x": 1, "y": 2}` |
+| `Null`    | Absence of value              | `null`             |
 
 ## Primary Keys and Unique Constraints
 
@@ -107,4 +108,4 @@ db.insert_into("users", vec![
 
 4. **Limit unique constraints**: Use unique constraints only when necessary as they add overhead to write operations.
 
-5. **Design for querying**: Structure your schemas based on how you'll query the data, not just how you'll store it. 
+5. **Design for querying**: Structure your schemas based on how you'll query the data, not just how you'll store it.
