@@ -1,10 +1,9 @@
 use dashmap::DashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio::time::interval;
 use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
 
-// Cache statistics structure
 #[derive(Debug)]
 pub struct CacheStats {
      pub item_count: usize,
@@ -14,9 +13,15 @@ pub struct CacheStats {
     pub hit_ratio: f64,
 }
 
-// Metadata for each cached item
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvictionPolicy {
+    LRU,
+    LFU,
+    Hybrid,
+}
+
 struct ValueMetadata {
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
     expires_at: Option<SystemTime>,
     last_accessed: SystemTime,
 }
@@ -26,11 +31,12 @@ pub struct HotStore {
     access_count: Arc<DashMap<String, u64>>,
     hit_count: Arc<AtomicU64>,
     miss_count: Arc<AtomicU64>,
-    max_size: usize,  // Maximum size in bytes
+    max_size: usize,
     current_size: Arc<AtomicUsize>,
+    eviction_policy: EvictionPolicy,
+    eviction_lock: Arc<Mutex<()>>,
 }
 
-// Implement Clone for HotStore
 impl Clone for HotStore {
     fn clone(&self) -> Self {
         Self {
@@ -40,26 +46,38 @@ impl Clone for HotStore {
             miss_count: Arc::clone(&self.miss_count),
             max_size: self.max_size,
             current_size: Arc::clone(&self.current_size),
+            eviction_policy: self.eviction_policy,
+            eviction_lock: Arc::clone(&self.eviction_lock),
         }
     }
 }
 
 impl HotStore {
     pub fn new() -> Self {
-        Self::new_with_size_limit(128) // Default to 128MB
+        Self::new_with_size_limit(128)
     }
 
     pub fn with_config(
         cache_size_mb: usize,
         _cleanup_interval_secs: u64,
     ) -> Self {
+        Self::with_config_and_eviction(cache_size_mb, _cleanup_interval_secs, EvictionPolicy::Hybrid)
+    }
+
+    pub fn with_config_and_eviction(
+        cache_size_mb: usize,
+        _cleanup_interval_secs: u64,
+        eviction_policy: EvictionPolicy,
+    ) -> Self {
         Self {
             data: Arc::new(DashMap::new()),
             access_count: Arc::new(DashMap::new()),
             hit_count: Arc::new(AtomicU64::new(0)),
             miss_count: Arc::new(AtomicU64::new(0)),
-            max_size: cache_size_mb * 1024 * 1024,
+            max_size: cache_size_mb.checked_mul(1024 * 1024).unwrap_or(usize::MAX),
             current_size: Arc::new(AtomicUsize::new(0)),
+            eviction_policy,
+            eviction_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -69,56 +87,35 @@ impl HotStore {
             access_count: Arc::new(DashMap::new()),
             hit_count: Arc::new(AtomicU64::new(0)),
             miss_count: Arc::new(AtomicU64::new(0)),
-            max_size: max_size_mb * 1024 * 1024,
+            max_size: max_size_mb.checked_mul(1024 * 1024).unwrap_or(usize::MAX),
             current_size: Arc::new(AtomicUsize::new(0)),
+            eviction_policy: EvictionPolicy::Hybrid,
+            eviction_lock: Arc::new(Mutex::new(())),
         }
     }
 
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
-        self.increment_access(key);
-        
-        if let Some(mut entry) = self.data.get_mut(key) {
-            // Check if expired
-            if let Some(expires_at) = entry.expires_at {
-                if SystemTime::now() > expires_at {
-                    self.data.remove(key);
-                    let size = entry.data.len();
-                    self.current_size.fetch_sub(size, Ordering::Relaxed);
-                    self.miss_count.fetch_add(1, Ordering::Relaxed);
-                    return None;
-                }
-            }
-            
-            // Update last accessed time
-            entry.last_accessed = SystemTime::now();
-            self.hit_count.fetch_add(1, Ordering::Relaxed);
-            Some(entry.data.clone())
-        } else {
-            self.miss_count.fetch_add(1, Ordering::Relaxed);
-            None
-        }
+        self.get_ref(key).map(|arc| (*arc).clone())
     }
 
-    // Get with Arc to allow zero-copy when possible
     pub fn get_ref(&self, key: &str) -> Option<Arc<Vec<u8>>> {
         self.increment_access(key);
-        
+
         if let Some(mut entry) = self.data.get_mut(key) {
-            // Check if expired
             if let Some(expires_at) = entry.expires_at {
                 if SystemTime::now() > expires_at {
                     self.data.remove(key);
+                    self.access_count.remove(key);
                     let size = entry.data.len();
                     self.current_size.fetch_sub(size, Ordering::Relaxed);
                     self.miss_count.fetch_add(1, Ordering::Relaxed);
                     return None;
                 }
             }
-            
-            // Update last accessed time
+
             entry.last_accessed = SystemTime::now();
             self.hit_count.fetch_add(1, Ordering::Relaxed);
-            Some(Arc::new(entry.data.clone()))
+            Some(Arc::clone(&entry.data))
         } else {
             self.miss_count.fetch_add(1, Ordering::Relaxed);
             None
@@ -127,31 +124,41 @@ impl HotStore {
 
     pub fn set(&self, key: String, value: Vec<u8>, ttl: Option<Duration>) {
         let value_size = value.len();
-        
-        // Check if we need to evict items
-        let new_size = self.current_size.load(Ordering::Relaxed)
-            .saturating_add(value_size);
-            
-        if new_size > self.max_size {
-            self.evict_least_used(new_size.saturating_sub(self.max_size));
+
+        {
+            let _guard = self.eviction_lock.lock().unwrap();
+            let current_size = self.current_size.load(Ordering::Relaxed);
+            if current_size + value_size > self.max_size {
+                match self.eviction_policy {
+                    EvictionPolicy::LRU => {
+                        let bytes_to_free = (current_size + value_size) - self.max_size;
+                        self.cleanup_by_lru(bytes_to_free);
+                    }
+                    EvictionPolicy::LFU => {
+                        let bytes_to_free = (current_size + value_size) - self.max_size;
+                        self.evict_least_frequently_used(bytes_to_free);
+                    }
+                    EvictionPolicy::Hybrid => self.evict_hybrid(value_size),
+                }
+            }
         }
-        
+
         let expires_at = ttl.map(|duration| SystemTime::now() + duration);
-        
-        // Update size tracking
-        if let Some(old_value) = self.data.get(&key) {
-            let old_size = old_value.data.len();
-            self.current_size.fetch_sub(old_size, Ordering::Relaxed);
-        }
-        
+
         let metadata = ValueMetadata {
-            data: value,
+            data: Arc::new(value),
             expires_at,
             last_accessed: SystemTime::now(),
         };
-        
-        self.data.insert(key, metadata);
-        self.current_size.fetch_add(value_size, Ordering::Relaxed);
+
+        let old_value = self.data.insert(key, metadata);
+        let old_size = old_value.map_or(0, |v| v.data.len());
+
+        if value_size > old_size {
+            self.current_size.fetch_add(value_size - old_size, Ordering::Relaxed);
+        } else {
+            self.current_size.fetch_sub(old_size - value_size, Ordering::Relaxed);
+        }
     }
 
     fn increment_access(&self, key: &str) {
@@ -168,12 +175,10 @@ impl HotStore {
             .unwrap_or(false)
     }
 
-    // Clean up expired items
     fn cleanup_expired(&self) {
         let now = SystemTime::now();
         let mut total_freed = 0;
         
-        // Clean up expired items
         let expired_keys: Vec<String> = self.data
             .iter()
             .filter_map(|entry| {
@@ -200,14 +205,12 @@ impl HotStore {
         }
     }
 
-    // Clean up using LRU when cache is full
     fn cleanup_by_lru(&self, bytes_to_free: usize) {
         let mut entries: Vec<_> = self.data
             .iter()
             .map(|entry| (entry.key().clone(), entry.last_accessed))
             .collect();
         
-        // Sort by last accessed time (oldest first)
         entries.sort_by_key(|e| e.1);
         
         let mut freed = 0;
@@ -218,6 +221,7 @@ impl HotStore {
             
             if let Some(removed) = self.data.remove(&key) {
                 freed += removed.1.data.len();
+                self.access_count.remove(&key);
             }
         }
         
@@ -226,42 +230,46 @@ impl HotStore {
         }
     }
 
-    // Evict least frequently used items
-    fn evict_least_used(&self, bytes_to_free: usize) {
-        // First try to clean up expired items
-        self.cleanup_expired();
-        
-        // If we've freed enough, we're done
-        if self.current_size.load(Ordering::Relaxed) + bytes_to_free <= self.max_size {
-            return;
-        }
-        
-        // Otherwise, evict by access count
+    fn evict_least_frequently_used(&self, bytes_to_free: usize) {
         let mut entries: Vec<_> = self.access_count
             .iter()
             .map(|e| (e.key().clone(), *e.value()))
             .collect();
-        
+
         entries.sort_by_key(|e| e.1);
-        
+
         let mut freed = 0;
         for (key, _) in entries {
             if freed >= bytes_to_free {
                 break;
             }
-            
+
             if let Some(value) = self.data.remove(&key) {
                 freed += value.1.data.len();
+                self.access_count.remove(&key);
             }
         }
-        
+
         if freed > 0 {
             self.current_size.fetch_sub(freed, Ordering::Relaxed);
         }
+    }
+
+    fn evict_hybrid(&self, item_size: usize) {
+        self.cleanup_expired();
         
-        // If we still need to free more, use LRU approach
-        if self.current_size.load(Ordering::Relaxed) + bytes_to_free > self.max_size {
-            self.cleanup_by_lru(bytes_to_free.saturating_sub(freed));
+        let current = self.current_size.load(Ordering::Relaxed);
+        if current + item_size <= self.max_size {
+            return;
+        }
+
+        let bytes_to_free = (current + item_size) - self.max_size;
+        self.evict_least_frequently_used(bytes_to_free);
+
+        let current = self.current_size.load(Ordering::Relaxed);
+        if current + item_size > self.max_size {
+            let more_bytes_to_free = (current + item_size) - self.max_size;
+            self.cleanup_by_lru(more_bytes_to_free);
         }
     }
 
@@ -283,7 +291,6 @@ impl HotStore {
         }
     }
 
-    // Get statistics about the cache
     pub fn get_stats(&self) -> CacheStats {
         let hits = self.hit_count.load(Ordering::Relaxed);
         let misses = self.miss_count.load(Ordering::Relaxed);
@@ -304,14 +311,12 @@ impl HotStore {
         }
     }
 
-    // Clear the cache
     pub fn clear(&self) {
         self.data.clear();
         self.access_count.clear();
         self.current_size.store(0, Ordering::Relaxed);
     }
 
-    // Get hit ratio
     pub fn hit_ratio(&self) -> f64 {
         let hits = self.hit_count.load(Ordering::Relaxed);
         let misses = self.miss_count.load(Ordering::Relaxed);
