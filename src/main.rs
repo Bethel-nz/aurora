@@ -1,4 +1,3 @@
-
 #[cfg(any(feature = "http", feature = "binary"))]
 fn setup_database() -> std::io::Result<Arc<Aurora>> {
     let db_path = "aurora_data";

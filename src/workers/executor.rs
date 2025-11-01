@@ -11,9 +11,8 @@ use tokio::task::JoinHandle;
 use tokio::time::{interval, timeout};
 
 /// Job handler function type
-pub type JobHandler = Arc<
-    dyn Fn(Job) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync,
->;
+pub type JobHandler =
+    Arc<dyn Fn(Job) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync>;
 
 /// Worker configuration
 #[derive(Clone)]
@@ -61,9 +60,11 @@ impl WorkerExecutor {
         F: Fn(Job) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
-        let handler = Arc::new(move |job: Job| -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
-            Box::pin(handler(job))
-        });
+        let handler = Arc::new(
+            move |job: Job| -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+                Box::pin(handler(job))
+            },
+        );
 
         self.handlers.write().await.insert(job_type.into(), handler);
     }
@@ -126,7 +127,10 @@ impl WorkerExecutor {
                 // Try to dequeue a job
                 match queue.dequeue().await {
                     Ok(Some(mut job)) => {
-                        println!("[Worker {}] Processing job: {} ({})", worker_id, job.id, job.job_type);
+                        println!(
+                            "[Worker {}] Processing job: {} ({})",
+                            worker_id, job.id, job.job_type
+                        );
 
                         // Get handler
                         let handlers = handlers.read().await;
@@ -138,11 +142,8 @@ impl WorkerExecutor {
 
                             // Execute job with timeout
                             let result = if let Some(timeout_secs) = job.timeout_seconds {
-                                timeout(
-                                    Duration::from_secs(timeout_secs),
-                                    handler(job.clone()),
-                                )
-                                .await
+                                timeout(Duration::from_secs(timeout_secs), handler(job.clone()))
+                                    .await
                             } else {
                                 Ok(handler(job.clone()).await)
                             };
@@ -154,7 +155,10 @@ impl WorkerExecutor {
                                 }
                                 Ok(Err(e)) => {
                                     job.mark_failed(e.to_string());
-                                    println!("[Worker {}] Job failed: {} - {}", worker_id, job.id, e);
+                                    println!(
+                                        "[Worker {}] Job failed: {} - {}",
+                                        worker_id, job.id, e
+                                    );
                                 }
                                 Err(_) => {
                                     job.mark_failed("Timeout".to_string());
@@ -170,7 +174,10 @@ impl WorkerExecutor {
                             job.mark_failed("No handler registered".to_string());
                             let job_id = job.id.clone();
                             let _ = queue.update_job(&job_id, job).await;
-                            println!("[Worker {}] No handler for job type: {}", worker_id, job_type);
+                            println!(
+                                "[Worker {}] No handler for job type: {}",
+                                worker_id, job_type
+                            );
                         }
                     }
                     Ok(None) => {

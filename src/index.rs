@@ -1,6 +1,6 @@
 use crate::error::Result;
-use crate::types::{Document, Value};
 use crate::search::FullTextIndex;
+use crate::types::{Document, Value};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -81,7 +81,8 @@ impl Index {
 
     fn extract_key(&self, doc: &Document) -> Result<Value> {
         if self.definition.fields.len() == 1 {
-            Ok(doc.data
+            Ok(doc
+                .data
                 .get(&self.definition.fields[0])
                 .cloned()
                 .unwrap_or(Value::Null))
@@ -95,9 +96,9 @@ impl Index {
             Ok(Value::Array(values))
         }
     }
-    
+
     #[allow(dead_code)]
     pub fn full_text(&self) -> Option<Arc<FullTextIndex>> {
         self.full_text.clone()
     }
-} 
+}

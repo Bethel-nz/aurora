@@ -81,16 +81,12 @@ impl ReactiveQueryState {
                     new: new_doc,
                 })
             }
-            (true, false) => {
-                results.remove(id).map(QueryUpdate::Removed)
-            }
+            (true, false) => results.remove(id).map(QueryUpdate::Removed),
             (false, true) => {
                 results.insert(id.to_string(), new_doc.clone());
                 Some(QueryUpdate::Added(new_doc))
             }
-            (false, false) => {
-                None
-            }
+            (false, false) => None,
         }
     }
 

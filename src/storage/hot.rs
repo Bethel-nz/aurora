@@ -1,12 +1,12 @@
 use dashmap::DashMap;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio::time::interval;
-use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
 
 #[derive(Debug)]
 pub struct CacheStats {
-     pub item_count: usize,
+    pub item_count: usize,
     pub memory_usage: usize,
     pub hit_count: u64,
     pub miss_count: u64,
@@ -57,11 +57,12 @@ impl HotStore {
         Self::new_with_size_limit(128)
     }
 
-    pub fn with_config(
-        cache_size_mb: usize,
-        _cleanup_interval_secs: u64,
-    ) -> Self {
-        Self::with_config_and_eviction(cache_size_mb, _cleanup_interval_secs, EvictionPolicy::Hybrid)
+    pub fn with_config(cache_size_mb: usize, _cleanup_interval_secs: u64) -> Self {
+        Self::with_config_and_eviction(
+            cache_size_mb,
+            _cleanup_interval_secs,
+            EvictionPolicy::Hybrid,
+        )
     }
 
     pub fn with_config_and_eviction(
@@ -155,9 +156,11 @@ impl HotStore {
         let old_size = old_value.map_or(0, |v| v.data.len());
 
         if value_size > old_size {
-            self.current_size.fetch_add(value_size - old_size, Ordering::Relaxed);
+            self.current_size
+                .fetch_add(value_size - old_size, Ordering::Relaxed);
         } else {
-            self.current_size.fetch_sub(old_size - value_size, Ordering::Relaxed);
+            self.current_size
+                .fetch_sub(old_size - value_size, Ordering::Relaxed);
         }
     }
 
@@ -178,8 +181,9 @@ impl HotStore {
     fn cleanup_expired(&self) {
         let now = SystemTime::now();
         let mut total_freed = 0;
-        
-        let expired_keys: Vec<String> = self.data
+
+        let expired_keys: Vec<String> = self
+            .data
             .iter()
             .filter_map(|entry| {
                 if let Some(expires_at) = entry.expires_at {
@@ -193,45 +197,47 @@ impl HotStore {
                 }
             })
             .collect();
-            
+
         for key in expired_keys {
             if let Some(entry) = self.data.remove(&key) {
                 total_freed += entry.1.data.len();
             }
         }
-        
+
         if total_freed > 0 {
             self.current_size.fetch_sub(total_freed, Ordering::Relaxed);
         }
     }
 
     fn cleanup_by_lru(&self, bytes_to_free: usize) {
-        let mut entries: Vec<_> = self.data
+        let mut entries: Vec<_> = self
+            .data
             .iter()
             .map(|entry| (entry.key().clone(), entry.last_accessed))
             .collect();
-        
+
         entries.sort_by_key(|e| e.1);
-        
+
         let mut freed = 0;
         for (key, _) in entries {
             if freed >= bytes_to_free {
                 break;
             }
-            
+
             if let Some(removed) = self.data.remove(&key) {
                 freed += removed.1.data.len();
                 self.access_count.remove(&key);
             }
         }
-        
+
         if freed > 0 {
             self.current_size.fetch_sub(freed, Ordering::Relaxed);
         }
     }
 
     fn evict_least_frequently_used(&self, bytes_to_free: usize) {
-        let mut entries: Vec<_> = self.access_count
+        let mut entries: Vec<_> = self
+            .access_count
             .iter()
             .map(|e| (e.key().clone(), *e.value()))
             .collect();
@@ -257,7 +263,7 @@ impl HotStore {
 
     fn evict_hybrid(&self, item_size: usize) {
         self.cleanup_expired();
-        
+
         let current = self.current_size.load(Ordering::Relaxed);
         if current + item_size <= self.max_size {
             return;
@@ -275,7 +281,7 @@ impl HotStore {
 
     pub async fn start_cleanup_with_interval(self: Arc<Self>, interval_secs: u64) {
         let mut interval = interval(Duration::from_secs(interval_secs));
-        
+
         tokio::spawn(async move {
             loop {
                 interval.tick().await;
@@ -295,13 +301,13 @@ impl HotStore {
         let hits = self.hit_count.load(Ordering::Relaxed);
         let misses = self.miss_count.load(Ordering::Relaxed);
         let total = hits + misses;
-        
+
         let hit_ratio = if total == 0 {
             0.0
         } else {
             hits as f64 / total as f64
         };
-        
+
         CacheStats {
             item_count: self.data.len(),
             memory_usage: self.current_size.load(Ordering::Relaxed),
@@ -321,7 +327,7 @@ impl HotStore {
         let hits = self.hit_count.load(Ordering::Relaxed);
         let misses = self.miss_count.load(Ordering::Relaxed);
         let total = hits + misses;
-        
+
         if total == 0 {
             0.0
         } else {

@@ -1,9 +1,9 @@
 #[cfg(feature = "http")]
 mod http_impl {
     use crate::db::Aurora;
-    use crate::network::http_models::{document_to_json, json_to_insert_data, QueryPayload};
+    use crate::network::http_models::{QueryPayload, document_to_json, json_to_insert_data};
     use crate::types::FieldType;
-    use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
+    use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, web};
     use serde::Deserialize;
     use serde_json::Value as JsonValue;
     use std::sync::Arc;

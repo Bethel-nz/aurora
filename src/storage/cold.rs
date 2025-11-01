@@ -43,10 +43,7 @@ impl ColdStore {
 
         let db = sled_config.open()?;
 
-        Ok(Self {
-            db,
-            db_path,
-        })
+        Ok(Self { db, db_path })
     }
 
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
@@ -81,21 +78,22 @@ impl ColdStore {
         })
     }
 
-    pub fn scan_prefix(&self, prefix: &str) -> impl Iterator<Item = Result<(String, Vec<u8>)>> + '_ {
-        self.db
-            .scan_prefix(prefix.as_bytes())
-            .map(|result| {
-                result
-                    .map_err(|e| AuroraError::Storage(e))
-                    .and_then(|(key, value)| {
-                        Ok((
-                            String::from_utf8(key.to_vec()).map_err(|_| {
-                                AuroraError::Protocol("Invalid UTF-8 in key".to_string())
-                            })?,
-                            value.to_vec(),
-                        ))
-                    })
-            })
+    pub fn scan_prefix(
+        &self,
+        prefix: &str,
+    ) -> impl Iterator<Item = Result<(String, Vec<u8>)>> + '_ {
+        self.db.scan_prefix(prefix.as_bytes()).map(|result| {
+            result
+                .map_err(|e| AuroraError::Storage(e))
+                .and_then(|(key, value)| {
+                    Ok((
+                        String::from_utf8(key.to_vec()).map_err(|_| {
+                            AuroraError::Protocol("Invalid UTF-8 in key".to_string())
+                        })?,
+                        value.to_vec(),
+                    ))
+                })
+        })
     }
 
     /// Batch operations for better performance.

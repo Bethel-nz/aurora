@@ -31,14 +31,14 @@ impl WriteAheadLog {
     pub fn new(path: &str) -> Result<Self> {
         let path = PathBuf::from(path);
         let wal_path = path.with_extension("wal");
-        
+
         let file = BufWriter::new(
             OpenOptions::new()
                 .create(true)
                 .read(true)
                 .write(true)
                 .append(true)
-                .open(&wal_path)?
+                .open(&wal_path)?,
         );
 
         Ok(Self {
@@ -60,14 +60,14 @@ impl WriteAheadLog {
             value: value.map(|v| v.to_vec()),
         };
 
-        let serialized = bincode::serialize(&entry)
-            .map_err(|e| AuroraError::Protocol(e.to_string()))?;
+        let serialized =
+            bincode::serialize(&entry).map_err(|e| AuroraError::Protocol(e.to_string()))?;
         let len = serialized.len() as u32;
-        
+
         self.file.write_all(&len.to_le_bytes())?;
         self.file.write_all(&serialized)?;
         self.file.flush()?;
-        
+
         Ok(())
     }
 
@@ -124,7 +124,7 @@ mod tests {
         // Test recovery
         let entries = wal.recover()?;
         assert_eq!(entries.len(), 3);
-        
+
         assert!(matches!(entries[0].operation, Operation::Put));
         assert_eq!(entries[0].key, "test_key");
         assert_eq!(entries[0].value.as_ref().unwrap(), b"test_value");

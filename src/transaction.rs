@@ -1,7 +1,7 @@
-use dashmap::DashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use crate::error::{AuroraError, Result};
+use dashmap::DashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 static TRANSACTION_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 

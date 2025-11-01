@@ -3,10 +3,10 @@
 // Supports dynamic field calculation based on other field values
 // Examples: full_name from first_name + last_name, age from birthdate, etc.
 
-use crate::types::{Document, Value};
 use crate::error::Result;
-use std::collections::HashMap;
+use crate::types::{Document, Value};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Computation expression for a field
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,11 +153,14 @@ mod tests {
 
     #[test]
     fn test_concat_expression() {
-        let expr = ComputedExpression::Concat(vec!["first_name".to_string(), "last_name".to_string()]);
+        let expr =
+            ComputedExpression::Concat(vec!["first_name".to_string(), "last_name".to_string()]);
 
         let mut doc = Document::new();
-        doc.data.insert("first_name".to_string(), Value::String("John".to_string()));
-        doc.data.insert("last_name".to_string(), Value::String("Doe".to_string()));
+        doc.data
+            .insert("first_name".to_string(), Value::String("John".to_string()));
+        doc.data
+            .insert("last_name".to_string(), Value::String("Doe".to_string()));
 
         let result = expr.evaluate(&doc);
         assert_eq!(result, Some(Value::String("John Doe".to_string())));
@@ -199,8 +202,10 @@ mod tests {
         );
 
         let mut doc = Document::new();
-        doc.data.insert("first_name".to_string(), Value::String("Jane".to_string()));
-        doc.data.insert("last_name".to_string(), Value::String("Smith".to_string()));
+        doc.data
+            .insert("first_name".to_string(), Value::String("Jane".to_string()));
+        doc.data
+            .insert("last_name".to_string(), Value::String("Smith".to_string()));
 
         registry.apply("users", &mut doc).unwrap();
 

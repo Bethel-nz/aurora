@@ -106,9 +106,9 @@ impl Client {
     }
 
     pub async fn commit_transaction(&mut self) -> Result<()> {
-        let tx_id = self.current_transaction.ok_or_else(|| {
-            AuroraError::InvalidOperation("No active transaction".into())
-        })?;
+        let tx_id = self
+            .current_transaction
+            .ok_or_else(|| AuroraError::InvalidOperation("No active transaction".into()))?;
 
         match self.send_request(Request::CommitTransaction(tx_id)).await? {
             Response::Done => {
@@ -121,11 +121,14 @@ impl Client {
     }
 
     pub async fn rollback_transaction(&mut self) -> Result<()> {
-        let tx_id = self.current_transaction.ok_or_else(|| {
-            AuroraError::InvalidOperation("No active transaction".into())
-        })?;
+        let tx_id = self
+            .current_transaction
+            .ok_or_else(|| AuroraError::InvalidOperation("No active transaction".into()))?;
 
-        match self.send_request(Request::RollbackTransaction(tx_id)).await? {
+        match self
+            .send_request(Request::RollbackTransaction(tx_id))
+            .await?
+        {
             Response::Done => {
                 self.current_transaction = None;
                 Ok(())

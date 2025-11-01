@@ -60,7 +60,7 @@ pub use pubsub::{ChangeEvent, ChangeListener, ChangeType};
 pub use workers::{Job, JobPriority, JobStatus};
 
 // Re-export Transaction types for convenience
-pub use transaction::{TransactionId, TransactionBuffer};
+pub use transaction::{TransactionBuffer, TransactionId};
 
 // Module declarations
 pub mod client;

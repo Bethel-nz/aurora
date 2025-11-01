@@ -165,12 +165,10 @@ mod tests {
         let job = Job::new("test");
         assert!(job.should_run());
 
-        let future_job = Job::new("test")
-            .scheduled_at(Utc::now() + chrono::Duration::hours(1));
+        let future_job = Job::new("test").scheduled_at(Utc::now() + chrono::Duration::hours(1));
         assert!(!future_job.should_run());
 
-        let past_job = Job::new("test")
-            .scheduled_at(Utc::now() - chrono::Duration::hours(1));
+        let past_job = Job::new("test").scheduled_at(Utc::now() - chrono::Duration::hours(1));
         assert!(past_job.should_run());
     }
 

@@ -43,7 +43,8 @@ impl PubSubSystem {
         let collection = collection.into();
 
         if !self.channels.contains_key(&collection) {
-            self.channels.retain(|_, sender| sender.receiver_count() > 0);
+            self.channels
+                .retain(|_, sender| sender.receiver_count() > 0);
         }
 
         let tx = self

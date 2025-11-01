@@ -137,7 +137,10 @@ impl fmt::Debug for Aurora {
             .field("cold", &"ColdStore")
             .field("primary_indices_count", &self.primary_indices.len())
             .field("secondary_indices_count", &self.secondary_indices.len())
-            .field("active_transactions", &self.transaction_manager.active_count())
+            .field(
+                "active_transactions",
+                &self.transaction_manager.active_count(),
+            )
             .field("indices_count", &self.indices.len())
             .finish()
     }
@@ -418,7 +421,8 @@ impl Aurora {
 
                 // Cache the schema for future use
                 let arc_obj = Arc::new(obj);
-                self.schema_cache.insert(collection.to_string(), Arc::clone(&arc_obj));
+                self.schema_cache
+                    .insert(collection.to_string(), Arc::clone(&arc_obj));
                 arc_obj
             }
         };
@@ -680,7 +684,8 @@ impl Aurora {
         updates: Vec<(&str, Value)>,
     ) -> Result<()> {
         // Get existing document
-        let mut document = self.get_document(collection, doc_id)?
+        let mut document = self
+            .get_document(collection, doc_id)?
             .ok_or_else(|| AuroraError::NotFound(format!("Document not found: {}", doc_id)))?;
 
         // Store old document for event
@@ -692,7 +697,8 @@ impl Aurora {
         }
 
         // Validate unique constraints after update (excluding current document)
-        self.validate_unique_constraints_excluding(collection, &document.data, doc_id).await?;
+        self.validate_unique_constraints_excluding(collection, &document.data, doc_id)
+            .await?;
 
         // Save updated document
         self.put(
@@ -702,12 +708,8 @@ impl Aurora {
         )?;
 
         // Publish update event
-        let event = crate::pubsub::ChangeEvent::update(
-            collection,
-            doc_id,
-            old_document,
-            document.clone(),
-        );
+        let event =
+            crate::pubsub::ChangeEvent::update(collection, doc_id, old_document, document.clone());
         let _ = self.pubsub.publish(event);
 
         Ok(())
@@ -786,11 +788,13 @@ impl Aurora {
     /// # Returns
     /// Success or an error if transaction not found
     pub fn commit_transaction(&self, tx_id: crate::transaction::TransactionId) -> Result<()> {
-        let buffer = self.transaction_manager.active_transactions
+        let buffer = self
+            .transaction_manager
+            .active_transactions
             .get(&tx_id)
-            .ok_or_else(|| AuroraError::InvalidOperation(
-                "Transaction not found or already completed".into()
-            ))?;
+            .ok_or_else(|| {
+                AuroraError::InvalidOperation("Transaction not found or already completed".into())
+            })?;
 
         for item in buffer.writes.iter() {
             let key = item.key();
@@ -1683,7 +1687,10 @@ impl Aurora {
     }
 
     /// Prewarm cache for all collections
-    pub async fn prewarm_all_collections(&self, docs_per_collection: Option<usize>) -> Result<HashMap<String, usize>> {
+    pub async fn prewarm_all_collections(
+        &self,
+        docs_per_collection: Option<usize>,
+    ) -> Result<HashMap<String, usize>> {
         let mut stats = HashMap::new();
 
         // Get all collections
@@ -1733,9 +1740,10 @@ impl Aurora {
                         Some(data) => {
                             let obj: Collection = serde_json::from_slice(&data)?;
                             let arc_obj = Arc::new(obj);
-                            self.schema_cache.insert(collection_name.to_string(), Arc::clone(&arc_obj));
+                            self.schema_cache
+                                .insert(collection_name.to_string(), Arc::clone(&arc_obj));
                             arc_obj
-                        },
+                        }
                         None => continue,
                     }
                 }
@@ -1748,7 +1756,8 @@ impl Aurora {
                 .map(|(name, _)| name.clone())
                 .collect();
 
-            let primary_index = self.primary_indices
+            let primary_index = self
+                .primary_indices
                 .entry(collection_name.to_string())
                 .or_insert_with(DashMap::new);
 
@@ -1773,7 +1782,7 @@ impl Aurora {
                                     .secondary_indices
                                     .entry(index_key)
                                     .or_insert_with(DashMap::new);
-                                
+
                                 let max_entries = self.config.max_index_entries_per_field;
                                 secondary_index
                                     .entry(value_str)
@@ -2259,14 +2268,14 @@ impl Aurora {
             crate::network::protocol::Request::BeginTransaction => {
                 let tx_id = self.begin_transaction();
                 Response::TransactionId(tx_id.as_u64())
-            },
+            }
             crate::network::protocol::Request::CommitTransaction(tx_id_u64) => {
                 let tx_id = crate::transaction::TransactionId::from_u64(tx_id_u64);
                 match self.commit_transaction(tx_id) {
                     Ok(_) => Response::Done,
                     Err(e) => Response::Error(e.to_string()),
                 }
-            },
+            }
             crate::network::protocol::Request::RollbackTransaction(tx_id_u64) => {
                 let tx_id = crate::transaction::TransactionId::from_u64(tx_id_u64);
                 match self.rollback_transaction(tx_id) {

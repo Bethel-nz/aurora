@@ -1,9 +1,9 @@
 use crate::error::{AuroraError, Result};
 use crate::storage::ColdStore;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 #[derive(Debug, Clone)]
 pub struct WriteOp {
@@ -17,11 +17,7 @@ pub struct WriteBuffer {
 }
 
 impl WriteBuffer {
-    pub fn new(
-        cold: Arc<ColdStore>,
-        buffer_size: usize,
-        flush_interval_ms: u64,
-    ) -> Self {
+    pub fn new(cold: Arc<ColdStore>, buffer_size: usize, flush_interval_ms: u64) -> Self {
         let (sender, mut receiver) = mpsc::unbounded_channel::<WriteOp>();
         let is_alive = Arc::new(AtomicBool::new(true));
         let task_is_alive = Arc::clone(&is_alive);
@@ -78,11 +74,9 @@ impl WriteBuffer {
                 "Write buffer is not active.".into(),
             ));
         }
-        self.sender
-            .send(WriteOp { key, value })
-            .map_err(|_| {
-                AuroraError::InvalidOperation("Write buffer channel closed unexpectedly.".into())
-            })?;
+        self.sender.send(WriteOp { key, value }).map_err(|_| {
+            AuroraError::InvalidOperation("Write buffer channel closed unexpectedly.".into())
+        })?;
         Ok(())
     }
 

@@ -14,7 +14,10 @@ impl ChangeChannel {
     }
 
     /// Publish an event to this channel
-    pub fn publish(&self, event: ChangeEvent) -> Result<(), broadcast::error::SendError<ChangeEvent>> {
+    pub fn publish(
+        &self,
+        event: ChangeEvent,
+    ) -> Result<(), broadcast::error::SendError<ChangeEvent>> {
         self.sender.send(event).map(|_| ())
     }
 

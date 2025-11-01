@@ -7,13 +7,13 @@
 // - Dead letter queue for failed jobs
 // - Job status tracking
 
+pub mod executor;
 pub mod job;
 pub mod queue;
-pub mod executor;
 
-pub use job::{Job, JobStatus, JobPriority};
+pub use executor::{WorkerConfig, WorkerExecutor};
+pub use job::{Job, JobPriority, JobStatus};
 pub use queue::JobQueue;
-pub use executor::{WorkerExecutor, WorkerConfig};
 
 use crate::error::Result;
 use std::sync::Arc;
@@ -28,10 +28,7 @@ pub struct WorkerSystem {
 impl WorkerSystem {
     pub fn new(config: WorkerConfig) -> Result<Self> {
         let queue = Arc::new(JobQueue::new(config.storage_path.clone())?);
-        let executor = Arc::new(RwLock::new(WorkerExecutor::new(
-            Arc::clone(&queue),
-            config,
-        )));
+        let executor = Arc::new(RwLock::new(WorkerExecutor::new(Arc::clone(&queue), config)));
 
         Ok(Self { queue, executor })
     }

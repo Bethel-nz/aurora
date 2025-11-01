@@ -22,10 +22,7 @@ pub enum QueryUpdate {
     Removed(Document),
 
     /// A document in the results was modified
-    Modified {
-        old: Document,
-        new: Document,
-    },
+    Modified { old: Document, new: Document },
 }
 
 impl QueryUpdate {

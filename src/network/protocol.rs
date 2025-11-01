@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 /// A module to handle Base64 encoding for Vec<u8> in JSON.
 mod base64_serde {
-    use base64::{engine::general_purpose, Engine as _};
+    use base64::{Engine as _, engine::general_purpose};
     use serde::{self, Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
@@ -87,7 +87,7 @@ pub enum Response {
 
 /// A module for optional Base64 encoding.
 mod base64_serde_option {
-    use base64::{engine::general_purpose, Engine as _};
+    use base64::{Engine as _, engine::general_purpose};
     use serde::{self, Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(bytes: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>

@@ -41,9 +41,7 @@ impl JobQueue {
                 if let Ok(job) = bincode::deserialize::<Job>(&value) {
                     // Only load jobs that aren't completed
                     if !matches!(job.status, JobStatus::Completed) {
-                        let job_id = key.strip_prefix(&prefix)
-                            .unwrap_or(&key)
-                            .to_string();
+                        let job_id = key.strip_prefix(&prefix).unwrap_or(&key).to_string();
                         self.jobs.insert(job_id, job);
                     }
                 }
@@ -59,8 +57,8 @@ impl JobQueue {
         let key = format!("{}:{}", self.collection, job_id);
 
         // Persist to storage
-        let serialized = bincode::serialize(&job)
-            .map_err(|e| AuroraError::SerializationError(e.to_string()))?;
+        let serialized =
+            bincode::serialize(&job).map_err(|e| AuroraError::SerializationError(e.to_string()))?;
         self.storage.set(key, serialized)?;
 
         // Add to in-memory index
@@ -121,8 +119,8 @@ impl JobQueue {
         let key = format!("{}:{}", self.collection, job_id);
 
         // Persist to storage
-        let serialized = bincode::serialize(&job)
-            .map_err(|e| AuroraError::SerializationError(e.to_string()))?;
+        let serialized =
+            bincode::serialize(&job).map_err(|e| AuroraError::SerializationError(e.to_string()))?;
         self.storage.set(key, serialized)?;
 
         // Update in-memory index
