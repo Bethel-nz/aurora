@@ -1,13 +1,13 @@
 [package]
 name = "aurora-db"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 authors = ["Bethel Nzekea <bethelnzekea@gmail.com>"]
-description = "A hybrid embedded document database with key-value storage, document collections, and optional network servers."
+description = "A lightweight, real-time embedded database with built-in PubSub, reactive queries, background workers, and intelligent caching."
 license = "MIT"
-keywords = ["database", "embedded", "document", "kv-store", "json"]
-categories = ["database"]
-readme = "Readme.md"
+keywords = ["database", "embedded", "realtime", "pubsub", "reactive"]
+categories = ["database", "caching"]
+readme = "README.md"
 repository = "https://github.com/bethel-nz/aurora"
 homepage = "https://github.com/bethel-nz/aurora"
 
@@ -20,7 +20,7 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 thiserror = "1.0"
 unicode-segmentation = "1.10.0"
 tempfile = "3.3.0"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 csv = "1.1"
 zip = "0.6.2"
 sled = "0.34.7"
@@ -47,6 +47,10 @@ full = ["binary", "http"]
 [[example]]
 name = "contains_query_demo"
 path = "examples/contains_query_demo.rs"
+
+[[example]]
+name = "reactive_demo"
+path = "examples/reactive_demo.rs"
 
 [[bench]]
 name = "aurora_benchmarks"
