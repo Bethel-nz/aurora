@@ -1,12 +1,11 @@
-use aurora_db::{Aurora, AuroraError, Result};
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
-// use std::path::Path;
+use aurora_db::{Aurora, AuroraError, Document, Result};
 use aurora_db::{FieldType, Value};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
-// const VIDEO_PATH: &str = "/home/kylo_ren/Videos/Complete Guide to Full Stack Solana Development (2024) [vUHF1X48zM4].webm";
 const BULK_SIZE: usize = 100;
 
 fn setup() -> Result<Aurora> {
@@ -17,9 +16,8 @@ fn setup() -> Result<Aurora> {
 fn bench_basic_operations(c: &mut Criterion) {
     let db = setup().unwrap();
     let mut group = c.benchmark_group("basic_operations");
-    group.measurement_time(Duration::from_secs(10));
+    group.measurement_time(Duration::from_secs(5));
 
-    // Single operations
     group.bench_function("single_put", |b| {
         b.iter(|| {
             db.put(
@@ -35,7 +33,6 @@ fn bench_basic_operations(c: &mut Criterion) {
         b.iter(|| db.get(black_box("test_key")).unwrap())
     });
 
-    // Bulk operations
     group.bench_function("bulk_put_100", |b| {
         b.iter(|| {
             for i in 0..BULK_SIZE {
@@ -74,46 +71,53 @@ fn bench_basic_operations(c: &mut Criterion) {
 fn bench_collection_operations(c: &mut Criterion) {
     let db = setup().unwrap();
     let mut group = c.benchmark_group("collection_operations");
-    group.measurement_time(Duration::from_secs(10));
+    group.measurement_time(Duration::from_secs(5));
 
-    // Setup collection
     db.new_collection(
         "users",
         vec![
-            ("name".to_string(), FieldType::String, false),
-            ("id".to_string(), FieldType::Uuid, true),
-            ("age".to_string(), FieldType::Int, false),
+            ("name", FieldType::String, false),
+            ("id", FieldType::Uuid, true),
+            ("age", FieldType::Int, false),
         ],
     )
     .unwrap();
 
     group.bench_function("single_insert", |b| {
         b.iter(|| {
-            db.insert_into(
-                "users",
-                vec![
-                    ("name", Value::String("John Doe".to_string())),
-                    ("id", Value::Uuid(Uuid::new_v4())),
-                    ("age", Value::Int(30)),
-                ],
-            )
-            .unwrap()
-        })
-    });
-
-    group.bench_function("bulk_insert_100", |b| {
-        b.iter(|| {
-            for _ in 0..BULK_SIZE {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
                 db.insert_into(
                     "users",
                     vec![
                         ("name", Value::String("John Doe".to_string())),
                         ("id", Value::Uuid(Uuid::new_v4())),
-                        ("age", Value::Int(30)),
+                        ("age", Value::Int(30 as i64)),
                     ],
                 )
-                .unwrap();
-            }
+                .await
+                .unwrap()
+            })
+        })
+    });
+
+    group.bench_function("bulk_insert_100", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                for _ in 0..BULK_SIZE {
+                    db.insert_into(
+                        "users",
+                        vec![
+                            ("name", Value::String("John Doe".to_string())),
+                            ("id", Value::Uuid(Uuid::new_v4())),
+                            ("age", Value::Int(30 as i64)),
+                        ],
+                    )
+                    .await
+                    .unwrap();
+                }
+            })
         })
     });
 
@@ -125,13 +129,12 @@ fn bench_collection_operations(c: &mut Criterion) {
 fn bench_blob_operations(c: &mut Criterion) {
     let db = setup().unwrap();
     let mut group = c.benchmark_group("blob_operations");
-    group.measurement_time(Duration::from_secs(30));
+    group.measurement_time(Duration::from_secs(5));
 
-    // Different sized blobs
-    let small_blob = vec![0u8; 1024]; // 1KB
-    let medium_blob = vec![0u8; 1024 * 1024]; // 1MB
-    let large_blob = vec![0u8; 10 * 1024 * 1024]; // 10MB
-    let huge_blob = vec![0u8; 51 * 1024 * 1024]; // 51MB - should trigger error
+    let small_blob = vec![0u8; 1024];
+    let medium_blob = vec![0u8; 1024 * 1024];
+    let large_blob = vec![0u8; 10 * 1024 * 1024];
+    let huge_blob = vec![0u8; 51 * 1024 * 1024];
 
     group.bench_function("bulk_store_small_blobs_100", |b| {
         b.iter(|| {
@@ -170,7 +173,6 @@ fn bench_blob_operations(c: &mut Criterion) {
         })
     });
 
-    // This should fail with a size error
     group.bench_function("store_huge_blob_should_fail", |b| {
         b.iter(|| {
             let result = db.put(
@@ -192,31 +194,27 @@ fn bench_blob_operations(c: &mut Criterion) {
 fn bench_index_operations(c: &mut Criterion) {
     let db = setup().unwrap();
     let mut group = c.benchmark_group("index_operations");
-    group.measurement_time(Duration::from_secs(10));
+    group.measurement_time(Duration::from_secs(5));
 
-    // Create a runtime for async setup
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        // Setup collection with indexes
         db.new_collection(
             "products",
             vec![
-                ("id".to_string(), FieldType::Uuid, true),
-                ("name".to_string(), FieldType::String, false),
-                ("price".to_string(), FieldType::Float, false),
-                ("category".to_string(), FieldType::String, false),
-                ("in_stock".to_string(), FieldType::Boolean, false),
+                ("id", FieldType::Uuid, true),
+                ("name", FieldType::String, false),
+                ("price", FieldType::Float, false),
+                ("category", FieldType::String, false),
+                ("in_stock", FieldType::Bool, false),
             ],
         )
         .unwrap();
 
-        // Create indexes using await
         db.create_index("products", "price").await.unwrap();
         db.create_index("products", "category").await.unwrap();
         db.create_index("products", "name").await.unwrap();
         db.create_index("products", "id").await.unwrap();
 
-        // Insert test data
         let categories = ["Electronics", "Clothing", "Food", "Books", "Home"];
         for i in 0..500 {
             db.insert_into(
@@ -229,6 +227,7 @@ fn bench_index_operations(c: &mut Criterion) {
                     ("in_stock", Value::Bool(i % 3 == 0)),
                 ],
             )
+            .await
             .unwrap();
         }
     });
@@ -279,17 +278,21 @@ fn bench_index_operations(c: &mut Criterion) {
 
     group.bench_function("insert_with_indexes", |b| {
         b.iter(|| {
-            db.insert_into(
-                "products",
-                vec![
-                    ("id", Value::Uuid(Uuid::new_v4())),
-                    ("name", Value::String("Test Product".to_string())),
-                    ("price", Value::Float(999.99)),
-                    ("category", Value::String("Test".to_string())),
-                    ("in_stock", Value::Bool(true)),
-                ],
-            )
-            .unwrap()
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                db.insert_into(
+                    "products",
+                    vec![
+                        ("id", Value::Uuid(Uuid::new_v4())),
+                        ("name", Value::String("Test Product".to_string())),
+                        ("price", Value::Float(999.99)),
+                        ("category", Value::String("Test".to_string())),
+                        ("in_stock", Value::Bool(true)),
+                    ],
+                )
+                .await
+                .unwrap()
+            })
         })
     });
 
@@ -299,32 +302,28 @@ fn bench_index_operations(c: &mut Criterion) {
 fn bench_complex_queries(c: &mut Criterion) {
     let db = setup().unwrap();
     let mut group = c.benchmark_group("complex_queries");
-    group.measurement_time(Duration::from_secs(10));
+    group.measurement_time(Duration::from_secs(5));
 
-    // Create a runtime for async setup
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        // Setup collection
         db.new_collection(
             "orders",
             vec![
-                ("id".to_string(), FieldType::String, true),
-                ("customer_id".to_string(), FieldType::String, false),
-                ("total".to_string(), FieldType::Float, false),
-                ("date".to_string(), FieldType::String, false),
-                ("status".to_string(), FieldType::String, false),
-                ("items".to_string(), FieldType::Int, false),
+                ("id", FieldType::String, true),
+                ("customer_id", FieldType::String, false),
+                ("total", FieldType::Float, false),
+                ("date", FieldType::String, false),
+                ("status", FieldType::String, false),
+                ("items", FieldType::Int, false),
             ],
         )
         .unwrap();
 
-        // Create indexes with the simple format
         db.create_index("orders", "customer_id").await.unwrap();
         db.create_index("orders", "date").await.unwrap();
         db.create_index("orders", "status").await.unwrap();
         db.create_index("orders", "total").await.unwrap();
 
-        // Insert test data
         let statuses = ["pending", "processing", "shipped", "delivered", "cancelled"];
         let dates = [
             "2023-01", "2023-02", "2023-03", "2023-04", "2023-05", "2023-06",
@@ -345,6 +344,7 @@ fn bench_complex_queries(c: &mut Criterion) {
                     ("items", Value::Int(((i % 10) + 1) as i64)),
                 ],
             )
+            .await
             .unwrap();
         }
     });
@@ -357,7 +357,7 @@ fn bench_complex_queries(c: &mut Criterion) {
                     .filter(|f| {
                         f.eq("status", Value::String("shipped".to_string()))
                             && f.gt("total", Value::Float(100.0))
-                            && f.gt("items", Value::Int(3))
+                            && f.gt("items", Value::Int(3 as i64))
                     })
                     .collect()
                     .await
@@ -415,12 +415,317 @@ fn bench_complex_queries(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_cache_operations(c: &mut Criterion) {
+    let db = setup().unwrap();
+    let mut group = c.benchmark_group("cache_operations");
+    group.measurement_time(Duration::from_secs(5));
+
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        db.new_collection(
+            "cache_test",
+            vec![
+                ("id", FieldType::String, true),
+                ("data", FieldType::String, false),
+            ],
+        )
+        .unwrap();
+
+        for i in 0..1000 {
+            db.insert_into(
+                "cache_test",
+                vec![
+                    ("id", Value::String(format!("doc-{}", i))),
+                    ("data", Value::String(format!("data-{}", i))),
+                ],
+            )
+            .await
+            .unwrap();
+        }
+    });
+
+    group.bench_function("prewarm_cache_100", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                db.clear_hot_cache();
+                db.prewarm_cache("cache_test", Some(100)).await.unwrap()
+            })
+        })
+    });
+
+    group.bench_function("prewarm_cache_1000", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                db.clear_hot_cache();
+                db.prewarm_cache("cache_test", Some(1000)).await.unwrap()
+            })
+        })
+    });
+
+    group.bench_function("cold_read_no_cache", |b| {
+        b.iter(|| {
+            db.clear_hot_cache();
+            db.get("cache_test:doc-500").unwrap()
+        })
+    });
+
+    group.bench_function("hot_read_from_cache", |b| {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            db.prewarm_cache("cache_test", Some(1000)).await.unwrap();
+        });
+
+        b.iter(|| db.get("cache_test:doc-500").unwrap())
+    });
+
+    group.finish();
+}
+
+fn bench_pubsub_operations(c: &mut Criterion) {
+    let db = Arc::new(setup().unwrap());
+    let mut group = c.benchmark_group("pubsub_operations");
+    group.measurement_time(Duration::from_secs(5));
+
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        db.new_collection(
+            "events",
+            vec![
+                ("id", FieldType::String, true),
+                ("type", FieldType::String, false),
+                ("data", FieldType::String, false),
+            ],
+        )
+        .unwrap();
+    });
+
+    group.bench_function("pubsub_single_listener", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                let _listener = db.listen("events");
+
+                db.insert_into(
+                    "events",
+                    vec![
+                        ("id", Value::String(Uuid::new_v4().to_string())),
+                        ("type", Value::String("test".to_string())),
+                        ("data", Value::String("benchmark".to_string())),
+                    ],
+                )
+                .await
+                .unwrap();
+            })
+        })
+    });
+
+    group.bench_function("pubsub_multiple_listeners", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                let _listener1 = db.listen("events");
+                let _listener2 = db.listen("events");
+                let _listener3 = db.listen("events");
+
+                db.insert_into(
+                    "events",
+                    vec![
+                        ("id", Value::String(Uuid::new_v4().to_string())),
+                        ("type", Value::String("test".to_string())),
+                        ("data", Value::String("benchmark".to_string())),
+                    ],
+                )
+                .await
+                .unwrap();
+            })
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_workers(c: &mut Criterion) {
+    use aurora_db::workers::{Job, JobPriority, WorkerConfig, WorkerSystem};
+
+    let mut group = c.benchmark_group("workers");
+    group.measurement_time(Duration::from_secs(5));
+
+    group.bench_function("job_creation", |b| {
+        b.iter(|| {
+            let _job = Job::new("test")
+                .add_field("data", serde_json::json!("test data"))
+                .with_priority(JobPriority::Normal)
+                .with_max_retries(3);
+        })
+    });
+
+    group.bench_function("job_enqueue_100", |b| {
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                let config = WorkerConfig {
+                    storage_path: format!("./bench_workers_{}", Uuid::new_v4()),
+                    concurrency: 4,
+                    poll_interval_ms: 100,
+                    cleanup_interval_seconds: 3600,
+                };
+
+                let worker_system = WorkerSystem::new(config).unwrap();
+
+                for _ in 0..100 {
+                    let job = Job::new("benchmark").add_field("iteration", serde_json::json!(1));
+                    worker_system.enqueue(job).await.unwrap();
+                }
+            })
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_computed_fields(c: &mut Criterion) {
+    use aurora_db::computed::{ComputedExpression, ComputedFields};
+    use aurora_db::types::Document;
+
+    let mut group = c.benchmark_group("computed_fields");
+    group.measurement_time(Duration::from_secs(5));
+
+    group.bench_function("concat_expression", |b| {
+        let expr =
+            ComputedExpression::Concat(vec!["first_name".to_string(), "last_name".to_string()]);
+
+        let mut doc = Document::new();
+        doc.data
+            .insert("first_name".to_string(), Value::String("John".to_string()));
+        doc.data
+            .insert("last_name".to_string(), Value::String("Doe".to_string()));
+
+        b.iter(|| expr.evaluate(&doc))
+    });
+
+    group.bench_function("sum_expression", |b| {
+        let expr = ComputedExpression::Sum(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+
+        let mut doc = Document::new();
+        doc.data.insert("a".to_string(), Value::Int(10 as i64));
+        doc.data.insert("b".to_string(), Value::Int(20 as i64));
+        doc.data.insert("c".to_string(), Value::Int(30 as i64));
+
+        b.iter(|| expr.evaluate(&doc))
+    });
+
+    group.bench_function("computed_fields_apply", |b| {
+        let mut registry = ComputedFields::new();
+        registry.register(
+            "users",
+            "full_name",
+            ComputedExpression::Concat(vec!["first_name".to_string(), "last_name".to_string()]),
+        );
+        registry.register(
+            "users",
+            "total_score",
+            ComputedExpression::Sum(vec!["score1".to_string(), "score2".to_string()]),
+        );
+
+        let mut doc = Document::new();
+        doc.data
+            .insert("first_name".to_string(), Value::String("Jane".to_string()));
+        doc.data
+            .insert("last_name".to_string(), Value::String("Smith".to_string()));
+        doc.data.insert("score1".to_string(), Value::Int(85 as i64));
+        doc.data.insert("score2".to_string(), Value::Int(92 as i64));
+
+        b.iter(|| {
+            let mut test_doc = doc.clone();
+            registry.apply("users", &mut test_doc).unwrap()
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_write_performance(c: &mut Criterion) {
+    let mut group = c.benchmark_group("write_performance");
+    group.measurement_time(Duration::from_secs(5));
+
+    group.bench_function("bulk_write_100", |b| {
+        let db = setup().unwrap();
+
+        db.new_collection(
+            "write_test",
+            vec![
+                ("id", FieldType::String, true),
+                ("data", FieldType::String, false),
+            ],
+        )
+        .unwrap();
+
+        b.iter(|| {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async {
+                for i in 0..100 {
+                    db.insert_into(
+                        "write_test",
+                        vec![
+                            ("id", Value::String(format!("doc-{}", Uuid::new_v4()))),
+                            ("data", Value::String(format!("data-{}", i))),
+                        ],
+                    )
+                    .await
+                    .unwrap();
+                }
+            })
+        })
+    });
+
+    group.bench_function("batch_write_100", |b| {
+        let db = setup().unwrap();
+        db.new_collection(
+            "batch_coll",
+            vec![
+                ("id", FieldType::String, true),
+                ("data", FieldType::String, false),
+            ],
+        )
+        .unwrap();
+
+        b.iter(|| {
+            let pairs: Vec<(String, Vec<u8>)> = (0..100)
+                .map(|i| {
+                    let doc_id = Uuid::new_v4().to_string();
+                    let doc = Document {
+                        id: doc_id.clone(),
+                        data: [
+                            ("id".to_string(), Value::String(doc_id.clone())),
+                            ("data".to_string(), Value::String(format!("data-{}", i))),
+                        ]
+                        .iter()
+                        .cloned()
+                        .collect(),
+                    };
+                    let key = format!("batch_coll:{}", doc.id);
+                    let value = serde_json::to_vec(&doc).unwrap();
+                    (key, value)
+                })
+                .collect();
+
+            db.batch_write(pairs).unwrap()
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     name = benches;
     config = Criterion::default()
         .sample_size(10)
-        .warm_up_time(Duration::from_secs(5));
+        .warm_up_time(Duration::from_millis(500));
     targets = bench_basic_operations, bench_collection_operations, bench_blob_operations,
-             bench_index_operations, bench_complex_queries
+             bench_index_operations, bench_complex_queries, bench_cache_operations,
+             bench_pubsub_operations, bench_workers, bench_computed_fields,
+             bench_write_performance
 );
 criterion_main!(benches);
