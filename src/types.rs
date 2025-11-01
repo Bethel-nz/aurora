@@ -1,6 +1,9 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::convert::TryInto;
+use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -11,7 +14,7 @@ pub enum FieldType {
     String,
     Int,
     Uuid,
-    Boolean,
+    Bool,
     Float,
     Array,
     Object,
@@ -252,6 +255,163 @@ impl From<Uuid> for Value {
     }
 }
 
+// Helper methods for Value type conversion and extraction
+impl Value {
+    pub fn as_str(&self) -> Option<&str> {
+        if let Value::String(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        if let Value::Bool(b) = self {
+            Some(*b)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        if let Value::Int(i) = self {
+            Some(*i)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        if let Value::Float(f) = self {
+            Some(*f)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&Vec<Value>> {
+        if let Value::Array(arr) = self {
+            Some(arr)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&HashMap<String, Value>> {
+        if let Value::Object(obj) = self {
+            Some(obj)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_uuid(&self) -> Option<Uuid> {
+        match self {
+            Value::Uuid(u) => Some(*u),
+            Value::String(s) => Uuid::parse_str(s).ok(),
+            _ => None,
+        }
+    }
+
+    pub fn as_datetime(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Value::String(s) => DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc)),
+            _ => None,
+        }
+    }
+
+    /// Generate a string from known value types.
+    pub fn to_safe_string(&self) -> Option<String> {
+        match self {
+            Value::String(s) => Some(s.clone()),
+            Value::Int(i) => Some(i.to_string()),
+            Value::Bool(b) => Some(b.to_string()),
+            Value::Float(f) => Some(f.to_string()),
+            Value::Uuid(u) => Some(u.to_string()),
+            _ => None,
+        }
+    }
+
+    /// Try conversion to i32
+    pub fn as_i32(&self) -> Option<i32> {
+        self.as_i64().and_then(|i| i.try_into().ok())
+    }
+}
+
+//
+// General extractor helpers for repeated access patterns
+//
+
+pub fn required_str<'a>(
+    map: &'a HashMap<String, Value>,
+    key: &str,
+) -> Result<&'a str, Box<dyn Error>> {
+    map.get(key)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("Missing or invalid '{}' (str)", key).into())
+}
+
+pub fn optional_str(map: &HashMap<String, Value>, key: &str) -> Option<String> {
+    map.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+pub fn required_uuid(map: &HashMap<String, Value>, key: &str) -> Result<Uuid, Box<dyn Error>> {
+    map.get(key)
+        .and_then(|v| v.as_uuid())
+        .ok_or_else(|| format!("Missing or invalid '{}' (uuid)", key).into())
+}
+
+pub fn optional_uuid(map: &HashMap<String, Value>, key: &str) -> Option<Uuid> {
+    map.get(key).and_then(|v| v.as_uuid())
+}
+
+pub fn required_i64(map: &HashMap<String, Value>, key: &str) -> Result<i64, Box<dyn Error>> {
+    map.get(key)
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| format!("Missing or invalid '{}' (i64)", key).into())
+}
+
+pub fn optional_i64(map: &HashMap<String, Value>, key: &str) -> Option<i64> {
+    map.get(key).and_then(|v| v.as_i64())
+}
+
+pub fn required_bool(map: &HashMap<String, Value>, key: &str) -> Result<bool, Box<dyn Error>> {
+    map.get(key)
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| format!("Missing or invalid '{}' (bool)", key).into())
+}
+
+pub fn optional_bool(map: &HashMap<String, Value>, key: &str) -> Option<bool> {
+    map.get(key).and_then(|v| v.as_bool())
+}
+
+pub fn required_datetime(
+    map: &HashMap<String, Value>,
+    key: &str,
+) -> Result<DateTime<Utc>, Box<dyn Error>> {
+    map.get(key)
+        .and_then(|v| v.as_datetime())
+        .ok_or_else(|| format!("Missing or invalid '{}' (datetime)", key).into())
+}
+
+pub fn optional_datetime(map: &HashMap<String, Value>, key: &str) -> Option<DateTime<Utc>> {
+    map.get(key).and_then(|v| v.as_datetime())
+}
+
+/// Get a vector of Strings from a Value Array field
+pub fn array_of_strings(map: &HashMap<String, Value>, key: &str) -> Vec<String> {
+    map.get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Configuration for Aurora database
 #[derive(Debug, Clone)]
 pub struct AuroraConfig {
@@ -262,6 +422,7 @@ pub struct AuroraConfig {
     // Hot store config
     pub hot_cache_size_mb: usize,
     pub hot_cache_cleanup_interval_secs: u64,
+    pub eviction_policy: crate::storage::EvictionPolicy,
 
     // Cold store config
     pub cold_cache_capacity_mb: usize,
@@ -271,6 +432,14 @@ pub struct AuroraConfig {
     // General config
     pub auto_compact: bool,
     pub compact_interval_mins: u64,
+
+    // Index config
+    pub max_index_entries_per_field: usize, // Limit memory for indices
+
+    // Write config
+    pub enable_write_buffering: bool, // Background write buffering
+    pub write_buffer_size: usize,     // Number of operations to buffer
+    pub write_buffer_flush_interval_ms: u64, // Flush interval
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -287,6 +456,7 @@ impl Default for AuroraConfig {
 
             hot_cache_size_mb: 128,
             hot_cache_cleanup_interval_secs: 30,
+            eviction_policy: crate::storage::EvictionPolicy::Hybrid,
 
             cold_cache_capacity_mb: 64,
             cold_flush_interval_ms: Some(100),
@@ -294,6 +464,12 @@ impl Default for AuroraConfig {
 
             auto_compact: true,
             compact_interval_mins: 60,
+
+            max_index_entries_per_field: 100_000,
+
+            enable_write_buffering: false,
+            write_buffer_size: 1000,
+            write_buffer_flush_interval_ms: 10,
         }
     }
 }
@@ -304,5 +480,56 @@ impl AuroraConfig {
         let mut config = Self::default();
         config.db_path = path.as_ref().to_path_buf();
         config
+    }
+
+    /// Configuration optimized for read-heavy workloads (news sites, blogs)
+    pub fn read_optimized() -> Self {
+        Self {
+            hot_cache_size_mb: 512,
+            eviction_policy: crate::storage::EvictionPolicy::LFU,
+            cold_cache_capacity_mb: 256,
+            cold_mode: ColdStoreMode::HighThroughput,
+            ..Default::default()
+        }
+    }
+
+    /// Configuration optimized for write-heavy workloads (analytics, logging)
+    pub fn write_optimized() -> Self {
+        Self {
+            hot_cache_size_mb: 128,
+            eviction_policy: crate::storage::EvictionPolicy::LRU,
+            cold_cache_capacity_mb: 512,
+            cold_flush_interval_ms: Some(50),
+            enable_write_buffering: true,
+            write_buffer_size: 10000,
+            ..Default::default()
+        }
+    }
+
+    /// Configuration for memory-constrained environments
+    pub fn low_memory() -> Self {
+        Self {
+            hot_cache_size_mb: 32,
+            eviction_policy: crate::storage::EvictionPolicy::LRU,
+            cold_cache_capacity_mb: 32,
+            cold_mode: ColdStoreMode::LowSpace,
+            max_index_entries_per_field: 10_000,
+            ..Default::default()
+        }
+    }
+
+    /// Configuration for high-traffic real-time applications
+    pub fn realtime() -> Self {
+        Self {
+            hot_cache_size_mb: 1024,
+            eviction_policy: crate::storage::EvictionPolicy::Hybrid,
+            cold_cache_capacity_mb: 512,
+            cold_flush_interval_ms: Some(25),
+            enable_write_buffering: true,
+            write_buffer_size: 5000,
+            auto_compact: false,
+            max_index_entries_per_field: 500_000,
+            ..Default::default()
+        }
     }
 }

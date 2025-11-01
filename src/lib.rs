@@ -50,16 +50,31 @@ pub use types::{
     AuroraConfig, ColdStoreMode, Collection, Document, FieldDefinition, FieldType, Value,
 };
 
-// Re-export query module for direct access to query API
-pub mod query;
+// Re-export commonly used storage types
+pub use storage::{EvictionPolicy, HotStore};
+
+// Re-export PubSub types for convenience
+pub use pubsub::{ChangeEvent, ChangeListener, ChangeType};
+
+// Re-export Workers types for convenience
+pub use workers::{Job, JobPriority, JobStatus};
+
+// Re-export Transaction types for convenience
+pub use transaction::{TransactionId, TransactionBuffer};
 
 // Module declarations
 pub mod client;
+pub mod computed;
 pub mod db;
 pub mod error;
 pub mod index;
 pub mod network;
+pub mod pubsub;
+pub mod query;
+pub mod reactive;
 pub mod search;
 pub mod storage;
+pub mod transaction;
 pub mod types;
 pub mod wal;
+pub mod workers;

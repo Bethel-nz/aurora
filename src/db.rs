@@ -49,12 +49,13 @@ use crate::network::http_models::{
     Filter as HttpFilter, FilterOperator, QueryPayload, json_to_value,
 };
 use crate::query::{Filter, FilterBuilder, QueryBuilder, SearchBuilder, SimpleQueryBuilder};
-use crate::storage::{ColdStore, HotStore};
+use crate::storage::{ColdStore, HotStore, WriteBuffer};
 use crate::types::{AuroraConfig, Collection, Document, FieldDefinition, FieldType, Value};
 use dashmap::DashMap;
 use serde_json::Value as JsonValue;
 use serde_json::from_str;
 use std::collections::HashMap;
+use std::fmt;
 use std::fs::File as StdFile;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -111,14 +112,35 @@ impl DataInfo {
 /// ```
 pub struct Aurora {
     hot: HotStore,
-    cold: ColdStore,
+    cold: Arc<ColdStore>,
     // Indexing
     primary_indices: Arc<DashMap<String, PrimaryIndex>>,
     secondary_indices: Arc<DashMap<String, SecondaryIndex>>,
     indices_initialized: Arc<OnceCell<()>>,
-    in_transaction: std::sync::atomic::AtomicBool,
-    transaction_ops: DashMap<String, Vec<u8>>,
+    // New transaction system with proper isolation
+    transaction_manager: crate::transaction::TransactionManager,
     indices: Arc<DashMap<String, Index>>,
+    // Schema cache to avoid repeated deserialization
+    schema_cache: Arc<DashMap<String, Arc<Collection>>>,
+    // Configuration
+    config: AuroraConfig,
+    // Write buffer (optional, based on config)
+    write_buffer: Option<WriteBuffer>,
+    // PubSub system for change notifications
+    pubsub: crate::pubsub::PubSubSystem,
+}
+
+impl fmt::Debug for Aurora {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Aurora")
+            .field("hot", &"HotStore")
+            .field("cold", &"ColdStore")
+            .field("primary_indices_count", &self.primary_indices.len())
+            .field("secondary_indices_count", &self.secondary_indices.len())
+            .field("active_transactions", &self.transaction_manager.active_count())
+            .field("indices_count", &self.indices.len())
+            .finish()
+    }
 }
 
 impl Aurora {
@@ -143,35 +165,9 @@ impl Aurora {
     /// let db = Aurora::open("customer_data.db")?;
     /// ```
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path = Self::resolve_path(path)?;
-
-        // Create parent directory if needed
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-
-        // Initialize hot and cold stores with the path
-        let cold = ColdStore::new(path.to_str().unwrap())?;
-        let hot = HotStore::new();
-
-        // Initialize the rest of Aurora...
-        let db = Self {
-            hot,
-            cold,
-            primary_indices: Arc::new(DashMap::new()),
-            secondary_indices: Arc::new(DashMap::new()),
-            indices_initialized: Arc::new(OnceCell::new()),
-            in_transaction: std::sync::atomic::AtomicBool::new(false),
-            transaction_ops: DashMap::new(),
-            indices: Arc::new(DashMap::new()),
-        };
-
-        // Load or initialize indices...
-        // Rest of your existing open() code...
-
-        Ok(db)
+        let mut config = AuroraConfig::default();
+        config.db_path = Self::resolve_path(path)?;
+        Self::with_config(config)
     }
 
     /// Helper method to resolve database path
@@ -206,17 +202,35 @@ impl Aurora {
         }
 
         // Fix method calls to pass all required parameters
-        let cold = ColdStore::with_config(
+        let cold = Arc::new(ColdStore::with_config(
             path.to_str().unwrap(),
             config.cold_cache_capacity_mb,
             config.cold_flush_interval_ms,
             config.cold_mode,
-        )?;
+        )?);
 
-        let hot = HotStore::with_config(
+        let hot = HotStore::with_config_and_eviction(
             config.hot_cache_size_mb,
             config.hot_cache_cleanup_interval_secs,
+            config.eviction_policy,
         );
+
+        // Initialize write buffer if enabled
+        let write_buffer = if config.enable_write_buffering {
+            Some(WriteBuffer::new(
+                Arc::clone(&cold),
+                config.write_buffer_size,
+                config.write_buffer_flush_interval_ms,
+            ))
+        } else {
+            None
+        };
+
+        // Store auto_compact before moving config
+        let auto_compact = config.auto_compact;
+
+        // Initialize PubSub system (10K event buffer)
+        let pubsub = crate::pubsub::PubSubSystem::new(10000);
 
         // Initialize the rest using the config...
         let db = Self {
@@ -225,13 +239,16 @@ impl Aurora {
             primary_indices: Arc::new(DashMap::new()),
             secondary_indices: Arc::new(DashMap::new()),
             indices_initialized: Arc::new(OnceCell::new()),
-            in_transaction: std::sync::atomic::AtomicBool::new(false),
-            transaction_ops: DashMap::new(),
+            transaction_manager: crate::transaction::TransactionManager::new(),
             indices: Arc::new(DashMap::new()),
+            schema_cache: Arc::new(DashMap::new()),
+            config,
+            write_buffer,
+            pubsub,
         };
 
         // Set up auto-compaction if enabled
-        if config.auto_compact {
+        if auto_compact {
             // Implementation for auto-compaction scheduling
             // ...
         }
@@ -294,6 +311,54 @@ impl Aurora {
         Ok(value)
     }
 
+    /// Get value with zero-copy Arc reference (10-100x faster than get!)
+    /// Only checks hot cache - returns None if not cached
+    pub fn get_hot_ref(&self, key: &str) -> Option<Arc<Vec<u8>>> {
+        self.hot.get_ref(key)
+    }
+
+    /// Get cache statistics
+    pub fn get_cache_stats(&self) -> crate::storage::hot::CacheStats {
+        self.hot.get_stats()
+    }
+
+    // ============================================
+    // PubSub API - Real-time Change Notifications
+    // ============================================
+
+    /// Listen for changes on a specific collection
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut listener = db.listen("users");
+    ///
+    /// // In another task, insert a document
+    /// db.insert_into("users", vec![...]).await?;
+    ///
+    /// // Listener receives the event
+    /// let event = listener.recv().await?;
+    /// println!("Change: {:?}", event);
+    /// ```
+    pub fn listen(&self, collection: impl Into<String>) -> crate::pubsub::ChangeListener {
+        self.pubsub.listen(collection)
+    }
+
+    /// Listen for all changes across all collections
+    pub fn listen_all(&self) -> crate::pubsub::ChangeListener {
+        self.pubsub.listen_all()
+    }
+
+    /// Get the number of active listeners for a collection
+    pub fn listener_count(&self, collection: &str) -> usize {
+        self.pubsub.listener_count(collection)
+    }
+
+    /// Get total number of active listeners
+    pub fn total_listeners(&self) -> usize {
+        self.pubsub.total_listeners()
+    }
+
     pub fn put(&self, key: String, value: Vec<u8>, ttl: Option<Duration>) -> Result<()> {
         const MAX_BLOB_SIZE: usize = 50 * 1024 * 1024; // 50MB limit
 
@@ -305,17 +370,16 @@ impl Aurora {
             )));
         }
 
-        // Track transaction if needed
-        if self
-            .in_transaction
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            self.transaction_ops.insert(key.clone(), value.clone());
-            return Ok(());
+        // Write to storage - use write buffer if enabled
+        if let Some(ref write_buffer) = self.write_buffer {
+            // Non-blocking write via buffer
+            write_buffer.write(key.clone(), value.clone())?;
+        } else {
+            // Direct synchronous write
+            self.cold.set(key.clone(), value.clone())?;
         }
 
-        // Write directly to storage (sled handles WAL internally)
-        self.cold.set(key.clone(), value.clone())?;
+        // Always update hot cache immediately
         self.hot.set(key.clone(), value.clone(), ttl);
 
         // FIX: Update the in-memory indices immediately after a successful write.
@@ -330,26 +394,80 @@ impl Aurora {
     }
 
     fn index_value(&self, collection: &str, key: &str, value: &[u8]) -> Result<()> {
-        // Update primary index
+        // Update primary index (always index for fast full collection scans)
         self.primary_indices
             .entry(collection.to_string())
             .or_insert_with(DashMap::new)
             .insert(key.to_string(), value.to_vec());
 
-        // Update secondary indices if it's a JSON document
-        if let Ok(doc) = serde_json::from_slice::<Document>(value) {
-            for (field, value) in doc.data {
-                // Use consistent string formatting for indexing
-                let value_str = match &value {
-                    Value::String(s) => s.clone(),
-                    _ => value.to_string(),
+        // Try to get schema from cache first, otherwise load and cache it
+        let collection_obj = match self.schema_cache.get(collection) {
+            Some(cached_schema) => Arc::clone(cached_schema.value()),
+            None => {
+                // Schema not in cache - load it
+                let collection_key = format!("_collection:{}", collection);
+                let schema_data = match self.get(&collection_key)? {
+                    Some(data) => data,
+                    None => return Ok(()), // No schema = no secondary indices
                 };
-                self.secondary_indices
-                    .entry(format!("{}:{}", collection, field))
-                    .or_insert_with(DashMap::new)
+
+                let obj: Collection = match serde_json::from_slice(&schema_data) {
+                    Ok(obj) => obj,
+                    Err(_) => return Ok(()), // Invalid schema = skip indexing
+                };
+
+                // Cache the schema for future use
+                let arc_obj = Arc::new(obj);
+                self.schema_cache.insert(collection.to_string(), Arc::clone(&arc_obj));
+                arc_obj
+            }
+        };
+
+        // Build list of fields that should be indexed (unique or explicitly indexed)
+        let indexed_fields: Vec<String> = collection_obj
+            .fields
+            .iter()
+            .filter(|(_, def)| def.indexed || def.unique)
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        // If no fields need indexing, we're done
+        if indexed_fields.is_empty() {
+            return Ok(());
+        }
+
+        // Update secondary indices - ONLY for indexed/unique fields
+        if let Ok(doc) = serde_json::from_slice::<Document>(value) {
+            for (field, field_value) in doc.data {
+                // CRITICAL FIX: Skip fields that aren't indexed
+                if !indexed_fields.contains(&field) {
+                    continue;
+                }
+
+                // Use consistent string formatting for indexing
+                let value_str = match &field_value {
+                    Value::String(s) => s.clone(),
+                    _ => field_value.to_string(),
+                };
+
+                let index_key = format!("{}:{}", collection, field);
+                let secondary_index = self
+                    .secondary_indices
+                    .entry(index_key)
+                    .or_insert_with(DashMap::new);
+
+                // Check if we're at the index limit
+                let max_entries = self.config.max_index_entries_per_field;
+
+                secondary_index
                     .entry(value_str)
-                    .or_insert_with(Vec::new)
-                    .push(key.to_string());
+                    .and_modify(|doc_ids| {
+                        // Only add if we haven't exceeded the limit per value
+                        if doc_ids.len() < max_entries {
+                            doc_ids.push(key.to_string());
+                        }
+                    })
+                    .or_insert_with(|| vec![key.to_string()]);
             }
         }
         Ok(())
@@ -404,7 +522,7 @@ impl Aurora {
     /// # Arguments
     /// * `name` - Name of the collection to create
     /// * `fields` - Schema definition as a list of field definitions:
-    ///   * Field name
+    ///   * Field name (accepts both &str and String)
     ///   * Field type (String, Int, Float, Boolean, etc.)
     ///   * Whether the field requires a unique value
     ///
@@ -414,28 +532,32 @@ impl Aurora {
     /// # Examples
     ///
     /// ```
-    /// // Define a collection with schema
+    /// // Define a collection with schema - accepts &str
     /// db.new_collection("products", vec![
     ///     ("name", FieldType::String, false),
     ///     ("price", FieldType::Float, false),
     ///     ("sku", FieldType::String, true),  // unique field
     ///     ("description", FieldType::String, false),
-    ///     ("in_stock", FieldType::Boolean, false),
+    ///     ("in_stock", FieldType::Bool, false),
     /// ])?;
     /// ```
-    pub fn new_collection(&self, name: &str, fields: Vec<(String, FieldType, bool)>) -> Result<()> {
+    pub fn new_collection<S: Into<String>>(
+        &self,
+        name: &str,
+        fields: Vec<(S, FieldType, bool)>,
+    ) -> Result<()> {
         let collection_key = format!("_collection:{}", name);
 
-        // Check if collection already exists
+        // Check if collection already exists - if so, just return Ok (idempotent)
         if self.get(&collection_key)?.is_some() {
-            return Err(AuroraError::CollectionAlreadyExists(name.to_string()));
+            return Ok(());
         }
 
         // Create field definitions
         let mut field_definitions = HashMap::new();
         for (field_name, field_type, unique) in fields {
             field_definitions.insert(
-                field_name,
+                field_name.into(),
                 FieldDefinition {
                     field_type,
                     unique,
@@ -452,6 +574,9 @@ impl Aurora {
 
         let collection_data = serde_json::to_vec(&collection)?;
         self.put(collection_key, collection_data, None)?;
+
+        // Invalidate schema cache since we just created/updated the collection schema
+        self.schema_cache.remove(name);
 
         Ok(())
     }
@@ -496,6 +621,10 @@ impl Aurora {
             None,
         )?;
 
+        // Publish insert event
+        let event = crate::pubsub::ChangeEvent::insert(collection, &doc_id, document.clone());
+        let _ = self.pubsub.publish(event);
+
         Ok(doc_id)
     }
 
@@ -519,7 +648,69 @@ impl Aurora {
             None,
         )?;
 
+        // Publish insert event
+        let event = crate::pubsub::ChangeEvent::insert(collection, &doc_id, document.clone());
+        let _ = self.pubsub.publish(event);
+
         Ok(doc_id)
+    }
+
+    /// Update a document by ID
+    ///
+    /// # Arguments
+    /// * `collection` - Collection name
+    /// * `doc_id` - Document ID to update
+    /// * `data` - New field values to set
+    ///
+    /// # Returns
+    /// Ok(()) on success, or an error if the document doesn't exist
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// db.update_document("users", &user_id, vec![
+    ///     ("status", Value::String("active".to_string())),
+    ///     ("last_login", Value::String(chrono::Utc::now().to_rfc3339())),
+    /// ]).await?;
+    /// ```
+    pub async fn update_document(
+        &self,
+        collection: &str,
+        doc_id: &str,
+        updates: Vec<(&str, Value)>,
+    ) -> Result<()> {
+        // Get existing document
+        let mut document = self.get_document(collection, doc_id)?
+            .ok_or_else(|| AuroraError::NotFound(format!("Document not found: {}", doc_id)))?;
+
+        // Store old document for event
+        let old_document = document.clone();
+
+        // Apply updates
+        for (field, value) in updates {
+            document.data.insert(field.to_string(), value);
+        }
+
+        // Validate unique constraints after update (excluding current document)
+        self.validate_unique_constraints_excluding(collection, &document.data, doc_id).await?;
+
+        // Save updated document
+        self.put(
+            format!("{}:{}", collection, doc_id),
+            serde_json::to_vec(&document)?,
+            None,
+        )?;
+
+        // Publish update event
+        let event = crate::pubsub::ChangeEvent::update(
+            collection,
+            doc_id,
+            old_document,
+            document.clone(),
+        );
+        let _ = self.pubsub.publish(event);
+
+        Ok(())
     }
 
     pub async fn get_all_collection(&self, collection: &str) -> Result<Vec<Document>> {
@@ -580,77 +771,68 @@ impl Aurora {
     ///     db.rollback_transaction()?;
     /// }
     /// ```
-    pub fn begin_transaction(&self) -> Result<()> {
-        if self
-            .in_transaction
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(AuroraError::InvalidOperation(
-                "Transaction already in progress".into(),
-            ));
-        }
-
-        // Mark as in transaction
-        self.in_transaction
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
+    pub fn begin_transaction(&self) -> crate::transaction::TransactionId {
+        let buffer = self.transaction_manager.begin();
+        buffer.id
     }
 
-    /// Commit the current transaction
+    /// Commit a transaction
     ///
-    /// Makes all changes in the current transaction permanent.
+    /// Makes all changes in the transaction permanent.
+    ///
+    /// # Arguments
+    /// * `tx_id` - Transaction ID returned from begin_transaction()
     ///
     /// # Returns
-    /// Success or an error (e.g., if no transaction is active)
-    pub fn commit_transaction(&self) -> Result<()> {
-        if !self
-            .in_transaction
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(AuroraError::InvalidOperation(
-                "No transaction in progress".into(),
-            ));
+    /// Success or an error if transaction not found
+    pub fn commit_transaction(&self, tx_id: crate::transaction::TransactionId) -> Result<()> {
+        let buffer = self.transaction_manager.active_transactions
+            .get(&tx_id)
+            .ok_or_else(|| AuroraError::InvalidOperation(
+                "Transaction not found or already completed".into()
+            ))?;
+
+        for item in buffer.writes.iter() {
+            let key = item.key();
+            let value = item.value();
+            self.cold.set(key.clone(), value.clone())?;
+            self.hot.set(key.clone(), value.clone(), None);
+            if let Some(collection_name) = key.split(':').next() {
+                if !collection_name.starts_with('_') {
+                    self.index_value(collection_name, key, value)?;
+                }
+            }
         }
 
-        // Apply all pending transaction operations
-        for item in self.transaction_ops.iter() {
-            self.cold.set(item.key().clone(), item.value().clone())?;
-            self.hot.set(item.key().clone(), item.value().clone(), None);
+        for item in buffer.deletes.iter() {
+            let key = item.key();
+            if let Some((collection, id)) = key.split_once(':') {
+                if let Ok(Some(doc)) = self.get_document(collection, id) {
+                    self.remove_from_indices(collection, &doc)?;
+                }
+            }
+            self.cold.delete(key)?;
+            self.hot.delete(key);
         }
 
-        // Clear transaction data
-        self.transaction_ops.clear();
-        self.in_transaction
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.transaction_manager.commit(tx_id)?;
 
-        // Ensure durability by forcing a sync
         self.cold.compact()?;
 
         Ok(())
     }
 
-    /// Roll back the current transaction
+    /// Roll back a transaction
     ///
-    /// Discards all changes made in the current transaction.
+    /// Discards all changes made in the transaction.
+    ///
+    /// # Arguments
+    /// * `tx_id` - Transaction ID returned from begin_transaction()
     ///
     /// # Returns
-    /// Success or an error (e.g., if no transaction is active)
-    pub fn rollback_transaction(&self) -> Result<()> {
-        if !self
-            .in_transaction
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(AuroraError::InvalidOperation(
-                "No transaction in progress".into(),
-            ));
-        }
-
-        // Simply discard the transaction operations
-        self.transaction_ops.clear();
-        self.in_transaction
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-
-        Ok(())
+    /// Success or an error if transaction not found
+    pub fn rollback_transaction(&self, tx_id: crate::transaction::TransactionId) -> Result<()> {
+        self.transaction_manager.rollback(tx_id)
     }
 
     pub async fn create_index(&self, collection: &str, field: &str) -> Result<()> {
@@ -784,27 +966,39 @@ impl Aurora {
     /// db.delete("users", &user_id)?;
     /// ```
     pub async fn delete(&self, key: &str) -> Result<()> {
-        // Delete in all levels
+        // Extract collection and id from key (format: "collection:id")
+        let (collection, id) = if let Some((coll, doc_id)) = key.split_once(':') {
+            (coll, doc_id)
+        } else {
+            return Err(AuroraError::InvalidOperation(
+                "Invalid key format, expected 'collection:id'".into(),
+            ));
+        };
+
+        // CRITICAL FIX: Get document BEFORE deletion to clean up secondary indices
+        let document = self.get_document(collection, id)?;
+
+        // Delete from hot cache
         if self.hot.get(key).is_some() {
             self.hot.delete(key);
         }
 
+        // Delete from cold storage
         self.cold.delete(key)?;
 
-        // Update indices
-        if let Some(collection) = key.split(':').next() {
+        // CRITICAL FIX: Clean up ALL indices (primary + secondary)
+        if let Some(doc) = document {
+            self.remove_from_indices(collection, &doc)?;
+        } else {
+            // Fallback: at least remove from primary index
             if let Some(index) = self.primary_indices.get_mut(collection) {
-                index.remove(key);
+                index.remove(id);
             }
         }
 
-        // If in transaction, record the operation (with null value to indicate deletion)
-        if self
-            .in_transaction
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            self.transaction_ops.insert(key.to_string(), Vec::new());
-        }
+        // Publish delete event
+        let event = crate::pubsub::ChangeEvent::delete(collection, id);
+        let _ = self.pubsub.publish(event);
 
         Ok(())
     }
@@ -831,10 +1025,12 @@ impl Aurora {
         self.secondary_indices
             .retain(|k, _| !k.starts_with(&prefix));
 
+        // Invalidate schema cache
+        self.schema_cache.remove(collection);
+
         Ok(())
     }
 
-    #[allow(dead_code)]
     fn remove_from_indices(&self, collection: &str, doc: &Document) -> Result<()> {
         // Remove from primary index
         if let Some(index) = self.primary_indices.get(collection) {
@@ -1024,12 +1220,12 @@ impl Aurora {
 
     pub async fn find_one<F>(&self, collection: &str, filter_fn: F) -> Result<Option<Document>>
     where
-        F: Fn(&FilterBuilder) -> bool + Send + 'static,
+        F: Fn(&FilterBuilder) -> bool + Send + Sync + 'static,
     {
         self.query(collection).filter(filter_fn).first_one().await
     }
 
-    pub async fn find_by_field<T: Into<Value> + Clone + Send + 'static>(
+    pub async fn find_by_field<T: Into<Value> + Clone + Send + Sync + 'static>(
         &self,
         collection: &str,
         field: &'static str,
@@ -1059,7 +1255,7 @@ impl Aurora {
     }
 
     // Advanced example: find documents with a field value in a specific range
-    pub async fn find_in_range<T: Into<Value> + Clone + Send + 'static>(
+    pub async fn find_in_range<T: Into<Value> + Clone + Send + Sync + 'static>(
         &self,
         collection: &str,
         field: &'static str,
@@ -1178,7 +1374,7 @@ impl Aurora {
             .collect();
 
         // Begin transaction
-        self.begin_transaction()?;
+        let tx_id = self.begin_transaction();
 
         let mut ids = Vec::with_capacity(doc_maps.len());
 
@@ -1193,14 +1389,14 @@ impl Aurora {
             match self.insert_into(collection, data_vec).await {
                 Ok(id) => ids.push(id),
                 Err(e) => {
-                    self.rollback_transaction()?;
+                    self.rollback_transaction(tx_id)?;
                     return Err(e);
                 }
             }
         }
 
         // Commit transaction
-        self.commit_transaction()?;
+        self.commit_transaction(tx_id)?;
 
         Ok(ids)
     }
@@ -1208,7 +1404,7 @@ impl Aurora {
     // Delete documents by query
     pub async fn delete_by_query<F>(&self, collection: &str, filter_fn: F) -> Result<usize>
     where
-        F: Fn(&FilterBuilder) -> bool + Send + 'static,
+        F: Fn(&FilterBuilder) -> bool + Send + Sync + 'static,
     {
         let docs = self.query(collection).filter(filter_fn).collect().await?;
 
@@ -1363,7 +1559,7 @@ impl Aurora {
             FieldType::String => value.is_string(),
             FieldType::Int => value.is_i64() || value.is_u64(),
             FieldType::Float => value.is_number(),
-            FieldType::Boolean => value.is_boolean(),
+            FieldType::Bool => value.is_boolean(),
             FieldType::Array => value.is_array(),
             FieldType::Object => value.is_object(),
             FieldType::Uuid => {
@@ -1434,11 +1630,6 @@ impl Aurora {
         })
     }
 
-    /// Get a direct reference to a value in the hot cache
-    pub fn get_hot_ref(&self, key: &str) -> Option<Arc<Vec<u8>>> {
-        self.hot.get_ref(key)
-    }
-
     /// Check if a key is currently stored in the hot cache
     pub fn is_in_hot_cache(&self, key: &str) -> bool {
         self.hot.is_hot(key)
@@ -1459,9 +1650,147 @@ impl Aurora {
         );
     }
 
+    /// Prewarm the cache by loading frequently accessed data from cold storage
+    ///
+    /// This loads the most recently modified documents from a collection into
+    /// the hot cache to improve initial query performance after startup.
+    ///
+    /// # Arguments
+    /// * `collection` - The collection to prewarm
+    /// * `limit` - Maximum number of documents to load (default: 1000)
+    ///
+    /// # Returns
+    /// Number of documents loaded into cache
+    pub async fn prewarm_cache(&self, collection: &str, limit: Option<usize>) -> Result<usize> {
+        let limit = limit.unwrap_or(1000);
+        let prefix = format!("{}:", collection);
+        let mut loaded = 0;
+
+        for entry in self.cold.scan_prefix(&prefix) {
+            if loaded >= limit {
+                break;
+            }
+
+            if let Ok((key, value)) = entry {
+                // Load into hot cache
+                self.hot.set(key.clone(), value, None);
+                loaded += 1;
+            }
+        }
+
+        println!("Prewarmed {} with {} documents", collection, loaded);
+        Ok(loaded)
+    }
+
+    /// Prewarm cache for all collections
+    pub async fn prewarm_all_collections(&self, docs_per_collection: Option<usize>) -> Result<HashMap<String, usize>> {
+        let mut stats = HashMap::new();
+
+        // Get all collections
+        let collections: Vec<String> = self
+            .cold
+            .scan()
+            .filter_map(|r| r.ok())
+            .map(|(k, _)| k)
+            .filter(|k| k.starts_with("_collection:"))
+            .map(|k| k.trim_start_matches("_collection:").to_string())
+            .collect();
+
+        for collection in collections {
+            let loaded = self.prewarm_cache(&collection, docs_per_collection).await?;
+            stats.insert(collection, loaded);
+        }
+
+        Ok(stats)
+    }
+
     /// Store multiple key-value pairs efficiently in a single batch operation
     pub fn batch_write(&self, pairs: Vec<(String, Vec<u8>)>) -> Result<()> {
-        self.cold.batch_set(pairs)
+        // Group pairs by collection name
+        let mut collections: HashMap<String, Vec<(String, Vec<u8>)>> = HashMap::new();
+        for (key, value) in &pairs {
+            if let Some(collection_name) = key.split(':').next() {
+                collections
+                    .entry(collection_name.to_string())
+                    .or_default()
+                    .push((key.clone(), value.clone()));
+            }
+        }
+
+        // First, do the batch write to cold storage for all pairs
+        self.cold.batch_set(pairs)?;
+
+        // Then, process each collection for in-memory updates
+        for (collection_name, batch) in collections {
+            // --- Optimized Batch Indexing ---
+
+            // 1. Get schema once for the entire collection batch
+            let collection_obj = match self.schema_cache.get(&collection_name) {
+                Some(cached_schema) => Arc::clone(cached_schema.value()),
+                None => {
+                    let collection_key = format!("_collection:{}", collection_name);
+                    match self.get(&collection_key)? {
+                        Some(data) => {
+                            let obj: Collection = serde_json::from_slice(&data)?;
+                            let arc_obj = Arc::new(obj);
+                            self.schema_cache.insert(collection_name.to_string(), Arc::clone(&arc_obj));
+                            arc_obj
+                        },
+                        None => continue,
+                    }
+                }
+            };
+
+            let indexed_fields: Vec<String> = collection_obj
+                .fields
+                .iter()
+                .filter(|(_, def)| def.indexed || def.unique)
+                .map(|(name, _)| name.clone())
+                .collect();
+
+            let primary_index = self.primary_indices
+                .entry(collection_name.to_string())
+                .or_insert_with(DashMap::new);
+
+            for (key, value) in batch {
+                // 2. Update hot cache
+                self.hot.set(key.clone(), value.clone(), None);
+
+                // 3. Update primary index
+                primary_index.insert(key.clone(), value.clone());
+
+                // 4. Update secondary indices
+                if !indexed_fields.is_empty() {
+                    if let Ok(doc) = serde_json::from_slice::<Document>(&value) {
+                        for (field, field_value) in doc.data {
+                            if indexed_fields.contains(&field) {
+                                let value_str = match &field_value {
+                                    Value::String(s) => s.clone(),
+                                    _ => field_value.to_string(),
+                                };
+                                let index_key = format!("{}:{}", collection_name, field);
+                                let secondary_index = self
+                                    .secondary_indices
+                                    .entry(index_key)
+                                    .or_insert_with(DashMap::new);
+                                
+                                let max_entries = self.config.max_index_entries_per_field;
+                                secondary_index
+                                    .entry(value_str)
+                                    .and_modify(|doc_ids| {
+                                        if doc_ids.len() < max_entries {
+                                            doc_ids.push(key.to_string());
+                                        }
+                                    })
+                                    .or_insert_with(|| vec![key.to_string()]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Scan for keys with a specific prefix
@@ -1927,17 +2256,20 @@ impl Aurora {
                     Err(e) => Response::Error(e.to_string()),
                 }
             }
-            crate::network::protocol::Request::BeginTransaction => match self.begin_transaction() {
-                Ok(_) => Response::Done,
-                Err(e) => Response::Error(e.to_string()),
+            crate::network::protocol::Request::BeginTransaction => {
+                let tx_id = self.begin_transaction();
+                Response::TransactionId(tx_id.as_u64())
             },
-            crate::network::protocol::Request::CommitTransaction => match self.commit_transaction()
-            {
-                Ok(_) => Response::Done,
-                Err(e) => Response::Error(e.to_string()),
+            crate::network::protocol::Request::CommitTransaction(tx_id_u64) => {
+                let tx_id = crate::transaction::TransactionId::from_u64(tx_id_u64);
+                match self.commit_transaction(tx_id) {
+                    Ok(_) => Response::Done,
+                    Err(e) => Response::Error(e.to_string()),
+                }
             },
-            crate::network::protocol::Request::RollbackTransaction => {
-                match self.rollback_transaction() {
+            crate::network::protocol::Request::RollbackTransaction(tx_id_u64) => {
+                let tx_id = crate::transaction::TransactionId::from_u64(tx_id_u64);
+                match self.rollback_transaction(tx_id) {
                     Ok(_) => Response::Done,
                     Err(e) => Response::Error(e.to_string()),
                 }
@@ -2194,9 +2526,9 @@ mod tests {
         db.new_collection(
             "users",
             vec![
-                ("name".to_string(), FieldType::String, false),
-                ("age".to_string(), FieldType::Int, false),
-                ("email".to_string(), FieldType::String, true),
+                ("name", FieldType::String, false),
+                ("age", FieldType::Int, false),
+                ("email", FieldType::String, true),
             ],
         )?;
 
@@ -2230,7 +2562,7 @@ mod tests {
         let db = Aurora::open(db_path.to_str().unwrap())?;
 
         // Start transaction
-        db.begin_transaction()?;
+        let tx_id = db.begin_transaction();
 
         // Insert document
         let doc_id = db
@@ -2238,7 +2570,7 @@ mod tests {
             .await?;
 
         // Commit transaction
-        db.commit_transaction()?;
+        db.commit_transaction(tx_id)?;
 
         // Verify document exists
         let doc = db.get_document("test", &doc_id)?.unwrap();
@@ -2260,9 +2592,9 @@ mod tests {
         db.new_collection(
             "books",
             vec![
-                ("title".to_string(), FieldType::String, false),
-                ("author".to_string(), FieldType::String, false),
-                ("year".to_string(), FieldType::Int, false),
+                ("title", FieldType::String, false),
+                ("author", FieldType::String, false),
+                ("year", FieldType::Int, false),
             ],
         )?;
 
@@ -2360,9 +2692,9 @@ mod tests {
         db.new_collection(
             "users",
             vec![
-                ("name".to_string(), FieldType::String, false),
-                ("email".to_string(), FieldType::String, true), // unique field
-                ("age".to_string(), FieldType::Int, false),
+                ("name", FieldType::String, false),
+                ("email", FieldType::String, true), // unique field
+                ("age", FieldType::Int, false),
             ],
         )?;
 

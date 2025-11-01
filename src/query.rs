@@ -58,8 +58,8 @@ where
 pub struct QueryBuilder<'a> {
     db: &'a Aurora,
     collection: String,
-    // CHANGE 1: Add `+ Send` to make the boxed closure thread-safe.
-    filters: Vec<Box<dyn Fn(&Document) -> bool + Send + 'a>>,
+    // CHANGE 1: Add `+ Send + Sync` to make the boxed closure thread-safe.
+    filters: Vec<Box<dyn Fn(&Document) -> bool + Send + Sync + 'a>>,
     order_by: Option<(String, bool)>,
     limit: Option<usize>,
     offset: Option<usize>,
@@ -352,8 +352,8 @@ impl<'a> QueryBuilder<'a> {
     /// ```
     pub fn filter<F>(mut self, filter_fn: F) -> Self
     where
-        // CHANGE 2: Require the closure `F` to be `Send`.
-        F: Fn(&FilterBuilder) -> bool + Send + 'a,
+        // CHANGE 2: Require the closure `F` to be `Send + Sync`.
+        F: Fn(&FilterBuilder) -> bool + Send + Sync + 'a,
     {
         self.filters.push(Box::new(move |doc| {
             let filter_builder = FilterBuilder::new(doc);
@@ -482,6 +482,58 @@ impl<'a> QueryBuilder<'a> {
         // Ensure we don't go out of bounds
         let end = end.min(docs.len());
         Ok(docs.get(start..end).unwrap_or(&[]).to_vec())
+    }
+
+    /// Watch the query for real-time updates
+    ///
+    /// Returns a QueryWatcher that emits updates when documents are added,
+    /// removed, or modified in ways that affect the query results.
+    ///
+    /// Note: This method requires the QueryBuilder to have a 'static lifetime,
+    /// which means the database reference must also be 'static (e.g., Arc<Aurora>).
+    ///
+    /// # Examples
+    /// ```
+    /// let mut watcher = db.query("users")
+    ///     .filter(|f| f.eq("active", true))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// // Receive updates in real-time
+    /// while let Some(update) = watcher.next().await {
+    ///     match update {
+    ///         QueryUpdate::Added(doc) => println!("New: {:?}", doc),
+    ///         QueryUpdate::Removed(doc) => println!("Removed: {:?}", doc),
+    ///         QueryUpdate::Modified { old, new } => println!("Modified: {:?}", new),
+    ///     }
+    /// }
+    /// ```
+    pub async fn watch(mut self) -> Result<crate::reactive::QueryWatcher>
+    where
+        'a: 'static,
+    {
+        use crate::reactive::{QueryWatcher, ReactiveQueryState};
+        use std::sync::Arc;
+
+        // Extract the filters before consuming self
+        let collection = self.collection.clone();
+        let db = self.db;
+        let filters = std::mem::take(&mut self.filters);
+
+        // Get initial results
+        let docs = self.collect().await?;
+
+        // Create a listener for this collection
+        let listener = db.listen(&collection);
+
+        // Create filter closure that combines all the query filters
+        let filter_fn = move |doc: &Document| -> bool { filters.iter().all(|f| f(doc)) };
+
+        // Create reactive state
+        let state = Arc::new(ReactiveQueryState::new(filter_fn));
+
+        // Create and return watcher
+        Ok(QueryWatcher::new(collection, listener, state, docs))
     }
 
     /// Get only the first matching document or None if no matches

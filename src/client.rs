@@ -8,13 +8,17 @@ use tokio::net::TcpStream;
 
 pub struct Client {
     stream: TcpStream,
+    current_transaction: Option<u64>,
 }
 
 impl Client {
     /// Connect to an Aurora server at the given address.
     pub async fn connect(addr: &str) -> Result<Self> {
         let stream = TcpStream::connect(addr).await?;
-        Ok(Self { stream })
+        Ok(Self {
+            stream,
+            current_transaction: None,
+        })
     }
 
     /// Sends a request to the server and awaits a response.
@@ -90,17 +94,42 @@ impl Client {
         }
     }
 
-    pub async fn begin_transaction(&mut self) -> Result<()> {
+    pub async fn begin_transaction(&mut self) -> Result<u64> {
         match self.send_request(Request::BeginTransaction).await? {
-            Response::Done => Ok(()),
+            Response::TransactionId(tx_id) => {
+                self.current_transaction = Some(tx_id);
+                Ok(tx_id)
+            }
             Response::Error(e) => Err(AuroraError::Protocol(e)),
             _ => Err(AuroraError::Protocol("Unexpected response".into())),
         }
     }
 
     pub async fn commit_transaction(&mut self) -> Result<()> {
-        match self.send_request(Request::CommitTransaction).await? {
-            Response::Done => Ok(()),
+        let tx_id = self.current_transaction.ok_or_else(|| {
+            AuroraError::InvalidOperation("No active transaction".into())
+        })?;
+
+        match self.send_request(Request::CommitTransaction(tx_id)).await? {
+            Response::Done => {
+                self.current_transaction = None;
+                Ok(())
+            }
+            Response::Error(e) => Err(AuroraError::Protocol(e)),
+            _ => Err(AuroraError::Protocol("Unexpected response".into())),
+        }
+    }
+
+    pub async fn rollback_transaction(&mut self) -> Result<()> {
+        let tx_id = self.current_transaction.ok_or_else(|| {
+            AuroraError::InvalidOperation("No active transaction".into())
+        })?;
+
+        match self.send_request(Request::RollbackTransaction(tx_id)).await? {
+            Response::Done => {
+                self.current_transaction = None;
+                Ok(())
+            }
             Response::Error(e) => Err(AuroraError::Protocol(e)),
             _ => Err(AuroraError::Protocol("Unexpected response".into())),
         }
