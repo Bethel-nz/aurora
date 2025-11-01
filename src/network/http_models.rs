@@ -1,7 +1,7 @@
 use crate::error::{AuroraError, Result};
 use crate::types::{Document, Value};
 use serde::Deserialize;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use std::collections::HashMap;
 use uuid::Uuid;
 

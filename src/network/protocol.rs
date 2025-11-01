@@ -60,10 +60,10 @@ pub enum Request {
     Query(SimpleQueryBuilder),
     /// Begin a transaction.
     BeginTransaction,
-    /// Commit the current transaction.
-    CommitTransaction,
-    /// Roll back the current transaction.
-    RollbackTransaction,
+    /// Commit a transaction.
+    CommitTransaction(u64),
+    /// Roll back a transaction.
+    RollbackTransaction(u64),
 }
 
 /// Represents a response sent from the server to a client.
@@ -77,6 +77,8 @@ pub enum Response {
     Documents(Vec<Document>),
     /// A successful operation with a string response (e.g., a document ID).
     Message(String),
+    /// Transaction ID returned from BeginTransaction.
+    TransactionId(u64),
     /// A successful operation with no return value.
     Done,
     /// An error occurred.
