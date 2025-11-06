@@ -97,6 +97,7 @@ impl WriteAheadLog {
     }
 
     pub fn truncate(&mut self) -> Result<()> {
+        self.file.flush()?;
         let file = self.file.get_mut();
         file.set_len(0)?;
         file.sync_all()?;

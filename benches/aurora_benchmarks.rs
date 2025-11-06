@@ -5,11 +5,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
+use tempfile::tempdir;
 
 const BULK_SIZE: usize = 100;
 
 fn setup() -> Result<Aurora> {
-    let db = Aurora::open("bench.db")?;
+    let temp_dir = tempdir()?;
+    let db_path = temp_dir.path().join("bench.db");
+    let db = Aurora::open(&db_path)?;
+    std::mem::forget(temp_dir);
     Ok(db)
 }
 
