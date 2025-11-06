@@ -4,3 +4,6 @@
 *.json
 *.wal
 *.csv
+
+# Ignore Windows drive letter directories that may be created accidentally
+[A-Z]:/
