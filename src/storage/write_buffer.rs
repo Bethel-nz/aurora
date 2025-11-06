@@ -8,6 +8,7 @@ use tokio::time::{Duration, interval};
 pub enum WriteOp {
     Write { key: String, value: Vec<u8> },
     Flush(oneshot::Sender<Result<()>>),
+    Shutdown(oneshot::Sender<()>),
 }
 
 pub struct WriteBuffer {
@@ -54,6 +55,16 @@ impl WriteBuffer {
                                 };
                                 let _ = response.send(result);
                             }
+                            WriteOp::Shutdown(response) => {
+                                // Final flush before shutdown
+                                if !batch.is_empty() {
+                                    if let Err(e) = cold.batch_set(batch) {
+                                        eprintln!("Write buffer shutdown flush error: {}", e);
+                                    }
+                                }
+                                let _ = response.send(());
+                                break; // Exit gracefully
+                            }
                         }
                     }
 
@@ -66,12 +77,6 @@ impl WriteBuffer {
                     }
 
                     else => break,
-                }
-            }
-
-            if !batch.is_empty() {
-                if let Err(e) = cold.batch_set(batch) {
-                    eprintln!("Write buffer final flush error: {}", e);
                 }
             }
         });
@@ -107,7 +112,18 @@ impl WriteBuffer {
 }
 
 impl Drop for WriteBuffer {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        // Signal graceful shutdown - send shutdown message
+        // The background task will perform final flush when it receives this
+        let (tx, _rx) = oneshot::channel();
+        let _ = self.sender.send(WriteOp::Shutdown(tx));
+
+        // Note: We can't block here waiting for the response because:
+        // 1. Drop can be called from within a tokio runtime context
+        // 2. Blocking in Drop from an async context causes a panic
+        // The background task will still flush before exiting, we just
+        // don't wait for confirmation here.
+    }
 }
 
 #[cfg(test)]

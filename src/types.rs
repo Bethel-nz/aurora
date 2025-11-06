@@ -444,6 +444,7 @@ pub struct AuroraConfig {
     // Durability config
     pub durability_mode: DurabilityMode, // Trade-off between performance and data safety
     pub enable_wal: bool,                 // Enable write-ahead logging
+    pub checkpoint_interval_ms: u64,      // Background checkpoint interval (flush + WAL truncate)
 }
 
 /// Durability mode determines the trade-off between performance and data safety
@@ -492,6 +493,7 @@ impl Default for AuroraConfig {
             // Use WAL mode by default for good balance of performance and durability
             durability_mode: DurabilityMode::WAL,
             enable_wal: true,
+            checkpoint_interval_ms: 100, // Checkpoint every 100ms
         }
     }
 }

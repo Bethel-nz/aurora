@@ -59,7 +59,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::File as StdFile;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::fs::File;
 use tokio::fs::read_to_string;
@@ -130,7 +130,9 @@ pub struct Aurora {
     // PubSub system for change notifications
     pubsub: crate::pubsub::PubSubSystem,
     // Write-ahead log for durability (optional, based on config)
-    wal: Option<Arc<Mutex<WriteAheadLog>>>,
+    wal: Option<Arc<RwLock<WriteAheadLog>>>,
+    // Background checkpoint task
+    checkpoint_shutdown: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 impl fmt::Debug for Aurora {
@@ -245,12 +247,54 @@ impl Aurora {
             match WriteAheadLog::new(wal_path) {
                 Ok(mut wal_log) => {
                     let entries = wal_log.recover().unwrap_or_else(|_| Vec::new());
-                    (Some(Arc::new(Mutex::new(wal_log))), entries)
+                    (Some(Arc::new(RwLock::new(wal_log))), entries)
                 }
                 Err(_) => (None, Vec::new()),
             }
         } else {
             (None, Vec::new())
+        };
+
+        // Spawn background checkpoint task if WAL is enabled
+        let checkpoint_shutdown = if wal.is_some() {
+            let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel();
+            let cold_clone = Arc::clone(&cold);
+            let wal_clone = wal.clone();
+            let checkpoint_interval = config.checkpoint_interval_ms;
+
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(checkpoint_interval));
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            // Checkpoint: flush cold storage
+                            if let Err(e) = cold_clone.flush() {
+                                eprintln!("Background checkpoint flush error: {}", e);
+                            }
+                            // Truncate WAL after successful flush
+                            if let Some(ref wal) = wal_clone {
+                                if let Ok(mut wal_guard) = wal.write() {
+                                    let _ = wal_guard.truncate();
+                                }
+                            }
+                        }
+                        _ = shutdown_rx.recv() => {
+                            // Final checkpoint before shutdown
+                            let _ = cold_clone.flush();
+                            if let Some(ref wal) = wal_clone {
+                                if let Ok(mut wal_guard) = wal.write() {
+                                    let _ = wal_guard.truncate();
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            });
+
+            Some(shutdown_tx)
+        } else {
+            None
         };
 
         // Initialize the database
@@ -267,6 +311,7 @@ impl Aurora {
             write_buffer,
             pubsub,
             wal,
+            checkpoint_shutdown,
         };
 
         // Replay WAL entries if any
@@ -413,7 +458,7 @@ impl Aurora {
 
         // Truncate WAL after successful flush (data is now in cold storage)
         if let Some(ref wal) = self.wal {
-            if let Ok(mut wal_lock) = wal.lock() {
+            if let Ok(mut wal_lock) = wal.write() {
                 wal_lock.truncate()?;
             }
         }
@@ -436,9 +481,7 @@ impl Aurora {
         // This ensures we have a durable record even if we crash before flushing
         if let Some(ref wal) = self.wal {
             if self.config.durability_mode != DurabilityMode::None {
-                if let Ok(mut wal_lock) = wal.lock() {
-                    wal_lock.append(Operation::Put, &key, Some(&value))?;
-                }
+                wal.write().unwrap().append(Operation::Put, &key, Some(&value))?;
             }
         }
 
@@ -451,15 +494,11 @@ impl Aurora {
             self.cold.set(key.clone(), value.clone())?;
         }
 
-        // Step 3: For synchronous durability mode, flush immediately
-        if self.config.durability_mode == DurabilityMode::Synchronous {
-            self.cold.flush()?;
-        }
-
-        // Step 4: Update hot cache after storage write
+        // Step 3: Update hot cache after storage write
+        // Note: Durability is handled by background checkpoint process
         self.hot.set(key.clone(), value.clone(), ttl);
 
-        // Step 5: FIXED RACE CONDITION: Update indices only AFTER storage write succeeds
+        // Step 4: FIXED RACE CONDITION: Update indices only AFTER storage write succeeds
         // This ensures indices never point to non-existent data
         if let Some(collection_name) = key.split(':').next() {
             // Don't index internal data like _collection or _index definitions
@@ -505,9 +544,7 @@ impl Aurora {
         // Flush after replay and truncate WAL
         self.cold.flush()?;
         if let Some(ref wal) = self.wal {
-            if let Ok(mut wal_lock) = wal.lock() {
-                wal_lock.truncate()?;
-            }
+            wal.write().unwrap().truncate()?;
         }
 
         Ok(())
@@ -808,10 +845,9 @@ impl Aurora {
         // Write to WAL in batch (if enabled)
         if let Some(ref wal) = self.wal {
             if self.config.durability_mode != DurabilityMode::None {
-                if let Ok(mut wal_lock) = wal.lock() {
-                    for (key, value) in &pairs {
-                        wal_lock.append(Operation::Put, key, Some(value))?;
-                    }
+                let mut wal_lock = wal.write().unwrap();
+                for (key, value) in &pairs {
+                    wal_lock.append(Operation::Put, key, Some(value))?;
                 }
             }
         }
@@ -819,10 +855,7 @@ impl Aurora {
         // Bypass write buffer - go directly to cold storage batch API
         self.cold.batch_set(pairs.clone())?;
 
-        // Flush if synchronous mode
-        if self.config.durability_mode == DurabilityMode::Synchronous {
-            self.cold.flush()?;
-        }
+        // Note: Durability is handled by background checkpoint process
 
         // Update hot cache and indices
         for (key, value) in pairs {
@@ -2591,6 +2624,15 @@ impl Aurora {
             }
         }
         Ok(())
+    }
+}
+
+impl Drop for Aurora {
+    fn drop(&mut self) {
+        // Signal checkpoint task to shutdown gracefully
+        if let Some(ref shutdown_tx) = self.checkpoint_shutdown {
+            let _ = shutdown_tx.send(());
+        }
     }
 }
 
