@@ -2,27 +2,29 @@ use crate::error::{AuroraError, Result};
 use crate::storage::ColdStore;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Duration, interval};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 pub enum WriteOp {
     Write { key: String, value: Vec<u8> },
-    Flush(oneshot::Sender<Result<()>>),
-    Shutdown(oneshot::Sender<()>),
+    Flush(mpsc::SyncSender<Result<()>>),
+    Shutdown,
 }
 
 pub struct WriteBuffer {
-    sender: mpsc::UnboundedSender<WriteOp>,
+    sender: mpsc::SyncSender<WriteOp>,
     is_alive: Arc<AtomicBool>,
 }
 
 impl WriteBuffer {
     pub fn new(cold: Arc<ColdStore>, buffer_size: usize, flush_interval_ms: u64) -> Self {
-        let (sender, mut receiver) = mpsc::unbounded_channel::<WriteOp>();
+        let (sender, receiver) = mpsc::sync_channel::<WriteOp>(1000);
         let is_alive = Arc::new(AtomicBool::new(true));
         let task_is_alive = Arc::clone(&is_alive);
 
-        tokio::spawn(async move {
+        // Use a real OS thread instead of tokio::spawn
+        // This allows Drop to safely block without async context issues
+        std::thread::spawn(move || {
             struct TaskGuard(Arc<AtomicBool>);
             impl Drop for TaskGuard {
                 fn drop(&mut self) {
@@ -32,51 +34,62 @@ impl WriteBuffer {
             let _guard = TaskGuard(task_is_alive);
 
             let mut batch = Vec::with_capacity(buffer_size);
-            let mut flush_timer = interval(Duration::from_millis(flush_interval_ms));
+            let mut last_flush = Instant::now();
+            let flush_duration = Duration::from_millis(flush_interval_ms);
 
             loop {
-                tokio::select! {
-                    Some(op) = receiver.recv() => {
-                        match op {
-                            WriteOp::Write { key, value } => {
-                                batch.push((key, value));
+                // Try to receive with a timeout to allow periodic flushes
+                let timeout = flush_duration.saturating_sub(last_flush.elapsed());
+                let op = receiver.recv_timeout(timeout);
 
-                                if batch.len() >= buffer_size {
-                                    if let Err(e) = cold.batch_set(batch.drain(..).collect()) {
-                                        eprintln!("Write buffer flush error: {}", e);
-                                    }
-                                }
+                match op {
+                    Ok(WriteOp::Write { key, value }) => {
+                        batch.push((key, value));
+
+                        // Flush if batch is full
+                        if batch.len() >= buffer_size {
+                            if let Err(e) = cold.batch_set(batch.drain(..).collect()) {
+                                eprintln!("Write buffer flush error: {}", e);
                             }
-                            WriteOp::Flush(response) => {
-                                let result = if !batch.is_empty() {
-                                    cold.batch_set(batch.drain(..).collect())
-                                } else {
-                                    Ok(())
-                                };
-                                let _ = response.send(result);
-                            }
-                            WriteOp::Shutdown(response) => {
-                                // Final flush before shutdown
-                                if !batch.is_empty() {
-                                    if let Err(e) = cold.batch_set(batch) {
-                                        eprintln!("Write buffer shutdown flush error: {}", e);
-                                    }
-                                }
-                                let _ = response.send(());
-                                break; // Exit gracefully
-                            }
+                            last_flush = Instant::now();
                         }
                     }
-
-                    _ = flush_timer.tick() => {
+                    Ok(WriteOp::Flush(response)) => {
+                        let result = if !batch.is_empty() {
+                            cold.batch_set(batch.drain(..).collect())
+                        } else {
+                            Ok(())
+                        };
+                        let _ = response.send(result);
+                        last_flush = Instant::now();
+                    }
+                    Ok(WriteOp::Shutdown) => {
+                        // Final flush before shutdown
                         if !batch.is_empty() {
+                            if let Err(e) = cold.batch_set(batch) {
+                                eprintln!("Write buffer shutdown flush error: {}", e);
+                            }
+                        }
+                        break; // Exit gracefully
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        // Periodic flush
+                        if !batch.is_empty() && last_flush.elapsed() >= flush_duration {
                             if let Err(e) = cold.batch_set(batch.drain(..).collect()) {
                                 eprintln!("Write buffer periodic flush error: {}", e);
                             }
+                            last_flush = Instant::now();
                         }
                     }
-
-                    else => break,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        // Channel closed, flush and exit
+                        if !batch.is_empty() {
+                            if let Err(e) = cold.batch_set(batch) {
+                                eprintln!("Write buffer final flush error: {}", e);
+                            }
+                        }
+                        break;
+                    }
                 }
             }
         });
@@ -97,12 +110,12 @@ impl WriteBuffer {
     }
 
     pub fn flush(&self) -> Result<()> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = mpsc::sync_channel(1);
         self.sender
             .send(WriteOp::Flush(tx))
             .map_err(|_| AuroraError::InvalidOperation("Write buffer closed".into()))?;
 
-        rx.blocking_recv()
+        rx.recv()
             .map_err(|_| AuroraError::InvalidOperation("Flush response lost".into()))?
     }
 
@@ -113,16 +126,14 @@ impl WriteBuffer {
 
 impl Drop for WriteBuffer {
     fn drop(&mut self) {
-        // Signal graceful shutdown - send shutdown message
-        // The background task will perform final flush when it receives this
-        let (tx, _rx) = oneshot::channel();
-        let _ = self.sender.send(WriteOp::Shutdown(tx));
+        // Signal graceful shutdown
+        // The background thread (not tokio task) will perform final flush
+        // We can safely send because we're using std::sync::mpsc
+        let _ = self.sender.send(WriteOp::Shutdown);
 
-        // Note: We can't block here waiting for the response because:
-        // 1. Drop can be called from within a tokio runtime context
-        // 2. Blocking in Drop from an async context causes a panic
-        // The background task will still flush before exiting, we just
-        // don't wait for confirmation here.
+        // Give the background thread a moment to flush
+        // The thread will exit cleanly after flushing
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 

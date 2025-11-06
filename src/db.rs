@@ -1039,6 +1039,10 @@ impl Aurora {
             self.hot.delete(key);
         }
 
+        // Drop the buffer reference to release the DashMap read lock
+        // before calling commit which needs to remove the entry (write lock)
+        drop(buffer);
+
         self.transaction_manager.commit(tx_id)?;
 
         self.cold.compact()?;
