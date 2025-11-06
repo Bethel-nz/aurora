@@ -2,13 +2,12 @@ use crate::error::{AuroraError, Result};
 use crate::storage::ColdStore;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, interval};
 
-#[derive(Debug, Clone)]
-pub struct WriteOp {
-    pub key: String,
-    pub value: Vec<u8>,
+pub enum WriteOp {
+    Write { key: String, value: Vec<u8> },
+    Flush(oneshot::Sender<Result<()>>),
 }
 
 pub struct WriteBuffer {
@@ -37,11 +36,23 @@ impl WriteBuffer {
             loop {
                 tokio::select! {
                     Some(op) = receiver.recv() => {
-                        batch.push((op.key, op.value));
+                        match op {
+                            WriteOp::Write { key, value } => {
+                                batch.push((key, value));
 
-                        if batch.len() >= buffer_size {
-                            if let Err(e) = cold.batch_set(batch.drain(..).collect()) {
-                                eprintln!("Write buffer flush error: {}", e);
+                                if batch.len() >= buffer_size {
+                                    if let Err(e) = cold.batch_set(batch.drain(..).collect()) {
+                                        eprintln!("Write buffer flush error: {}", e);
+                                    }
+                                }
+                            }
+                            WriteOp::Flush(response) => {
+                                let result = if !batch.is_empty() {
+                                    cold.batch_set(batch.drain(..).collect())
+                                } else {
+                                    Ok(())
+                                };
+                                let _ = response.send(result);
                             }
                         }
                     }
@@ -74,10 +85,20 @@ impl WriteBuffer {
                 "Write buffer is not active.".into(),
             ));
         }
-        self.sender.send(WriteOp { key, value }).map_err(|_| {
+        self.sender.send(WriteOp::Write { key, value }).map_err(|_| {
             AuroraError::InvalidOperation("Write buffer channel closed unexpectedly.".into())
         })?;
         Ok(())
+    }
+
+    pub fn flush(&self) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(WriteOp::Flush(tx))
+            .map_err(|_| AuroraError::InvalidOperation("Write buffer closed".into()))?;
+
+        rx.blocking_recv()
+            .map_err(|_| AuroraError::InvalidOperation("Flush response lost".into()))?
     }
 
     pub fn is_active(&self) -> bool {

@@ -7,10 +7,10 @@ use std::time::SystemTime;
 
 #[derive(Serialize, Deserialize)]
 pub struct LogEntry {
-    timestamp: u64,
-    operation: Operation,
-    key: String,
-    value: Option<Vec<u8>>,
+    pub timestamp: u64,
+    pub operation: Operation,
+    pub key: String,
+    pub value: Option<Vec<u8>>,
 }
 
 #[derive(Serialize, Deserialize)]

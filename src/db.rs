@@ -232,43 +232,28 @@ impl Aurora {
             None
         };
 
-        // Initialize WAL if enabled
-        let wal = if config.enable_wal {
-            let wal_path = path.to_str().unwrap();
-            match WriteAheadLog::new(wal_path) {
-                Ok(mut wal_log) => {
-                    // Attempt WAL recovery on startup
-                    match wal_log.recover() {
-                        Ok(entries) => {
-                            if !entries.is_empty() {
-                                eprintln!(
-                                    "WAL: Recovered {} entries from write-ahead log",
-                                    entries.len()
-                                );
-                                // Note: Full recovery implementation would replay these entries
-                                // For now, we just log them. TODO: implement full replay logic
-                            }
-                        }
-                        Err(e) => eprintln!("WAL: Failed to recover entries: {}", e),
-                    }
-                    Some(Arc::new(Mutex::new(wal_log)))
-                }
-                Err(e) => {
-                    eprintln!("WAL: Failed to initialize write-ahead log: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
         // Store auto_compact before moving config
         let auto_compact = config.auto_compact;
+        let enable_wal = config.enable_wal;
 
         // Initialize PubSub system (10K event buffer)
         let pubsub = crate::pubsub::PubSubSystem::new(10000);
 
-        // Initialize the rest using the config...
+        // Initialize WAL if enabled and check for recovery
+        let (wal, wal_entries) = if enable_wal {
+            let wal_path = path.to_str().unwrap();
+            match WriteAheadLog::new(wal_path) {
+                Ok(mut wal_log) => {
+                    let entries = wal_log.recover().unwrap_or_else(|_| Vec::new());
+                    (Some(Arc::new(Mutex::new(wal_log))), entries)
+                }
+                Err(_) => (None, Vec::new()),
+            }
+        } else {
+            (None, Vec::new())
+        };
+
+        // Initialize the database
         let db = Self {
             hot,
             cold,
@@ -283,6 +268,11 @@ impl Aurora {
             pubsub,
             wal,
         };
+
+        // Replay WAL entries if any
+        if !wal_entries.is_empty() {
+            db.replay_wal(wal_entries)?;
+        }
 
         // Set up auto-compaction if enabled
         if auto_compact {
@@ -414,10 +404,8 @@ impl Aurora {
     /// ```
     pub fn flush(&self) -> Result<()> {
         // Flush write buffer if present
-        if let Some(ref _write_buffer) = self.write_buffer {
-            // Note: WriteBuffer doesn't expose a flush method yet
-            // This would need to be added to the WriteBuffer implementation
-            // TODO: call _write_buffer.flush() once implemented
+        if let Some(ref write_buffer) = self.write_buffer {
+            write_buffer.flush()?;
         }
 
         // Flush cold storage
@@ -477,6 +465,48 @@ impl Aurora {
             // Don't index internal data like _collection or _index definitions
             if !collection_name.starts_with('_') {
                 self.index_value(collection_name, &key, &value)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Replay WAL entries to recover from crash
+    fn replay_wal(&self, entries: Vec<crate::wal::LogEntry>) -> Result<()> {
+        for entry in entries {
+            match entry.operation {
+                Operation::Put => {
+                    if let Some(value) = entry.value {
+                        // Write directly to cold storage (skip WAL, already logged)
+                        self.cold.set(entry.key.clone(), value.clone())?;
+
+                        // Update hot cache
+                        self.hot.set(entry.key.clone(), value.clone(), None);
+
+                        // Rebuild indices
+                        if let Some(collection) = entry.key.split(':').next() {
+                            if !collection.starts_with('_') {
+                                self.index_value(collection, &entry.key, &value)?;
+                            }
+                        }
+                    }
+                }
+                Operation::Delete => {
+                    self.cold.delete(&entry.key)?;
+                    self.hot.delete(&entry.key);
+                    // TODO: Remove from indices
+                }
+                Operation::BeginTx | Operation::CommitTx | Operation::RollbackTx => {
+                    // Transaction boundaries - future implementation
+                }
+            }
+        }
+
+        // Flush after replay and truncate WAL
+        self.cold.flush()?;
+        if let Some(ref wal) = self.wal {
+            if let Ok(mut wal_lock) = wal.lock() {
+                wal_lock.truncate()?;
             }
         }
 
@@ -744,6 +774,76 @@ impl Aurora {
         let _ = self.pubsub.publish(event);
 
         Ok(doc_id)
+    }
+
+    /// Batch insert multiple documents with optimized write path
+    /// Bypasses write buffer for better performance on large batches
+    /// Use this for bulk data loading scenarios
+    pub async fn batch_insert_optimized(
+        &self,
+        collection: &str,
+        documents: Vec<HashMap<String, Value>>,
+    ) -> Result<Vec<String>> {
+        let mut doc_ids = Vec::with_capacity(documents.len());
+        let mut pairs = Vec::with_capacity(documents.len());
+
+        // Prepare all documents
+        for data in documents {
+            // Validate unique constraints
+            self.validate_unique_constraints(collection, &data).await?;
+
+            let doc_id = Uuid::new_v4().to_string();
+            let document = Document {
+                id: doc_id.clone(),
+                data,
+            };
+
+            let key = format!("{}:{}", collection, doc_id);
+            let value = serde_json::to_vec(&document)?;
+
+            pairs.push((key, value));
+            doc_ids.push(doc_id);
+        }
+
+        // Write to WAL in batch (if enabled)
+        if let Some(ref wal) = self.wal {
+            if self.config.durability_mode != DurabilityMode::None {
+                if let Ok(mut wal_lock) = wal.lock() {
+                    for (key, value) in &pairs {
+                        wal_lock.append(Operation::Put, key, Some(value))?;
+                    }
+                }
+            }
+        }
+
+        // Bypass write buffer - go directly to cold storage batch API
+        self.cold.batch_set(pairs.clone())?;
+
+        // Flush if synchronous mode
+        if self.config.durability_mode == DurabilityMode::Synchronous {
+            self.cold.flush()?;
+        }
+
+        // Update hot cache and indices
+        for (key, value) in pairs {
+            self.hot.set(key.clone(), value.clone(), None);
+
+            if let Some(collection_name) = key.split(':').next() {
+                if !collection_name.starts_with('_') {
+                    self.index_value(collection_name, &key, &value)?;
+                }
+            }
+        }
+
+        // Publish events
+        for doc_id in &doc_ids {
+            if let Ok(Some(doc)) = self.get_document(collection, doc_id) {
+                let event = crate::pubsub::ChangeEvent::insert(collection, doc_id, doc);
+                let _ = self.pubsub.publish(event);
+            }
+        }
+
+        Ok(doc_ids)
     }
 
     /// Update a document by ID
