@@ -14,11 +14,11 @@ fn setup() -> Result<(Aurora, TempDir)> {
         .map_err(|e| AuroraError::InvalidOperation(format!("Failed to create temp dir: {}", e)))?;
     let db_path = temp_dir.path().join("bench.db");
 
-    // Create a config that doesn't require async runtime for setup
-    // The write buffer will spawn tasks when created, so we disable it for benchmarks
+    // Configure for benchmarking: disable async features for consistent measurements
     let mut config = aurora_db::AuroraConfig::default();
     config.db_path = db_path;
-    config.enable_write_buffering = false; // Disable to avoid tokio runtime requirement
+    config.enable_write_buffering = false; // Synchronous writes for accurate benchmarking
+    config.enable_wal = false;              // Disable WAL for pure performance measurement
 
     let db = Aurora::with_config(config)?;
     Ok((db, temp_dir))

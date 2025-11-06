@@ -779,7 +779,7 @@ impl Aurora {
     /// Batch insert multiple documents with optimized write path
     /// Bypasses write buffer for better performance on large batches
     /// Use this for bulk data loading scenarios
-    pub async fn batch_insert_optimized(
+    pub async fn batch_insert(
         &self,
         collection: &str,
         documents: Vec<HashMap<String, Value>>,
@@ -1550,46 +1550,6 @@ impl Aurora {
                 collection, id
             )))
         }
-    }
-
-    // Batch operations
-    pub async fn batch_insert(
-        &self,
-        collection: &str,
-        docs: Vec<Vec<(&str, Value)>>,
-    ) -> Result<Vec<String>> {
-        // Convert each Vec<(&str, Value)> to HashMap<String, Value>
-        let doc_maps: Vec<HashMap<String, Value>> = docs
-            .into_iter()
-            .map(|doc| doc.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
-            .collect();
-
-        // Begin transaction
-        let tx_id = self.begin_transaction();
-
-        let mut ids = Vec::with_capacity(doc_maps.len());
-
-        // Insert all documents
-        for data_map in doc_maps {
-            // Convert HashMap back to Vec for insert_into method
-            let data_vec: Vec<(&str, Value)> = data_map
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.clone()))
-                .collect();
-
-            match self.insert_into(collection, data_vec).await {
-                Ok(id) => ids.push(id),
-                Err(e) => {
-                    self.rollback_transaction(tx_id)?;
-                    return Err(e);
-                }
-            }
-        }
-
-        // Commit transaction
-        self.commit_transaction(tx_id)?;
-
-        Ok(ids)
     }
 
     // Delete documents by query
@@ -2756,6 +2716,9 @@ mod tests {
         let temp_dir = tempdir()?;
         let db_path = temp_dir.path().join("test.aurora");
         let db = Aurora::open(db_path.to_str().unwrap())?;
+
+        // Create collection
+        db.new_collection("test", vec![("field", FieldType::String, false)])?;
 
         // Start transaction
         let tx_id = db.begin_transaction();
