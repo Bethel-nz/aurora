@@ -113,21 +113,16 @@ impl DataInfo {
 pub struct Aurora {
     hot: HotStore,
     cold: Arc<ColdStore>,
-    // Indexing
     primary_indices: Arc<DashMap<String, PrimaryIndex>>,
     secondary_indices: Arc<DashMap<String, SecondaryIndex>>,
     indices_initialized: Arc<OnceCell<()>>,
-    // New transaction system with proper isolation
     transaction_manager: crate::transaction::TransactionManager,
     indices: Arc<DashMap<String, Index>>,
-    // Schema cache to avoid repeated deserialization
     schema_cache: Arc<DashMap<String, Arc<Collection>>>,
-    // Configuration
     config: AuroraConfig,
-    // Write buffer (optional, based on config)
     write_buffer: Option<WriteBuffer>,
-    // PubSub system for change notifications
     pubsub: crate::pubsub::PubSubSystem,
+    wal: Arc<std::sync::Mutex<crate::wal::WriteAheadLog>>,
 }
 
 impl fmt::Debug for Aurora {
@@ -232,10 +227,12 @@ impl Aurora {
         // Store auto_compact before moving config
         let auto_compact = config.auto_compact;
 
-        // Initialize PubSub system (10K event buffer)
         let pubsub = crate::pubsub::PubSubSystem::new(10000);
 
-        // Initialize the rest using the config...
+        let wal = Arc::new(std::sync::Mutex::new(
+            crate::wal::WriteAheadLog::new(path.to_str().unwrap())?
+        ));
+
         let db = Self {
             hot,
             cold,
@@ -248,6 +245,7 @@ impl Aurora {
             config,
             write_buffer,
             pubsub,
+            wal,
         };
 
         // Set up auto-compaction if enabled
@@ -363,7 +361,7 @@ impl Aurora {
     }
 
     pub fn put(&self, key: String, value: Vec<u8>, ttl: Option<Duration>) -> Result<()> {
-        const MAX_BLOB_SIZE: usize = 50 * 1024 * 1024; // 50MB limit
+        const MAX_BLOB_SIZE: usize = 50 * 1024 * 1024;
 
         if value.len() > MAX_BLOB_SIZE {
             return Err(AuroraError::InvalidOperation(format!(
@@ -373,21 +371,21 @@ impl Aurora {
             )));
         }
 
-        // Write to storage - use write buffer if enabled
+        self.wal.lock().unwrap().append(
+            crate::wal::Operation::Put,
+            &key,
+            Some(&value)
+        )?;
+
         if let Some(ref write_buffer) = self.write_buffer {
-            // Non-blocking write via buffer
             write_buffer.write(key.clone(), value.clone())?;
         } else {
-            // Direct synchronous write
             self.cold.set(key.clone(), value.clone())?;
         }
 
-        // Always update hot cache immediately
         self.hot.set(key.clone(), value.clone(), ttl);
 
-        // FIX: Update the in-memory indices immediately after a successful write.
         if let Some(collection_name) = key.split(':').next() {
-            // Don't index internal data like _collection or _index definitions
             if !collection_name.starts_with('_') {
                 self.index_value(collection_name, &key, &value)?;
             }

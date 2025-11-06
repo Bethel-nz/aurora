@@ -50,11 +50,9 @@ impl ColdStore {
         Ok(self.db.get(key.as_bytes())?.map(|ivec| ivec.to_vec()))
     }
 
-    /// Stores a value in cold storage.
-    /// Note: This operation does not automatically flush writes to disk.
-    /// Call `flush()` or `compact()` to ensure durability.
     pub fn set(&self, key: String, value: Vec<u8>) -> Result<()> {
         self.db.insert(key.as_bytes(), value)?;
+        self.db.flush()?;
         Ok(())
     }
 
@@ -96,9 +94,6 @@ impl ColdStore {
         })
     }
 
-    /// Batch operations for better performance.
-    /// Note: This operation does not automatically flush writes to disk.
-    /// Call `flush()` or `compact()` to ensure durability.
     pub fn batch_set(&self, pairs: Vec<(String, Vec<u8>)>) -> Result<()> {
         let batch = pairs
             .into_iter()
@@ -108,6 +103,7 @@ impl ColdStore {
             });
 
         self.db.apply_batch(batch)?;
+        self.db.flush()?;
         Ok(())
     }
 
