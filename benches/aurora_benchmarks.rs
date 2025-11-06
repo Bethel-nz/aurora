@@ -5,20 +5,21 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
-use tempfile::tempdir;
+use tempfile::TempDir;
 
 const BULK_SIZE: usize = 100;
 
-fn setup() -> Result<Aurora> {
-    let temp_dir = tempdir()?;
+fn setup() -> Result<(Aurora, TempDir)> {
+    let temp_dir = tempfile::Builder::new()
+        .prefix("aurora-bench-")
+        .tempdir()?;
     let db_path = temp_dir.path().join("bench.db");
     let db = Aurora::open(&db_path)?;
-    std::mem::forget(temp_dir);
-    Ok(db)
+    Ok((db, temp_dir))
 }
 
 fn bench_basic_operations(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
     let mut group = c.benchmark_group("basic_operations");
     group.measurement_time(Duration::from_secs(5));
 
@@ -73,7 +74,7 @@ fn bench_basic_operations(c: &mut Criterion) {
 }
 
 fn bench_collection_operations(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
     let mut group = c.benchmark_group("collection_operations");
     group.measurement_time(Duration::from_secs(5));
 
@@ -131,7 +132,7 @@ fn bench_collection_operations(c: &mut Criterion) {
 }
 
 fn bench_blob_operations(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
     let mut group = c.benchmark_group("blob_operations");
     group.measurement_time(Duration::from_secs(5));
 
@@ -196,7 +197,7 @@ fn bench_blob_operations(c: &mut Criterion) {
 }
 
 fn bench_index_operations(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
     let mut group = c.benchmark_group("index_operations");
     group.measurement_time(Duration::from_secs(5));
 
@@ -304,7 +305,7 @@ fn bench_index_operations(c: &mut Criterion) {
 }
 
 fn bench_complex_queries(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
     let mut group = c.benchmark_group("complex_queries");
     group.measurement_time(Duration::from_secs(5));
 
@@ -420,7 +421,7 @@ fn bench_complex_queries(c: &mut Criterion) {
 }
 
 fn bench_cache_operations(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
     let mut group = c.benchmark_group("cache_operations");
     group.measurement_time(Duration::from_secs(5));
 
@@ -488,7 +489,7 @@ fn bench_cache_operations(c: &mut Criterion) {
 }
 
 fn bench_pubsub_operations(c: &mut Criterion) {
-    let db = Arc::new(setup().unwrap());
+    let (db, _temp_dir) = setup().unwrap(); let db = Arc::new(db);
     let mut group = c.benchmark_group("pubsub_operations");
     group.measurement_time(Duration::from_secs(5));
 
@@ -655,7 +656,7 @@ fn bench_write_performance(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(5));
 
     group.bench_function("bulk_write_100", |b| {
-        let db = setup().unwrap();
+        let (db, _temp_dir) = setup().unwrap();
 
         db.new_collection(
             "write_test",
@@ -685,7 +686,7 @@ fn bench_write_performance(c: &mut Criterion) {
     });
 
     group.bench_function("batch_write_100", |b| {
-        let db = setup().unwrap();
+        let (db, _temp_dir) = setup().unwrap();
         db.new_collection(
             "batch_coll",
             vec![
