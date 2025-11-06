@@ -248,7 +248,8 @@ impl Aurora {
             wal,
         };
 
-        // Set up auto-compaction if enabled
+        db.recover_from_wal()?;
+
         if auto_compact {
             // Implementation for auto-compaction scheduling
             // ...
@@ -273,7 +274,6 @@ impl Aurora {
     }
 
     fn initialize_indices(&self) -> Result<()> {
-        // Scan existing data and build indices
         for result in self.cold.scan() {
             let (key, value) = result?;
             let key_str = std::str::from_utf8(&key.as_bytes())
@@ -283,6 +283,35 @@ impl Aurora {
                 self.index_value(collection_name, key_str, &value)?;
             }
         }
+        Ok(())
+    }
+
+    fn recover_from_wal(&self) -> Result<()> {
+        let entries = self.wal.lock().unwrap().recover()?;
+
+        for entry in entries {
+            match entry.operation {
+                crate::wal::Operation::Put => {
+                    if let Some(value) = entry.value {
+                        self.cold.set(entry.key.clone(), value.clone())?;
+                        self.hot.set(entry.key.clone(), value.clone(), None);
+
+                        if let Some(collection_name) = entry.key.split(':').next() {
+                            if !collection_name.starts_with('_') {
+                                self.index_value(collection_name, &entry.key, &value)?;
+                            }
+                        }
+                    }
+                }
+                crate::wal::Operation::Delete => {
+                    self.cold.delete(&entry.key)?;
+                    self.hot.delete(&entry.key);
+                }
+                _ => {}
+            }
+        }
+
+        self.wal.lock().unwrap().truncate()?;
         Ok(())
     }
 
