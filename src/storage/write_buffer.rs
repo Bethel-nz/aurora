@@ -154,7 +154,8 @@ mod tests {
         buffer.write("key2".to_string(), b"value2".to_vec())?;
         buffer.write("key3".to_string(), b"value3".to_vec())?;
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Explicitly flush to ensure data is written
+        buffer.flush()?;
 
         assert_eq!(cold.get("key1")?, Some(b"value1".to_vec()));
         assert_eq!(cold.get("key2")?, Some(b"value2".to_vec()));
