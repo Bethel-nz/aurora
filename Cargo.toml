@@ -1,6 +1,6 @@
 [package]
 name = "aurora-db"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 authors = ["Bethel Nzekea <bethelnzekea@gmail.com>"]
 description = "A lightweight, real-time embedded database with built-in PubSub, reactive queries, background workers, and intelligent caching."
@@ -35,6 +35,7 @@ fst = { version = "0.4", features = ["levenshtein"] }
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.3.0"
+rand = "0.8"
 
 [features]
 default = []
