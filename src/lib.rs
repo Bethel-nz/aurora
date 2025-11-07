@@ -47,7 +47,8 @@ pub use crate::db::DataInfo;
 pub use crate::error::{AuroraError, Result};
 pub use crate::query::{FilterBuilder, QueryBuilder, SearchBuilder};
 pub use types::{
-    AuroraConfig, ColdStoreMode, Collection, Document, FieldDefinition, FieldType, Value,
+    AuroraConfig, ColdStoreMode, Collection, Document, DurabilityMode, FieldDefinition, FieldType,
+    Value,
 };
 
 // Re-export commonly used storage types

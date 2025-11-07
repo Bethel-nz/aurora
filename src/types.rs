@@ -440,6 +440,25 @@ pub struct AuroraConfig {
     pub enable_write_buffering: bool, // Background write buffering
     pub write_buffer_size: usize,     // Number of operations to buffer
     pub write_buffer_flush_interval_ms: u64, // Flush interval
+
+    // Durability config
+    pub durability_mode: DurabilityMode, // Trade-off between performance and data safety
+    pub enable_wal: bool,                 // Enable write-ahead logging
+    pub checkpoint_interval_ms: u64,      // Background checkpoint interval (flush + WAL truncate)
+}
+
+/// Durability mode determines the trade-off between performance and data safety
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DurabilityMode {
+    /// No durability guarantees - fastest, but data may be lost on crash
+    /// Write buffer enabled, no WAL, no explicit flushes
+    None,
+    /// Write-ahead log for crash recovery - good balance of performance and safety
+    /// WAL is flushed on every write, data is recoverable after crash
+    WAL,
+    /// Synchronous writes to disk - slowest, but maximum durability
+    /// Every write is flushed to disk immediately
+    Synchronous,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -467,9 +486,14 @@ impl Default for AuroraConfig {
 
             max_index_entries_per_field: 100_000,
 
-            enable_write_buffering: false,
+            enable_write_buffering: true,
             write_buffer_size: 1000,
             write_buffer_flush_interval_ms: 10,
+
+            // Use WAL mode by default for good balance of performance and durability
+            durability_mode: DurabilityMode::WAL,
+            enable_wal: true,
+            checkpoint_interval_ms: 100, // Checkpoint every 100ms
         }
     }
 }

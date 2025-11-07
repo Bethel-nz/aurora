@@ -50,7 +50,8 @@ use crate::network::http_models::{
 };
 use crate::query::{Filter, FilterBuilder, QueryBuilder, SearchBuilder, SimpleQueryBuilder};
 use crate::storage::{ColdStore, HotStore, WriteBuffer};
-use crate::types::{AuroraConfig, Collection, Document, FieldDefinition, FieldType, Value};
+use crate::types::{AuroraConfig, Collection, Document, FieldDefinition, FieldType, Value, DurabilityMode};
+use crate::wal::{WriteAheadLog, Operation};
 use dashmap::DashMap;
 use serde_json::Value as JsonValue;
 use serde_json::from_str;
@@ -58,7 +59,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::File as StdFile;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::fs::File;
 use tokio::fs::read_to_string;
@@ -122,7 +123,10 @@ pub struct Aurora {
     config: AuroraConfig,
     write_buffer: Option<WriteBuffer>,
     pubsub: crate::pubsub::PubSubSystem,
-    wal: Arc<std::sync::Mutex<crate::wal::WriteAheadLog>>,
+    // Write-ahead log for durability (optional, based on config)
+    wal: Option<Arc<RwLock<WriteAheadLog>>>,
+    // Background checkpoint task
+    checkpoint_shutdown: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 impl fmt::Debug for Aurora {
@@ -226,13 +230,67 @@ impl Aurora {
 
         // Store auto_compact before moving config
         let auto_compact = config.auto_compact;
+        let enable_wal = config.enable_wal;
 
         let pubsub = crate::pubsub::PubSubSystem::new(10000);
 
-        let wal = Arc::new(std::sync::Mutex::new(
-            crate::wal::WriteAheadLog::new(path.to_str().unwrap())?
-        ));
+        // Initialize WAL if enabled and check for recovery
+        let (wal, wal_entries) = if enable_wal {
+            let wal_path = path.to_str().unwrap();
+            match WriteAheadLog::new(wal_path) {
+                Ok(mut wal_log) => {
+                    let entries = wal_log.recover().unwrap_or_else(|_| Vec::new());
+                    (Some(Arc::new(RwLock::new(wal_log))), entries)
+                }
+                Err(_) => (None, Vec::new()),
+            }
+        } else {
+            (None, Vec::new())
+        };
 
+        // Spawn background checkpoint task if WAL is enabled
+        let checkpoint_shutdown = if wal.is_some() {
+            let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel();
+            let cold_clone = Arc::clone(&cold);
+            let wal_clone = wal.clone();
+            let checkpoint_interval = config.checkpoint_interval_ms;
+
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(checkpoint_interval));
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            // Checkpoint: flush cold storage
+                            if let Err(e) = cold_clone.flush() {
+                                eprintln!("Background checkpoint flush error: {}", e);
+                            }
+                            // Truncate WAL after successful flush
+                            if let Some(ref wal) = wal_clone {
+                                if let Ok(mut wal_guard) = wal.write() {
+                                    let _ = wal_guard.truncate();
+                                }
+                            }
+                        }
+                        _ = shutdown_rx.recv() => {
+                            // Final checkpoint before shutdown
+                            let _ = cold_clone.flush();
+                            if let Some(ref wal) = wal_clone {
+                                if let Ok(mut wal_guard) = wal.write() {
+                                    let _ = wal_guard.truncate();
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            });
+
+            Some(shutdown_tx)
+        } else {
+            None
+        };
+
+        // Initialize the database
         let db = Self {
             hot,
             cold,
@@ -246,10 +304,15 @@ impl Aurora {
             write_buffer,
             pubsub,
             wal,
+            checkpoint_shutdown,
         };
 
-        db.recover_from_wal()?;
+        // Replay WAL entries if any
+        if !wal_entries.is_empty() {
+            db.replay_wal(wal_entries)?;
+        }
 
+        // Set up auto-compaction if enabled
         if auto_compact {
             // Implementation for auto-compaction scheduling
             // ...
@@ -389,6 +452,41 @@ impl Aurora {
         self.pubsub.total_listeners()
     }
 
+    /// Flushes all buffered writes to disk to ensure durability.
+    ///
+    /// This method forces all pending writes from:
+    /// - Write buffer (if enabled)
+    /// - Cold storage internal buffers
+    /// - Write-ahead log (if enabled)
+    ///
+    /// Call this when you need to ensure data persistence before
+    /// a critical operation or shutdown.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// db.insert_into("users", data).await?;
+    /// db.flush()?;  // Ensure data is persisted to disk
+    /// ```
+    pub fn flush(&self) -> Result<()> {
+        // Flush write buffer if present
+        if let Some(ref write_buffer) = self.write_buffer {
+            write_buffer.flush()?;
+        }
+
+        // Flush cold storage
+        self.cold.flush()?;
+
+        // Truncate WAL after successful flush (data is now in cold storage)
+        if let Some(ref wal) = self.wal {
+            if let Ok(mut wal_lock) = wal.write() {
+                wal_lock.truncate()?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn put(&self, key: String, value: Vec<u8>, ttl: Option<Duration>) -> Result<()> {
         const MAX_BLOB_SIZE: usize = 50 * 1024 * 1024;
 
@@ -400,24 +498,71 @@ impl Aurora {
             )));
         }
 
-        self.wal.lock().unwrap().append(
-            crate::wal::Operation::Put,
-            &key,
-            Some(&value)
-        )?;
+        // Step 1: Write to WAL FIRST (if enabled and durability requires it)
+        // This ensures we have a durable record even if we crash before flushing
+        if let Some(ref wal) = self.wal {
+            if self.config.durability_mode != DurabilityMode::None {
+                wal.write().unwrap().append(Operation::Put, &key, Some(&value))?;
+            }
+        }
 
+        // Step 2: Write to storage - use write buffer if enabled
         if let Some(ref write_buffer) = self.write_buffer {
             write_buffer.write(key.clone(), value.clone())?;
         } else {
             self.cold.set(key.clone(), value.clone())?;
         }
 
+        // Step 3: Update hot cache after storage write
+        // Note: Durability is handled by background checkpoint process
         self.hot.set(key.clone(), value.clone(), ttl);
 
+        // Step 4: FIXED RACE CONDITION: Update indices only AFTER storage write succeeds
+        // This ensures indices never point to non-existent data
         if let Some(collection_name) = key.split(':').next() {
             if !collection_name.starts_with('_') {
                 self.index_value(collection_name, &key, &value)?;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Replay WAL entries to recover from crash
+    fn replay_wal(&self, entries: Vec<crate::wal::LogEntry>) -> Result<()> {
+        for entry in entries {
+            match entry.operation {
+                Operation::Put => {
+                    if let Some(value) = entry.value {
+                        // Write directly to cold storage (skip WAL, already logged)
+                        self.cold.set(entry.key.clone(), value.clone())?;
+
+                        // Update hot cache
+                        self.hot.set(entry.key.clone(), value.clone(), None);
+
+                        // Rebuild indices
+                        if let Some(collection) = entry.key.split(':').next() {
+                            if !collection.starts_with('_') {
+                                self.index_value(collection, &entry.key, &value)?;
+                            }
+                        }
+                    }
+                }
+                Operation::Delete => {
+                    self.cold.delete(&entry.key)?;
+                    self.hot.delete(&entry.key);
+                    // TODO: Remove from indices
+                }
+                Operation::BeginTx | Operation::CommitTx | Operation::RollbackTx => {
+                    // Transaction boundaries - future implementation
+                }
+            }
+        }
+
+        // Flush after replay and truncate WAL
+        self.cold.flush()?;
+        if let Some(ref wal) = self.wal {
+            wal.write().unwrap().truncate()?;
         }
 
         Ok(())
@@ -686,6 +831,72 @@ impl Aurora {
         Ok(doc_id)
     }
 
+    /// Batch insert multiple documents with optimized write path
+    /// Bypasses write buffer for better performance on large batches
+    /// Use this for bulk data loading scenarios
+    pub async fn batch_insert(
+        &self,
+        collection: &str,
+        documents: Vec<HashMap<String, Value>>,
+    ) -> Result<Vec<String>> {
+        let mut doc_ids = Vec::with_capacity(documents.len());
+        let mut pairs = Vec::with_capacity(documents.len());
+
+        // Prepare all documents
+        for data in documents {
+            // Validate unique constraints
+            self.validate_unique_constraints(collection, &data).await?;
+
+            let doc_id = Uuid::new_v4().to_string();
+            let document = Document {
+                id: doc_id.clone(),
+                data,
+            };
+
+            let key = format!("{}:{}", collection, doc_id);
+            let value = serde_json::to_vec(&document)?;
+
+            pairs.push((key, value));
+            doc_ids.push(doc_id);
+        }
+
+        // Write to WAL in batch (if enabled)
+        if let Some(ref wal) = self.wal {
+            if self.config.durability_mode != DurabilityMode::None {
+                let mut wal_lock = wal.write().unwrap();
+                for (key, value) in &pairs {
+                    wal_lock.append(Operation::Put, key, Some(value))?;
+                }
+            }
+        }
+
+        // Bypass write buffer - go directly to cold storage batch API
+        self.cold.batch_set(pairs.clone())?;
+
+        // Note: Durability is handled by background checkpoint process
+
+        // Update hot cache and indices
+        for (key, value) in pairs {
+            self.hot.set(key.clone(), value.clone(), None);
+
+            if let Some(collection_name) = key.split(':').next() {
+                if !collection_name.starts_with('_') {
+                    self.index_value(collection_name, &key, &value)?;
+                }
+            }
+        }
+
+        // Publish events
+        for doc_id in &doc_ids {
+            if let Ok(Some(doc)) = self.get_document(collection, doc_id) {
+                let event = crate::pubsub::ChangeEvent::insert(collection, doc_id, doc);
+                let _ = self.pubsub.publish(event);
+            }
+        }
+
+        Ok(doc_ids)
+    }
+
     /// Update a document by ID
     ///
     /// # Arguments
@@ -845,6 +1056,10 @@ impl Aurora {
             self.cold.delete(key)?;
             self.hot.delete(key);
         }
+
+        // Drop the buffer reference to release the DashMap read lock
+        // before calling commit which needs to remove the entry (write lock)
+        drop(buffer);
 
         self.transaction_manager.commit(tx_id)?;
 
@@ -1390,46 +1605,6 @@ impl Aurora {
                 collection, id
             )))
         }
-    }
-
-    // Batch operations
-    pub async fn batch_insert(
-        &self,
-        collection: &str,
-        docs: Vec<Vec<(&str, Value)>>,
-    ) -> Result<Vec<String>> {
-        // Convert each Vec<(&str, Value)> to HashMap<String, Value>
-        let doc_maps: Vec<HashMap<String, Value>> = docs
-            .into_iter()
-            .map(|doc| doc.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
-            .collect();
-
-        // Begin transaction
-        let tx_id = self.begin_transaction();
-
-        let mut ids = Vec::with_capacity(doc_maps.len());
-
-        // Insert all documents
-        for data_map in doc_maps {
-            // Convert HashMap back to Vec for insert_into method
-            let data_vec: Vec<(&str, Value)> = data_map
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.clone()))
-                .collect();
-
-            match self.insert_into(collection, data_vec).await {
-                Ok(id) => ids.push(id),
-                Err(e) => {
-                    self.rollback_transaction(tx_id)?;
-                    return Err(e);
-                }
-            }
-        }
-
-        // Commit transaction
-        self.commit_transaction(tx_id)?;
-
-        Ok(ids)
     }
 
     // Delete documents by query
@@ -2474,6 +2649,15 @@ impl Aurora {
     }
 }
 
+impl Drop for Aurora {
+    fn drop(&mut self) {
+        // Signal checkpoint task to shutdown gracefully
+        if let Some(ref shutdown_tx) = self.checkpoint_shutdown {
+            let _ = shutdown_tx.send(());
+        }
+    }
+}
+
 fn check_filter(doc_val: &Value, filter: &HttpFilter) -> bool {
     let filter_val = match json_to_value(&filter.value) {
         Ok(v) => v,
@@ -2596,6 +2780,9 @@ mod tests {
         let temp_dir = tempdir()?;
         let db_path = temp_dir.path().join("test.aurora");
         let db = Aurora::open(db_path.to_str().unwrap())?;
+
+        // Create collection
+        db.new_collection("test", vec![("field", FieldType::String, false)])?;
 
         // Start transaction
         let tx_id = db.begin_transaction();

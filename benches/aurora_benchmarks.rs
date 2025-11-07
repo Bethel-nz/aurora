@@ -5,16 +5,27 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
+use tempfile::TempDir;
 
 const BULK_SIZE: usize = 100;
 
-fn setup() -> Result<Aurora> {
-    let db = Aurora::open("bench.db")?;
-    Ok(db)
+fn setup() -> Result<(Aurora, TempDir)> {
+    let temp_dir = tempfile::tempdir()
+        .map_err(|e| AuroraError::InvalidOperation(format!("Failed to create temp dir: {}", e)))?;
+    let db_path = temp_dir.path().join("bench.db");
+
+    // Configure for benchmarking: disable async features for consistent measurements
+    let mut config = aurora_db::AuroraConfig::default();
+    config.db_path = db_path;
+    config.enable_write_buffering = false; // Synchronous writes for accurate benchmarking
+    config.enable_wal = false;              // Disable WAL for pure performance measurement
+
+    let db = Aurora::with_config(config)?;
+    Ok((db, temp_dir))
 }
 
 fn bench_basic_operations(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
     let mut group = c.benchmark_group("basic_operations");
     group.measurement_time(Duration::from_secs(5));
 
@@ -69,7 +80,8 @@ fn bench_basic_operations(c: &mut Criterion) {
 }
 
 fn bench_collection_operations(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
+    let rt = Runtime::new().unwrap(); // Create runtime once, not per iteration
     let mut group = c.benchmark_group("collection_operations");
     group.measurement_time(Duration::from_secs(5));
 
@@ -85,7 +97,6 @@ fn bench_collection_operations(c: &mut Criterion) {
 
     group.bench_function("single_insert", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 db.insert_into(
                     "users",
@@ -103,7 +114,6 @@ fn bench_collection_operations(c: &mut Criterion) {
 
     group.bench_function("bulk_insert_100", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 for _ in 0..BULK_SIZE {
                     db.insert_into(
@@ -127,7 +137,7 @@ fn bench_collection_operations(c: &mut Criterion) {
 }
 
 fn bench_blob_operations(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
     let mut group = c.benchmark_group("blob_operations");
     group.measurement_time(Duration::from_secs(5));
 
@@ -192,11 +202,11 @@ fn bench_blob_operations(c: &mut Criterion) {
 }
 
 fn bench_index_operations(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
+    let rt = Runtime::new().unwrap(); // Create runtime once
     let mut group = c.benchmark_group("index_operations");
     group.measurement_time(Duration::from_secs(5));
 
-    let rt = Runtime::new().unwrap();
     rt.block_on(async {
         db.new_collection(
             "products",
@@ -234,7 +244,6 @@ fn bench_index_operations(c: &mut Criterion) {
 
     group.bench_function("query_btree_index", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 db.query("products")
                     .filter(|f| {
@@ -249,7 +258,6 @@ fn bench_index_operations(c: &mut Criterion) {
 
     group.bench_function("query_hash_index", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 db.query("products")
                     .filter(|f| f.eq("category", Value::String("Electronics".to_string())))
@@ -262,7 +270,6 @@ fn bench_index_operations(c: &mut Criterion) {
 
     group.bench_function("query_composite_index", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 db.query("products")
                     .filter(|f| {
@@ -278,7 +285,6 @@ fn bench_index_operations(c: &mut Criterion) {
 
     group.bench_function("insert_with_indexes", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 db.insert_into(
                     "products",
@@ -300,11 +306,11 @@ fn bench_index_operations(c: &mut Criterion) {
 }
 
 fn bench_complex_queries(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
+    let rt = Runtime::new().unwrap(); // Create runtime once
     let mut group = c.benchmark_group("complex_queries");
     group.measurement_time(Duration::from_secs(5));
 
-    let rt = Runtime::new().unwrap();
     rt.block_on(async {
         db.new_collection(
             "orders",
@@ -351,7 +357,6 @@ fn bench_complex_queries(c: &mut Criterion) {
 
     group.bench_function("query_with_multiple_filters", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 db.query("orders")
                     .filter(|f| {
@@ -368,7 +373,6 @@ fn bench_complex_queries(c: &mut Criterion) {
 
     group.bench_function("query_with_sorting", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 db.query("orders")
                     .filter(|f| f.eq("customer_id", Value::String("cust-7".to_string())))
@@ -382,7 +386,6 @@ fn bench_complex_queries(c: &mut Criterion) {
 
     group.bench_function("query_with_limit_offset", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 db.query("orders")
                     .filter(|f| f.gt("total", Value::Float(500.0)))
@@ -398,7 +401,6 @@ fn bench_complex_queries(c: &mut Criterion) {
 
     group.bench_function("query_date_range", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 db.query("orders")
                     .filter(|f| {
@@ -416,11 +418,11 @@ fn bench_complex_queries(c: &mut Criterion) {
 }
 
 fn bench_cache_operations(c: &mut Criterion) {
-    let db = setup().unwrap();
+    let (db, _temp_dir) = setup().unwrap();
+    let rt = Runtime::new().unwrap(); // Create runtime once
     let mut group = c.benchmark_group("cache_operations");
     group.measurement_time(Duration::from_secs(5));
 
-    let rt = Runtime::new().unwrap();
     rt.block_on(async {
         db.new_collection(
             "cache_test",
@@ -446,7 +448,6 @@ fn bench_cache_operations(c: &mut Criterion) {
 
     group.bench_function("prewarm_cache_100", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 db.clear_hot_cache();
                 db.prewarm_cache("cache_test", Some(100)).await.unwrap()
@@ -456,7 +457,6 @@ fn bench_cache_operations(c: &mut Criterion) {
 
     group.bench_function("prewarm_cache_1000", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 db.clear_hot_cache();
                 db.prewarm_cache("cache_test", Some(1000)).await.unwrap()
@@ -472,7 +472,6 @@ fn bench_cache_operations(c: &mut Criterion) {
     });
 
     group.bench_function("hot_read_from_cache", |b| {
-        let rt = Runtime::new().unwrap();
         rt.block_on(async {
             db.prewarm_cache("cache_test", Some(1000)).await.unwrap();
         });
@@ -484,11 +483,12 @@ fn bench_cache_operations(c: &mut Criterion) {
 }
 
 fn bench_pubsub_operations(c: &mut Criterion) {
-    let db = Arc::new(setup().unwrap());
+    let (db, _temp_dir) = setup().unwrap();
+    let db = Arc::new(db);
+    let rt = Runtime::new().unwrap(); // Create runtime once
     let mut group = c.benchmark_group("pubsub_operations");
     group.measurement_time(Duration::from_secs(5));
 
-    let rt = Runtime::new().unwrap();
     rt.block_on(async {
         db.new_collection(
             "events",
@@ -503,7 +503,6 @@ fn bench_pubsub_operations(c: &mut Criterion) {
 
     group.bench_function("pubsub_single_listener", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 let _listener = db.listen("events");
 
@@ -523,7 +522,6 @@ fn bench_pubsub_operations(c: &mut Criterion) {
 
     group.bench_function("pubsub_multiple_listeners", |b| {
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 let _listener1 = db.listen("events");
                 let _listener2 = db.listen("events");
@@ -562,11 +560,12 @@ fn bench_workers(c: &mut Criterion) {
     });
 
     group.bench_function("job_enqueue_100", |b| {
+        let rt = Runtime::new().unwrap(); // Create runtime once
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
+                let temp_dir = tempfile::tempdir().unwrap();
                 let config = WorkerConfig {
-                    storage_path: format!("./bench_workers_{}", Uuid::new_v4()),
+                    storage_path: temp_dir.path().to_str().unwrap().to_string(),
                     concurrency: 4,
                     poll_interval_ms: 100,
                     cleanup_interval_seconds: 3600,
@@ -651,7 +650,8 @@ fn bench_write_performance(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(5));
 
     group.bench_function("bulk_write_100", |b| {
-        let db = setup().unwrap();
+        let (db, _temp_dir) = setup().unwrap();
+        let rt = Runtime::new().unwrap(); // Create runtime once
 
         db.new_collection(
             "write_test",
@@ -663,7 +663,6 @@ fn bench_write_performance(c: &mut Criterion) {
         .unwrap();
 
         b.iter(|| {
-            let rt = Runtime::new().unwrap();
             rt.block_on(async {
                 for i in 0..100 {
                     db.insert_into(
@@ -681,7 +680,7 @@ fn bench_write_performance(c: &mut Criterion) {
     });
 
     group.bench_function("batch_write_100", |b| {
-        let db = setup().unwrap();
+        let (db, _temp_dir) = setup().unwrap();
         db.new_collection(
             "batch_coll",
             vec![

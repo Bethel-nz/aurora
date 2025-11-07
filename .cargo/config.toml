@@ -1,2 +1,2 @@
 [build]
-target-dir = "E:/aurora/target" 
+# target-dir = "E:/aurora/target"  # Commented out for Linux/WSL compatibility 
