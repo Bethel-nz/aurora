@@ -127,6 +127,8 @@ pub struct Aurora {
     wal: Option<Arc<RwLock<WriteAheadLog>>>,
     // Background checkpoint task
     checkpoint_shutdown: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    // Background compaction task
+    compact_shutdown: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 impl fmt::Debug for Aurora {
@@ -230,6 +232,7 @@ impl Aurora {
 
         // Store auto_compact before moving config
         let auto_compact = config.auto_compact;
+        let compact_interval_mins = config.compact_interval_mins;
         let enable_wal = config.enable_wal;
 
         let pubsub = crate::pubsub::PubSubSystem::new(10000);
@@ -291,9 +294,9 @@ impl Aurora {
         };
 
         // Initialize the database
-        let db = Self {
+        let mut db = Self {
             hot,
-            cold,
+            cold: Arc::clone(&cold),
             primary_indices: Arc::new(DashMap::new()),
             secondary_indices: Arc::new(DashMap::new()),
             indices_initialized: Arc::new(OnceCell::new()),
@@ -305,6 +308,7 @@ impl Aurora {
             pubsub,
             wal,
             checkpoint_shutdown,
+            compact_shutdown: None, // Will be set after initialization
         };
 
         // Replay WAL entries if any
@@ -314,8 +318,28 @@ impl Aurora {
 
         // Set up auto-compaction if enabled
         if auto_compact {
-            // Implementation for auto-compaction scheduling
-            // ...
+            let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel();
+            let cold_clone = Arc::clone(&cold);
+            let compact_interval = Duration::from_secs(compact_interval_mins * 60);
+
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(compact_interval);
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            if let Err(e) = cold_clone.compact() {
+                                eprintln!("Background compaction error: {}", e);
+                            }
+                        }
+                        _ = shutdown_rx.recv() => {
+                            let _ = cold_clone.compact();
+                            break;
+                        }
+                    }
+                }
+            });
+
+            db.compact_shutdown = Some(shutdown_tx);
         }
 
         Ok(db)
@@ -350,7 +374,11 @@ impl Aurora {
     }
 
     fn recover_from_wal(&self) -> Result<()> {
-        let entries = self.wal.lock().unwrap().recover()?;
+        let entries = if let Some(wal) = &self.wal {
+            wal.write().unwrap().recover()?
+        } else {
+            return Ok(());
+        };
 
         for entry in entries {
             match entry.operation {
@@ -374,7 +402,9 @@ impl Aurora {
             }
         }
 
-        self.wal.lock().unwrap().truncate()?;
+        if let Some(wal) = &self.wal {
+            wal.write().unwrap().truncate()?;
+        }
         Ok(())
     }
 
@@ -498,27 +528,20 @@ impl Aurora {
             )));
         }
 
-        // Step 1: Write to WAL FIRST (if enabled and durability requires it)
-        // This ensures we have a durable record even if we crash before flushing
         if let Some(ref wal) = self.wal {
             if self.config.durability_mode != DurabilityMode::None {
                 wal.write().unwrap().append(Operation::Put, &key, Some(&value))?;
             }
         }
 
-        // Step 2: Write to storage - use write buffer if enabled
         if let Some(ref write_buffer) = self.write_buffer {
             write_buffer.write(key.clone(), value.clone())?;
         } else {
             self.cold.set(key.clone(), value.clone())?;
         }
 
-        // Step 3: Update hot cache after storage write
-        // Note: Durability is handled by background checkpoint process
         self.hot.set(key.clone(), value.clone(), ttl);
 
-        // Step 4: FIXED RACE CONDITION: Update indices only AFTER storage write succeeds
-        // This ensures indices never point to non-existent data
         if let Some(collection_name) = key.split(':').next() {
             if !collection_name.starts_with('_') {
                 self.index_value(collection_name, &key, &value)?;
@@ -2653,6 +2676,10 @@ impl Drop for Aurora {
     fn drop(&mut self) {
         // Signal checkpoint task to shutdown gracefully
         if let Some(ref shutdown_tx) = self.checkpoint_shutdown {
+            let _ = shutdown_tx.send(());
+        }
+        // Signal compact task to shutdown gracefully
+        if let Some(ref shutdown_tx) = self.compact_shutdown {
             let _ = shutdown_tx.send(());
         }
     }
