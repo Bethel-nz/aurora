@@ -350,7 +350,7 @@ impl Aurora {
     }
 
     fn recover_from_wal(&self) -> Result<()> {
-        let entries = self.wal.lock().unwrap().recover()?;
+        let entries = self.wal.as_ref().unwrap().write().unwrap().recover()?;
 
         for entry in entries {
             match entry.operation {
@@ -374,7 +374,7 @@ impl Aurora {
             }
         }
 
-        self.wal.lock().unwrap().truncate()?;
+        self.wal.as_ref().unwrap().write().unwrap().truncate()?;
         Ok(())
     }
 
