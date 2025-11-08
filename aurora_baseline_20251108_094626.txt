@@ -1,0 +1,97 @@
+================================================================================
+AURORA BASELINE PERFORMANCE BENCHMARK
+Architecture: Primary Index with full Vec<u8> values
+Timestamp: 2025-11-08 09:45:10
+================================================================================
+
+Scale: 1 documents
+Initial RSS: 88 MB
+After writes RSS: 88 MB (growth: 0 MB)
+Write time: 0.000s
+Write throughput: 6250 docs/sec
+Avg memory per doc: 0 bytes
+Read test: 1 samples in 0.000s (57620 reads/sec)
+Query test: 0 results in 0.000s
+Disk size: 1 MB
+Memory/Disk ratio: 0.00x
+Cache: 2 items, 0.00 MB, 50.0% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 10 documents
+Initial RSS: 84 MB
+After writes RSS: 84 MB (growth: 0 MB)
+Write time: 0.001s
+Write throughput: 16361 docs/sec
+Avg memory per doc: 0 bytes
+Read test: 10 samples in 0.000s (369658 reads/sec)
+Query test: 4 results in 0.000s
+Disk size: 1 MB
+Memory/Disk ratio: 0.00x
+Cache: 11 items, 0.00 MB, 50.0% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 100 documents
+Initial RSS: 90 MB
+After writes RSS: 90 MB (growth: 0 MB)
+Write time: 0.004s
+Write throughput: 24509 docs/sec
+Avg memory per doc: 0 bytes
+Read test: 100 samples in 0.000s (667062 reads/sec)
+Query test: 49 results in 0.000s
+Disk size: 1 MB
+Memory/Disk ratio: 0.00x
+Cache: 101 items, 0.02 MB, 50.0% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 1,000 documents
+Initial RSS: 90 MB
+After writes RSS: 93 MB (growth: 3 MB)
+Write time: 0.034s
+Write throughput: 29493 docs/sec
+Avg memory per doc: 3146 bytes
+Read test: 1,000 samples in 0.001s (1156037 reads/sec)
+Query test: 100 results in 0.001s
+Disk size: 1 MB
+Memory/Disk ratio: 3.00x
+Cache: 1001 items, 0.25 MB, 50.0% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 10,000 documents
+Initial RSS: 93 MB
+After writes RSS: 108 MB (growth: 15 MB)
+Write time: 0.338s
+Write throughput: 29595 docs/sec
+Avg memory per doc: 1573 bytes
+Read test: 10,000 samples in 0.013s (744709 reads/sec)
+Query test: 100 results in 0.041s
+Disk size: 8 MB
+Memory/Disk ratio: 1.88x
+Cache: 10001 items, 2.51 MB, 50.0% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 100,000 documents
+Initial RSS: 119 MB
+After writes RSS: 255 MB (growth: 136 MB)
+Write time: 3.184s
+Write throughput: 31402 docs/sec
+Avg memory per doc: 1426 bytes
+Read test: 10,000 samples in 0.015s (664860 reads/sec)
+Query test: 100 results in 0.406s
+Disk size: 65 MB
+Memory/Disk ratio: 2.09x
+Cache: 100001 items, 25.25 MB, 90.9% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 1,000,000 documents
+Initial RSS: 321 MB
+After writes RSS: 1258 MB (growth: 937 MB)
+Write time: 60.890s
+Write throughput: 16423 docs/sec
+Avg memory per doc: 983 bytes
+Read test: 10,000 samples in 0.018s (550192 reads/sec)
+Query test: 100 results in 3.968s
+Disk size: 638 MB
+Memory/Disk ratio: 1.47x
+Cache: 1000001 items, 254.42 MB, 99.0% hit rate
+--------------------------------------------------------------------------------
+
