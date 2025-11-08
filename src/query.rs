@@ -733,26 +733,230 @@ impl SimpleQueryBuilder {
         self
     }
 
+    /// Filter for exact equality
+    ///
+    /// Uses secondary index if the field is indexed (O(1) lookup).
+    /// Falls back to full collection scan if not indexed (O(n)).
+    ///
+    /// # Arguments
+    /// * `field` - The field name to filter on
+    /// * `value` - The exact value to match
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Find active users
+    /// let active_users = db.query("users")
+    ///     .filter(|f| f.eq("status", Value::String("active".into())))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Multiple equality filters (AND logic)
+    /// let premium_active = db.query("users")
+    ///     .filter(|f| f.eq("tier", Value::String("premium".into())))
+    ///     .filter(|f| f.eq("active", Value::Bool(true)))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Numeric equality
+    /// let age_30 = db.query("users")
+    ///     .filter(|f| f.eq("age", Value::Int(30)))
+    ///     .collect()
+    ///     .await?;
+    /// ```
     pub fn eq(self, field: &str, value: Value) -> Self {
         self.filter(Filter::Eq(field.to_string(), value))
     }
 
+    /// Filter for greater than
+    ///
+    /// Finds all documents where the field value is strictly greater than
+    /// the provided value. With LIMIT, uses early termination for performance.
+    ///
+    /// # Arguments
+    /// * `field` - The field name to compare
+    /// * `value` - The minimum value (exclusive)
+    ///
+    /// # Performance
+    /// - Without LIMIT: O(n) - scans all documents
+    /// - With LIMIT: O(k) where k = limit + offset (early termination)
+    /// - No index support yet (planned for future)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Find high scorers (with early termination)
+    /// let high_scorers = db.query("users")
+    ///     .filter(|f| f.gt("score", Value::Int(1000)))
+    ///     .limit(100)  // Stops after finding 100 matches
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Price range queries
+    /// let expensive = db.query("products")
+    ///     .filter(|f| f.gt("price", Value::Float(99.99)))
+    ///     .order_by("price", false)  // Descending
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Date filtering (timestamps as integers)
+    /// let recent = db.query("events")
+    ///     .filter(|f| f.gt("timestamp", Value::Int(1609459200)))  // After Jan 1, 2021
+    ///     .collect()
+    ///     .await?;
+    /// ```
     pub fn gt(self, field: &str, value: Value) -> Self {
         self.filter(Filter::Gt(field.to_string(), value))
     }
 
+    /// Filter for greater than or equal to
+    ///
+    /// Finds all documents where the field value is greater than or equal to
+    /// the provided value. Inclusive version of `gt()`.
+    ///
+    /// # Arguments
+    /// * `field` - The field name to compare
+    /// * `value` - The minimum value (inclusive)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Minimum age requirement (inclusive)
+    /// let adults = db.query("users")
+    ///     .filter(|f| f.gte("age", Value::Int(18)))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Inventory management
+    /// let in_stock = db.query("products")
+    ///     .filter(|f| f.gte("stock", Value::Int(1)))
+    ///     .collect()
+    ///     .await?;
+    /// ```
     pub fn gte(self, field: &str, value: Value) -> Self {
         self.filter(Filter::Gte(field.to_string(), value))
     }
 
+    /// Filter for less than
+    ///
+    /// Finds all documents where the field value is strictly less than
+    /// the provided value.
+    ///
+    /// # Arguments
+    /// * `field` - The field name to compare
+    /// * `value` - The maximum value (exclusive)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Low balance accounts
+    /// let low_balance = db.query("accounts")
+    ///     .filter(|f| f.lt("balance", Value::Float(10.0)))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Budget products
+    /// let budget = db.query("products")
+    ///     .filter(|f| f.lt("price", Value::Float(50.0)))
+    ///     .order_by("price", true)  // Ascending
+    ///     .collect()
+    ///     .await?;
+    /// ```
     pub fn lt(self, field: &str, value: Value) -> Self {
         self.filter(Filter::Lt(field.to_string(), value))
     }
 
+    /// Filter for less than or equal to
+    ///
+    /// Finds all documents where the field value is less than or equal to
+    /// the provided value. Inclusive version of `lt()`.
+    ///
+    /// # Arguments
+    /// * `field` - The field name to compare
+    /// * `value` - The maximum value (inclusive)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Senior discount eligibility
+    /// let seniors = db.query("users")
+    ///     .filter(|f| f.lte("age", Value::Int(65)))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Clearance items
+    /// let clearance = db.query("products")
+    ///     .filter(|f| f.lte("price", Value::Float(20.0)))
+    ///     .collect()
+    ///     .await?;
+    /// ```
     pub fn lte(self, field: &str, value: Value) -> Self {
         self.filter(Filter::Lte(field.to_string(), value))
     }
 
+    /// Filter for substring containment
+    ///
+    /// Finds all documents where the field value contains the specified substring.
+    /// Case-sensitive matching. For text search, consider using the `search()` API instead.
+    ///
+    /// # Arguments
+    /// * `field` - The field name to search in (must be a string field)
+    /// * `value` - The substring to search for
+    ///
+    /// # Performance
+    /// - Always O(n) - scans all documents
+    /// - Case-sensitive string matching
+    /// - For full-text search, use `db.search()` instead
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::Aurora;
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Find articles about Rust
+    /// let rust_articles = db.query("articles")
+    ///     .filter(|f| f.contains("title", "Rust"))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Email domain filtering
+    /// let gmail_users = db.query("users")
+    ///     .filter(|f| f.contains("email", "@gmail.com"))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Tag searching
+    /// let rust_posts = db.query("posts")
+    ///     .filter(|f| f.contains("tags", "rust"))
+    ///     .collect()
+    ///     .await?;
+    /// ```
+    ///
+    /// # Note
+    /// For case-insensitive search or more advanced text matching,
+    /// use the full-text search API: `db.search(collection).query(text)`
     pub fn contains(self, field: &str, value: &str) -> Self {
         self.filter(Filter::Contains(field.to_string(), value.to_string()))
     }
