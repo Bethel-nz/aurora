@@ -131,15 +131,18 @@ fn main() {
     println!("  - Update/Delete test: 10,000 docs each");
     println!();
 
+    // Create tokio runtime for Aurora's async operations
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
     let results = BenchmarkResults {
-        aurora: run_aurora_benchmarks(),
+        aurora: rt.block_on(async { run_aurora_benchmarks().await }),
         sqlite: run_sqlite_benchmarks(),
     };
 
     results.print_comparison();
 }
 
-fn run_aurora_benchmarks() -> TestResults {
+async fn run_aurora_benchmarks() -> TestResults {
     println!("📦 Running Aurora benchmarks...");
 
     // Setup
@@ -159,22 +162,20 @@ fn run_aurora_benchmarks() -> TestResults {
 
     // Test 1: Single inserts
     println!("  [1/8] Single inserts...");
-    let single_insert = time_operation(|| {
+    let single_insert = time_operation_async(|| async {
         for i in 0..1000 {
-            let _ = tokio::runtime::Runtime::new().unwrap().block_on(
-                db.insert_into("users", vec![
-                    ("name", Value::String(format!("User {}", i))),
-                    ("age", Value::Int((20 + i % 50) as i64)),
-                    ("email", Value::String(format!("user{}@example.com", i))),
-                    ("score", Value::Int((i * 10) as i64)),
-                ])
-            );
+            let _ = db.insert_into("users", vec![
+                ("name", Value::String(format!("User {}", i))),
+                ("age", Value::Int((20 + i % 50) as i64)),
+                ("email", Value::String(format!("user{}@example.com", i))),
+                ("score", Value::Int((i * 10) as i64)),
+            ]).await;
         }
-    });
+    }).await;
 
     // Test 2: Batch insert
     println!("  [2/8] Batch insert...");
-    let batch_insert = time_operation(|| {
+    let batch_insert = time_operation_async(|| async {
         let docs: Vec<HashMap<String, Value>> = (0..NUM_DOCS)
             .map(|i| {
                 let mut map = HashMap::new();
@@ -186,101 +187,88 @@ fn run_aurora_benchmarks() -> TestResults {
             })
             .collect();
 
-        let _ = tokio::runtime::Runtime::new().unwrap().block_on(
-            db.batch_insert("users", docs)
-        );
-    });
+        let _ = db.batch_insert("users", docs).await;
+    }).await;
 
     // Test 3: Query without index
     println!("  [3/8] Query without index...");
-    let query_no_index = time_operation(|| {
-        let _ = tokio::runtime::Runtime::new().unwrap().block_on(
-            db.query("users")
-                .filter(|f| f.gt("score", Value::Int(500000)))
-                .collect()
-        );
-    });
+    let query_no_index = time_operation_async(|| async {
+        let _ = db.query("users")
+            .filter(|f| f.gt("score", Value::Int(500000)))
+            .collect()
+            .await;
+    }).await;
 
     // Create index
-    tokio::runtime::Runtime::new().unwrap().block_on(
-        db.create_index("users", "score")
-    ).unwrap();
+    db.create_index("users", "score").await.unwrap();
 
     // Test 4: Query with index
     println!("  [4/8] Query with index...");
-    let query_with_index = time_operation(|| {
-        let _ = tokio::runtime::Runtime::new().unwrap().block_on(
-            db.query("users")
-                .filter(|f| f.gt("score", Value::Int(500000)))
-                .collect()
-        );
-    });
+    let query_with_index = time_operation_async(|| async {
+        let _ = db.query("users")
+            .filter(|f| f.gt("score", Value::Int(500000)))
+            .collect()
+            .await;
+    }).await;
 
     // Test 5: Query with LIMIT (Aurora's early termination advantage)
     println!("  [5/8] Query with LIMIT 100...");
-    let query_with_limit = time_operation(|| {
-        let _ = tokio::runtime::Runtime::new().unwrap().block_on(
-            db.query("users")
-                .filter(|f| f.gt("score", Value::Int(500000)))
-                .limit(100)
-                .collect()
-        );
-    });
+    let query_with_limit = time_operation_async(|| async {
+        let _ = db.query("users")
+            .filter(|f| f.gt("score", Value::Int(500000)))
+            .limit(100)
+            .collect()
+            .await;
+    }).await;
 
     // Test 6: Update
     println!("  [6/8] Update operations...");
-    let update = time_operation(|| {
+    let update = time_operation_async(|| async {
         for i in 0..10000 {
-            let docs = tokio::runtime::Runtime::new().unwrap().block_on(
-                db.query("users")
-                    .filter(|f| f.eq("score", Value::Int((i * 10) as i64)))
-                    .collect()
-            ).unwrap();
+            let docs = db.query("users")
+                .filter(|f| f.eq("score", Value::Int((i * 10) as i64)))
+                .collect()
+                .await
+                .unwrap();
 
             if let Some(doc) = docs.first() {
-                let _ = tokio::runtime::Runtime::new().unwrap().block_on(
-                    db.update_document("users", &doc.id, vec![
-                        ("score", Value::Int((i * 10 + 5) as i64)),
-                    ])
-                );
+                let _ = db.update_document("users", &doc.id, vec![
+                    ("score", Value::Int((i * 10 + 5) as i64)),
+                ]).await;
             }
         }
-    });
+    }).await;
 
     // Test 7: Delete
     println!("  [7/8] Delete operations...");
-    let delete = time_operation(|| {
-        let docs = tokio::runtime::Runtime::new().unwrap().block_on(
-            db.query("users")
-                .limit(10000)
-                .collect()
-        ).unwrap();
+    let delete = time_operation_async(|| async {
+        let docs = db.query("users")
+            .limit(10000)
+            .collect()
+            .await
+            .unwrap();
 
         for doc in docs {
-            let _ = tokio::runtime::Runtime::new().unwrap().block_on(
-                db.delete(&format!("users:{}", doc.id))
-            );
+            let _ = db.delete(&format!("users:{}", doc.id)).await;
         }
-    });
+    }).await;
 
     // Test 8: Transaction
     println!("  [8/8] Transaction operations...");
-    let transaction = time_operation(|| {
+    let transaction = time_operation_async(|| async {
         for _ in 0..10 {
             let tx_id = db.begin_transaction();
             for i in 0..100 {
-                let _ = tokio::runtime::Runtime::new().unwrap().block_on(
-                    db.insert_into("users", vec![
-                        ("name", Value::String(format!("TX User {}", i))),
-                        ("age", Value::Int(25)),
-                        ("email", Value::String(format!("tx{}@example.com", i))),
-                        ("score", Value::Int(100)),
-                    ])
-                );
+                let _ = db.insert_into("users", vec![
+                    ("name", Value::String(format!("TX User {}", i))),
+                    ("age", Value::Int(25)),
+                    ("email", Value::String(format!("tx{}@example.com", i))),
+                    ("score", Value::Int(100)),
+                ]).await;
             }
             let _ = db.commit_transaction(tx_id);
         }
-    });
+    }).await;
 
     println!("  ✅ Aurora benchmarks complete\n");
 
@@ -414,5 +402,15 @@ where
 {
     let start = Instant::now();
     operation();
+    start.elapsed()
+}
+
+async fn time_operation_async<F, Fut>(operation: F) -> Duration
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let start = Instant::now();
+    operation().await;
     start.elapsed()
 }
