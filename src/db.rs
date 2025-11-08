@@ -2249,7 +2249,7 @@ impl Aurora {
         };
 
         // Look for an opportunity to use an index
-        for (filter_idx, filter) in builder.filters.iter().enumerate() {
+        for (_filter_idx, filter) in builder.filters.iter().enumerate() {
             match filter {
                 Filter::Eq(field, value) => {
                     let index_key = format!("{}:{}", &builder.collection, field);
