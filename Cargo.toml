@@ -36,6 +36,7 @@ fst = { version = "0.4", features = ["levenshtein"] }
 tokio-test = "0.4"
 tempfile = "3.3.0"
 rand = "0.8"
+rusqlite = "0.30"
 
 [features]
 default = []
@@ -55,4 +56,8 @@ path = "examples/reactive_demo.rs"
 
 [[bench]]
 name = "aurora_benchmarks"
+harness = false
+
+[[bench]]
+name = "aurora_vs_sqlite"
 harness = false
