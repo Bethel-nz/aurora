@@ -1473,7 +1473,7 @@ impl Aurora {
     /// ])?;
     ///
     /// // Index user_id - queries like "show me my orders" are common
-    /// db.create_index("orders", "user_id").await?;  // ✅ Good choice
+    /// db.create_index("orders", "user_id").await?;  // Good choice
     ///
     /// // Query speedup: 2.5s → 0.001s
     /// let my_orders = db.query("orders")
@@ -1485,7 +1485,7 @@ impl Aurora {
     /// // Scanning 1M docs takes ~100ms, indexing won't help much
     ///
     /// // Index created_at if you frequently query recent orders
-    /// db.create_index("orders", "created_at").await?;  // ✅ Good for time-based queries
+    /// db.create_index("orders", "created_at").await?;  // Good for time-based queries
     /// ```
     pub async fn create_index(&self, collection: &str, field: &str) -> Result<()> {
         // Check if collection exists
@@ -1664,14 +1664,14 @@ impl Aurora {
     /// ```
     ///
     /// # When to Use
-    /// - ✅ You know the document ID (from insert, previous query, or URL param)
-    /// - ✅ Need fastest possible lookup (1M reads/sec)
-    /// - ✅ Fetching a single document
+    /// - You know the document ID (from insert, previous query, or URL param)
+    /// - Need fastest possible lookup (1M reads/sec)
+    /// - Fetching a single document
     ///
     /// # When NOT to Use
-    /// - ❌ Searching by other fields → Use `query().filter()` instead
-    /// - ❌ Need multiple documents by criteria → Use `query().collect()` instead
-    /// - ❌ Don't know the ID → Use `find_by_field()` or `query()` instead
+    /// - Searching by other fields → Use `query().filter()` instead
+    /// - Need multiple documents by criteria → Use `query().collect()` instead
+    /// - Don't know the ID → Use `find_by_field()` or `query()` instead
     pub fn get_document(&self, collection: &str, id: &str) -> Result<Option<Document>> {
         let key = format!("{}:{}", collection, id);
         if let Some(data) = self.get(&key)? {
