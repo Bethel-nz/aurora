@@ -702,6 +702,9 @@ impl<'a> SearchBuilder<'a> {
 pub struct SimpleQueryBuilder {
     pub collection: String,
     pub filters: Vec<Filter>,
+    pub order_by: Option<(String, bool)>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 impl SimpleQueryBuilder {
@@ -709,6 +712,9 @@ impl SimpleQueryBuilder {
         Self {
             collection,
             filters: Vec::new(),
+            order_by: None,
+            limit: None,
+            offset: None,
         }
     }
 
@@ -745,6 +751,24 @@ impl SimpleQueryBuilder {
     pub fn between(self, field: &str, min: Value, max: Value) -> Self {
         self.filter(Filter::Gte(field.to_string(), min))
             .filter(Filter::Lte(field.to_string(), max))
+    }
+
+    /// Sort results by a field (ascending or descending)
+    pub fn order_by(mut self, field: &str, ascending: bool) -> Self {
+        self.order_by = Some((field.to_string(), ascending));
+        self
+    }
+
+    /// Limit the number of results returned
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Skip a number of results (for pagination)
+    pub fn offset(mut self, offset: usize) -> Self {
+        self.offset = Some(offset);
+        self
     }
 }
 

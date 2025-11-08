@@ -129,6 +129,8 @@ pub struct Aurora {
     wal: Option<Arc<RwLock<WriteAheadLog>>>,
     // Background checkpoint task
     checkpoint_shutdown: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    // Background compaction task
+    compaction_shutdown: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 impl fmt::Debug for Aurora {
@@ -293,6 +295,35 @@ impl Aurora {
             None
         };
 
+        // Spawn background compaction task if auto_compact is enabled
+        let compaction_shutdown = if auto_compact {
+            let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel();
+            let cold_clone = Arc::clone(&cold);
+            let compact_interval = config.compact_interval_mins;
+
+            tokio::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(Duration::from_secs(compact_interval * 60));
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            if let Err(e) = cold_clone.compact() {
+                                eprintln!("Background compaction error: {}", e);
+                            }
+                        }
+                        _ = shutdown_rx.recv() => {
+                            let _ = cold_clone.compact();
+                            break;
+                        }
+                    }
+                }
+            });
+
+            Some(shutdown_tx)
+        } else {
+            None
+        };
+
         // Initialize the database
         let db = Self {
             hot,
@@ -308,17 +339,12 @@ impl Aurora {
             pubsub,
             wal,
             checkpoint_shutdown,
+            compaction_shutdown,
         };
 
         // Replay WAL entries if any
         if !wal_entries.is_empty() {
             db.replay_wal(wal_entries)?;
-        }
-
-        // Set up auto-compaction if enabled
-        if auto_compact {
-            // Implementation for auto-compaction scheduling
-            // ...
         }
 
         Ok(db)
@@ -349,35 +375,6 @@ impl Aurora {
                 self.index_value(collection_name, key_str, &value)?;
             }
         }
-        Ok(())
-    }
-
-    fn recover_from_wal(&self) -> Result<()> {
-        let entries = self.wal.as_ref().unwrap().write().unwrap().recover()?;
-
-        for entry in entries {
-            match entry.operation {
-                crate::wal::Operation::Put => {
-                    if let Some(value) = entry.value {
-                        self.cold.set(entry.key.clone(), value.clone())?;
-                        self.hot.set(entry.key.clone(), value.clone(), None);
-
-                        if let Some(collection_name) = entry.key.split(':').next() {
-                            if !collection_name.starts_with('_') {
-                                self.index_value(collection_name, &entry.key, &value)?;
-                            }
-                        }
-                    }
-                }
-                crate::wal::Operation::Delete => {
-                    self.cold.delete(&entry.key)?;
-                    self.hot.delete(&entry.key);
-                }
-                _ => {}
-            }
-        }
-
-        self.wal.as_ref().unwrap().write().unwrap().truncate()?;
         Ok(())
     }
 
@@ -2313,8 +2310,32 @@ impl Aurora {
             })
         });
 
-        // NOTE: This implementation does not yet support ordering, limits, or offsets.
-        Ok(final_docs)
+        // Apply ordering
+        if let Some((field, ascending)) = &builder.order_by {
+            final_docs.sort_by(|a, b| match (a.data.get(field), b.data.get(field)) {
+                (Some(v1), Some(v2)) => {
+                    let cmp = v1.cmp(v2);
+                    if *ascending {
+                        cmp
+                    } else {
+                        cmp.reverse()
+                    }
+                }
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            });
+        }
+
+        // Apply offset and limit
+        let start = builder.offset.unwrap_or(0);
+        let end = builder
+            .limit
+            .map(|l| start.saturating_add(l))
+            .unwrap_or(final_docs.len());
+
+        let end = end.min(final_docs.len());
+        Ok(final_docs.get(start..end).unwrap_or(&[]).to_vec())
     }
 
     /// Helper method to parse a string value back to a Value for comparison
@@ -2536,17 +2557,9 @@ impl Aurora {
     ///
     /// This analyzes common query patterns and suggests/creates optimal indices.
     pub async fn optimize_collection(&self, collection: &str) -> Result<()> {
-        // For now, this is a simple implementation that creates indices for all fields
-        // In a more sophisticated version, this would analyze query logs
-
         if let Ok(collection_def) = self.get_collection_definition(collection) {
             let field_names: Vec<&str> = collection_def.fields.keys().map(|s| s.as_str()).collect();
             self.create_indices(collection, &field_names).await?;
-            println!(
-                "🚀 Optimized collection '{}' with {} indices",
-                collection,
-                field_names.len()
-            );
         }
 
         Ok(())
@@ -2636,6 +2649,10 @@ impl Drop for Aurora {
     fn drop(&mut self) {
         // Signal checkpoint task to shutdown gracefully
         if let Some(ref shutdown_tx) = self.checkpoint_shutdown {
+            let _ = shutdown_tx.send(());
+        }
+        // Signal compaction task to shutdown gracefully
+        if let Some(ref shutdown_tx) = self.compaction_shutdown {
             let _ = shutdown_tx.send(());
         }
     }
