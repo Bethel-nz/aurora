@@ -501,9 +501,10 @@ impl Default for AuroraConfig {
 impl AuroraConfig {
     /// Create a new configuration with a specific database path
     pub fn with_path<P: AsRef<Path>>(path: P) -> Self {
-        let mut config = Self::default();
-        config.db_path = path.as_ref().to_path_buf();
-        config
+        Self {
+            db_path: path.as_ref().to_path_buf(),
+            ..Default::default()
+        }
     }
 
     /// Configuration optimized for read-heavy workloads (news sites, blogs)

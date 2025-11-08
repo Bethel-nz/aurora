@@ -64,7 +64,7 @@ impl ColdStore {
     pub fn scan(&self) -> impl Iterator<Item = Result<(String, Vec<u8>)>> + '_ {
         self.db.iter().map(|result| {
             result
-                .map_err(|e| AuroraError::Storage(e))
+                .map_err(AuroraError::Storage)
                 .and_then(|(key, value)| {
                     Ok((
                         String::from_utf8(key.to_vec()).map_err(|_| {
@@ -82,7 +82,7 @@ impl ColdStore {
     ) -> impl Iterator<Item = Result<(String, Vec<u8>)>> + '_ {
         self.db.scan_prefix(prefix.as_bytes()).map(|result| {
             result
-                .map_err(|e| AuroraError::Storage(e))
+                .map_err(AuroraError::Storage)
                 .and_then(|(key, value)| {
                     Ok((
                         String::from_utf8(key.to_vec()).map_err(|_| {

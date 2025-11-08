@@ -39,6 +39,9 @@ where
     }
 }
 
+/// Type alias for document filter functions
+type DocumentFilter<'a> = Box<dyn Fn(&Document) -> bool + Send + Sync + 'a>;
+
 /// Builder for creating and executing document queries.
 ///
 /// QueryBuilder uses a fluent interface pattern to construct
@@ -58,8 +61,7 @@ where
 pub struct QueryBuilder<'a> {
     db: &'a Aurora,
     collection: String,
-    // CHANGE 1: Add `+ Send + Sync` to make the boxed closure thread-safe.
-    filters: Vec<Box<dyn Fn(&Document) -> bool + Send + Sync + 'a>>,
+    filters: Vec<DocumentFilter<'a>>,
     order_by: Option<(String, bool)>,
     limit: Option<usize>,
     offset: Option<usize>,
@@ -106,7 +108,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn eq<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| v == &value)
+        self.doc.data.get(field) == Some(&value)
     }
 
     /// Check if a field is greater than a value
@@ -117,7 +119,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn gt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| v > &value)
+        self.doc.data.get(field).is_some_and(|v| v > &value)
     }
 
     /// Check if a field is greater than or equal to a value
@@ -128,7 +130,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn gte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| v >= &value)
+        self.doc.data.get(field).is_some_and(|v| v >= &value)
     }
 
     /// Check if a field is less than a value
@@ -139,7 +141,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn lt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| v < &value)
+        self.doc.data.get(field).is_some_and(|v| v < &value)
     }
 
     /// Check if a field is less than or equal to a value
@@ -150,7 +152,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn lte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| v <= &value)
+        self.doc.data.get(field).is_some_and(|v| v <= &value)
     }
 
     /// Check if a field contains a value
@@ -160,7 +162,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.contains("name", "widget"))
     /// ```
     pub fn contains(&self, field: &str, value: &str) -> bool {
-        self.doc.data.get(field).map_or(false, |v| match v {
+        self.doc.data.get(field).is_some_and(|v| match v {
             Value::String(s) => s.contains(value),
             Value::Array(arr) => arr.contains(&Value::String(value.to_string())),
             _ => false,
@@ -178,7 +180,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
         self.doc
             .data
             .get(field)
-            .map_or(false, |v| values.contains(v))
+            .is_some_and(|v| values.contains(v))
     }
 
     /// Check if a field is between two values (inclusive)
@@ -201,7 +203,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
         self.doc
             .data
             .get(field)
-            .map_or(false, |v| !matches!(v, Value::Null))
+            .is_some_and(|v| !matches!(v, Value::Null))
     }
 
     /// Check if a field doesn't exist or is null
@@ -214,7 +216,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
         self.doc
             .data
             .get(field)
-            .map_or(true, |v| matches!(v, Value::Null))
+            .is_none_or(|v| matches!(v, Value::Null))
     }
 
     /// Check if a field starts with a prefix
@@ -224,7 +226,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.starts_with("name", "John"))
     /// ```
     pub fn starts_with(&self, field: &str, prefix: &str) -> bool {
-        self.doc.data.get(field).map_or(false, |v| match v {
+        self.doc.data.get(field).is_some_and(|v| match v {
             Value::String(s) => s.starts_with(prefix),
             _ => false,
         })
@@ -237,7 +239,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.ends_with("name", "son"))
     /// ```
     pub fn ends_with(&self, field: &str, suffix: &str) -> bool {
-        self.doc.data.get(field).map_or(false, |v| match v {
+        self.doc.data.get(field).is_some_and(|v| match v {
             Value::String(s) => s.ends_with(suffix),
             _ => false,
         })
@@ -251,7 +253,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn array_contains(&self, field: &str, value: impl Into<Value>) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| match v {
+        self.doc.data.get(field).is_some_and(|v| match v {
             Value::Array(arr) => arr.contains(&value),
             _ => false,
         })
@@ -264,7 +266,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.array_len_eq("status", 2))
     /// ```
     pub fn array_len_eq(&self, field: &str, len: usize) -> bool {
-        self.doc.data.get(field).map_or(false, |v| match v {
+        self.doc.data.get(field).is_some_and(|v| match v {
             Value::Array(arr) => arr.len() == len,
             _ => false,
         })
@@ -299,7 +301,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn nested_eq<T: Into<Value>>(&self, path: &str, value: T) -> bool {
         let value = value.into();
-        self.get_nested_value(path).map_or(false, |v| v == &value)
+        self.get_nested_value(path) == Some(&value)
     }
 
     /// Check if a field matches a regular expression
@@ -312,7 +314,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
         use regex::Regex;
 
         if let Ok(re) = Regex::new(pattern) {
-            self.doc.data.get(field).map_or(false, |v| match v {
+            self.doc.data.get(field).is_some_and(|v| match v {
                 Value::String(s) => re.is_match(s),
                 _ => false,
             })
@@ -433,10 +435,18 @@ impl<'a> QueryBuilder<'a> {
         // Ensure indices are initialized
         self.db.ensure_indices_initialized().await?;
 
-        let mut docs = self.db.get_all_collection(&self.collection).await?;
-
-        // Apply filters
-        docs.retain(|doc| self.filters.iter().all(|f| f(doc)));
+        // Optimization: Use early termination for queries with LIMIT but no ORDER BY
+        let mut docs = if self.order_by.is_none() && self.limit.is_some() {
+            // Early termination path - scan only until we have enough results
+            let target = self.limit.unwrap() + self.offset.unwrap_or(0);
+            let filter = |doc: &Document| self.filters.iter().all(|f| f(doc));
+            self.db.scan_and_filter(&self.collection, filter, Some(target))?
+        } else {
+            // Standard path - need all matching docs (for sorting or no limit)
+            let mut docs = self.db.get_all_collection(&self.collection).await?;
+            docs.retain(|doc| self.filters.iter().all(|f| f(doc)));
+            docs
+        };
 
         // Apply ordering
         if let Some((field, ascending)) = self.order_by {
@@ -486,28 +496,181 @@ impl<'a> QueryBuilder<'a> {
 
     /// Watch the query for real-time updates
     ///
-    /// Returns a QueryWatcher that emits updates when documents are added,
-    /// removed, or modified in ways that affect the query results.
+    /// Returns a QueryWatcher that streams live updates when documents are added,
+    /// removed, or modified in ways that affect the query results. Perfect for
+    /// building reactive UIs, live dashboards, and real-time applications.
     ///
-    /// Note: This method requires the QueryBuilder to have a 'static lifetime,
+    /// # Performance
+    /// - Zero overhead for queries without watchers
+    /// - Updates delivered asynchronously via channels
+    /// - Automatic filtering - only matching changes are emitted
+    /// - Memory efficient - only tracks matching documents
+    ///
+    /// # Requirements
+    /// This method requires the QueryBuilder to have a 'static lifetime,
     /// which means the database reference must also be 'static (e.g., Arc<Aurora>).
     ///
     /// # Examples
+    ///
     /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    /// use std::sync::Arc;
+    ///
+    /// let db = Arc::new(Aurora::open("mydb.db")?);
+    ///
+    /// // Basic reactive query - watch active users
     /// let mut watcher = db.query("users")
-    ///     .filter(|f| f.eq("active", true))
+    ///     .filter(|f| f.eq("active", Value::Bool(true)))
     ///     .watch()
     ///     .await?;
     ///
     /// // Receive updates in real-time
     /// while let Some(update) = watcher.next().await {
     ///     match update {
-    ///         QueryUpdate::Added(doc) => println!("New: {:?}", doc),
-    ///         QueryUpdate::Removed(doc) => println!("Removed: {:?}", doc),
-    ///         QueryUpdate::Modified { old, new } => println!("Modified: {:?}", new),
+    ///         QueryUpdate::Added(doc) => {
+    ///             println!("New active user: {}", doc.id);
+    ///         },
+    ///         QueryUpdate::Removed(doc) => {
+    ///             println!("User deactivated: {}", doc.id);
+    ///         },
+    ///         QueryUpdate::Modified { old, new } => {
+    ///             println!("User updated: {} -> {}", old.id, new.id);
+    ///         },
     ///     }
     /// }
     /// ```
+    ///
+    /// # Real-World Use Cases
+    ///
+    /// **Live Leaderboard:**
+    /// ```
+    /// // Watch top players by score
+    /// let mut leaderboard = db.query("players")
+    ///     .filter(|f| f.gte("score", Value::Int(1000)))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Some(update) = leaderboard.next().await {
+    ///         // Update UI with new rankings
+    ///         broadcast_to_clients(&update).await;
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Activity Feed:**
+    /// ```
+    /// // Watch recent posts for a user's feed
+    /// let mut feed = db.query("posts")
+    ///     .filter(|f| f.eq("author_id", user_id))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// // Stream updates to WebSocket
+    /// while let Some(update) = feed.next().await {
+    ///     match update {
+    ///         QueryUpdate::Added(post) => {
+    ///             websocket.send(json!({"type": "new_post", "post": post})).await?;
+    ///         },
+    ///         _ => {}
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// **Real-Time Dashboard:**
+    /// ```
+    /// // Watch critical metrics
+    /// let mut alerts = db.query("metrics")
+    ///     .filter(|f| f.gt("cpu_usage", Value::Float(80.0)))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Some(update) = alerts.next().await {
+    ///         if let QueryUpdate::Added(metric) = update {
+    ///             // Alert on high CPU usage
+    ///             send_alert(format!("High CPU: {:?}", metric)).await;
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Collaborative Editing:**
+    /// ```
+    /// // Watch document for changes from other users
+    /// let doc_id = "doc-123";
+    /// let mut changes = db.query("documents")
+    ///     .filter(|f| f.eq("id", doc_id))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Some(update) = changes.next().await {
+    ///         if let QueryUpdate::Modified { old, new } = update {
+    ///             // Merge changes from other editors
+    ///             apply_remote_changes(&old, &new).await;
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Stock Ticker:**
+    /// ```
+    /// // Watch price changes
+    /// let mut price_watcher = db.query("stocks")
+    ///     .filter(|f| f.eq("symbol", "AAPL"))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// while let Some(update) = price_watcher.next().await {
+    ///     if let QueryUpdate::Modified { old, new } = update {
+    ///         if let (Some(old_price), Some(new_price)) =
+    ///             (old.data.get("price"), new.data.get("price")) {
+    ///             println!("AAPL: {} -> {}", old_price, new_price);
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Multiple Watchers Pattern
+    ///
+    /// ```
+    /// // Watch multiple queries concurrently
+    /// let mut high_priority = db.query("tasks")
+    ///     .filter(|f| f.eq("priority", Value::String("high".into())))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// let mut urgent = db.query("tasks")
+    ///     .filter(|f| f.eq("status", Value::String("urgent".into())))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// tokio::spawn(async move {
+    ///     loop {
+    ///         tokio::select! {
+    ///             Some(update) = high_priority.next() => {
+    ///                 println!("High priority: {:?}", update);
+    ///             },
+    ///             Some(update) = urgent.next() => {
+    ///                 println!("Urgent: {:?}", update);
+    ///             },
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// # Important Notes
+    /// - Requires Arc<Aurora> for 'static lifetime
+    /// - Updates are delivered asynchronously
+    /// - Watcher keeps running until dropped
+    /// - Only matching documents trigger updates
+    /// - Use tokio::spawn to process updates in background
+    ///
+    /// # See Also
+    /// - `Aurora::listen()` for collection-level change notifications
+    /// - `QueryWatcher::next()` to receive the next update
+    /// - `QueryWatcher::try_next()` for non-blocking checks
     pub async fn watch(mut self) -> Result<crate::reactive::QueryWatcher>
     where
         'a: 'static,
@@ -702,6 +865,9 @@ impl<'a> SearchBuilder<'a> {
 pub struct SimpleQueryBuilder {
     pub collection: String,
     pub filters: Vec<Filter>,
+    pub order_by: Option<(String, bool)>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 impl SimpleQueryBuilder {
@@ -709,6 +875,9 @@ impl SimpleQueryBuilder {
         Self {
             collection,
             filters: Vec::new(),
+            order_by: None,
+            limit: None,
+            offset: None,
         }
     }
 
@@ -717,26 +886,230 @@ impl SimpleQueryBuilder {
         self
     }
 
+    /// Filter for exact equality
+    ///
+    /// Uses secondary index if the field is indexed (O(1) lookup).
+    /// Falls back to full collection scan if not indexed (O(n)).
+    ///
+    /// # Arguments
+    /// * `field` - The field name to filter on
+    /// * `value` - The exact value to match
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Find active users
+    /// let active_users = db.query("users")
+    ///     .filter(|f| f.eq("status", Value::String("active".into())))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Multiple equality filters (AND logic)
+    /// let premium_active = db.query("users")
+    ///     .filter(|f| f.eq("tier", Value::String("premium".into())))
+    ///     .filter(|f| f.eq("active", Value::Bool(true)))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Numeric equality
+    /// let age_30 = db.query("users")
+    ///     .filter(|f| f.eq("age", Value::Int(30)))
+    ///     .collect()
+    ///     .await?;
+    /// ```
     pub fn eq(self, field: &str, value: Value) -> Self {
         self.filter(Filter::Eq(field.to_string(), value))
     }
 
+    /// Filter for greater than
+    ///
+    /// Finds all documents where the field value is strictly greater than
+    /// the provided value. With LIMIT, uses early termination for performance.
+    ///
+    /// # Arguments
+    /// * `field` - The field name to compare
+    /// * `value` - The minimum value (exclusive)
+    ///
+    /// # Performance
+    /// - Without LIMIT: O(n) - scans all documents
+    /// - With LIMIT: O(k) where k = limit + offset (early termination)
+    /// - No index support yet (planned for future)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Find high scorers (with early termination)
+    /// let high_scorers = db.query("users")
+    ///     .filter(|f| f.gt("score", Value::Int(1000)))
+    ///     .limit(100)  // Stops after finding 100 matches
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Price range queries
+    /// let expensive = db.query("products")
+    ///     .filter(|f| f.gt("price", Value::Float(99.99)))
+    ///     .order_by("price", false)  // Descending
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Date filtering (timestamps as integers)
+    /// let recent = db.query("events")
+    ///     .filter(|f| f.gt("timestamp", Value::Int(1609459200)))  // After Jan 1, 2021
+    ///     .collect()
+    ///     .await?;
+    /// ```
     pub fn gt(self, field: &str, value: Value) -> Self {
         self.filter(Filter::Gt(field.to_string(), value))
     }
 
+    /// Filter for greater than or equal to
+    ///
+    /// Finds all documents where the field value is greater than or equal to
+    /// the provided value. Inclusive version of `gt()`.
+    ///
+    /// # Arguments
+    /// * `field` - The field name to compare
+    /// * `value` - The minimum value (inclusive)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Minimum age requirement (inclusive)
+    /// let adults = db.query("users")
+    ///     .filter(|f| f.gte("age", Value::Int(18)))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Inventory management
+    /// let in_stock = db.query("products")
+    ///     .filter(|f| f.gte("stock", Value::Int(1)))
+    ///     .collect()
+    ///     .await?;
+    /// ```
     pub fn gte(self, field: &str, value: Value) -> Self {
         self.filter(Filter::Gte(field.to_string(), value))
     }
 
+    /// Filter for less than
+    ///
+    /// Finds all documents where the field value is strictly less than
+    /// the provided value.
+    ///
+    /// # Arguments
+    /// * `field` - The field name to compare
+    /// * `value` - The maximum value (exclusive)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Low balance accounts
+    /// let low_balance = db.query("accounts")
+    ///     .filter(|f| f.lt("balance", Value::Float(10.0)))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Budget products
+    /// let budget = db.query("products")
+    ///     .filter(|f| f.lt("price", Value::Float(50.0)))
+    ///     .order_by("price", true)  // Ascending
+    ///     .collect()
+    ///     .await?;
+    /// ```
     pub fn lt(self, field: &str, value: Value) -> Self {
         self.filter(Filter::Lt(field.to_string(), value))
     }
 
+    /// Filter for less than or equal to
+    ///
+    /// Finds all documents where the field value is less than or equal to
+    /// the provided value. Inclusive version of `lt()`.
+    ///
+    /// # Arguments
+    /// * `field` - The field name to compare
+    /// * `value` - The maximum value (inclusive)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Senior discount eligibility
+    /// let seniors = db.query("users")
+    ///     .filter(|f| f.lte("age", Value::Int(65)))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Clearance items
+    /// let clearance = db.query("products")
+    ///     .filter(|f| f.lte("price", Value::Float(20.0)))
+    ///     .collect()
+    ///     .await?;
+    /// ```
     pub fn lte(self, field: &str, value: Value) -> Self {
         self.filter(Filter::Lte(field.to_string(), value))
     }
 
+    /// Filter for substring containment
+    ///
+    /// Finds all documents where the field value contains the specified substring.
+    /// Case-sensitive matching. For text search, consider using the `search()` API instead.
+    ///
+    /// # Arguments
+    /// * `field` - The field name to search in (must be a string field)
+    /// * `value` - The substring to search for
+    ///
+    /// # Performance
+    /// - Always O(n) - scans all documents
+    /// - Case-sensitive string matching
+    /// - For full-text search, use `db.search()` instead
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::Aurora;
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Find articles about Rust
+    /// let rust_articles = db.query("articles")
+    ///     .filter(|f| f.contains("title", "Rust"))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Email domain filtering
+    /// let gmail_users = db.query("users")
+    ///     .filter(|f| f.contains("email", "@gmail.com"))
+    ///     .collect()
+    ///     .await?;
+    ///
+    /// // Tag searching
+    /// let rust_posts = db.query("posts")
+    ///     .filter(|f| f.contains("tags", "rust"))
+    ///     .collect()
+    ///     .await?;
+    /// ```
+    ///
+    /// # Note
+    /// For case-insensitive search or more advanced text matching,
+    /// use the full-text search API: `db.search(collection).query(text)`
     pub fn contains(self, field: &str, value: &str) -> Self {
         self.filter(Filter::Contains(field.to_string(), value.to_string()))
     }
@@ -745,6 +1118,24 @@ impl SimpleQueryBuilder {
     pub fn between(self, field: &str, min: Value, max: Value) -> Self {
         self.filter(Filter::Gte(field.to_string(), min))
             .filter(Filter::Lte(field.to_string(), max))
+    }
+
+    /// Sort results by a field (ascending or descending)
+    pub fn order_by(mut self, field: &str, ascending: bool) -> Self {
+        self.order_by = Some((field.to_string(), ascending));
+        self
+    }
+
+    /// Limit the number of results returned
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Skip a number of results (for pagination)
+    pub fn offset(mut self, offset: usize) -> Self {
+        self.offset = Some(offset);
+        self
     }
 }
 

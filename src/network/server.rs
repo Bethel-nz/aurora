@@ -50,7 +50,7 @@ impl BincodeServer {
             stream.read_exact(&mut buffer).await?;
 
             let request: Request =
-                bincode::deserialize(&buffer).map_err(|e| AuroraError::Bincode(e))?;
+                bincode::deserialize(&buffer).map_err(AuroraError::Bincode)?;
 
             let response = db.process_network_request(request).await;
 

@@ -61,12 +61,11 @@ impl QueryWatcher {
                     crate::pubsub::ChangeType::Delete => state.remove(&event.id).await,
                 };
 
-                if let Some(u) = update {
-                    if sender.send(u).is_err() {
+                if let Some(u) = update
+                    && sender.send(u).is_err() {
                         // Receiver dropped, stop watching
                         break;
                     }
-                }
             }
         });
 
