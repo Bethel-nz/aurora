@@ -9,5 +9,8 @@
 aurora_baseline_*.txt
 aurora_query_stats.log
 
+# Ignore documentation TODO (internal planning)
+DOCUMENTATION_TODO.md
+
 # Ignore Windows drive letter directories that may be created accidentally
 [A-Z]:/
