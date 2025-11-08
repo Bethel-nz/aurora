@@ -68,8 +68,24 @@ use tokio::fs::read_to_string;
 use tokio::io::AsyncReadExt;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
+
+// Disk location metadata for primary index
+// Instead of storing full Vec<u8> values, we store minimal metadata
+#[derive(Debug, Clone, Copy)]
+struct DiskLocation {
+    size: u32,  // Size in bytes (useful for statistics)
+}
+
+impl DiskLocation {
+    fn new(size: usize) -> Self {
+        Self {
+            size: size as u32,
+        }
+    }
+}
+
 // Index types for faster lookups
-type PrimaryIndex = DashMap<String, Vec<u8>>;
+type PrimaryIndex = DashMap<String, DiskLocation>;
 type SecondaryIndex = DashMap<String, Vec<String>>;
 
 // Move DataInfo enum outside impl block
@@ -383,13 +399,16 @@ impl Aurora {
             return Ok(Some(value));
         }
 
-        // Check primary index
+        // Check if key exists in primary index
         if let Some(collection) = key.split(':').next()
             && let Some(index) = self.primary_indices.get(collection)
-                && let Some(value) = index.get(key) {
-                    // Promote to hot cache
-                    self.hot.set(key.to_string(), value.clone(), None);
-                    return Ok(Some(value.clone()));
+                && index.contains_key(key) {
+                    // Key exists in index, fetch from cold storage
+                    if let Some(value) = self.cold.get(key)? {
+                        // Promote to hot cache for future fast access
+                        self.hot.set(key.to_string(), value.clone(), None);
+                        return Ok(Some(value));
+                    }
                 }
 
         // Fallback to cold storage
@@ -556,11 +575,12 @@ impl Aurora {
     }
 
     fn index_value(&self, collection: &str, key: &str, value: &[u8]) -> Result<()> {
-        // Update primary index (always index for fast full collection scans)
+        // Update primary index with metadata only (not the full value)
+        let location = DiskLocation::new(value.len());
         self.primary_indices
             .entry(collection.to_string())
             .or_default()
-            .insert(key.to_string(), value.to_vec());
+            .insert(key.to_string(), location);
 
         // Try to get schema from cache first, otherwise load and cache it
         let collection_obj = match self.schema_cache.get(collection) {
@@ -638,12 +658,13 @@ impl Aurora {
 
     // Simplified collection scan (fallback)
     fn scan_collection(&self, collection: &str) -> Result<Vec<Document>> {
-        let _prefix = format!("{}:", collection);
+        let prefix = format!("{}:", collection);
         let mut documents = Vec::new();
 
-        if let Some(index) = self.primary_indices.get(collection) {
-            for entry in index.iter() {
-                if let Ok(doc) = serde_json::from_slice(entry.value()) {
+        // Read from cold storage instead of primary index
+        for result in self.cold.scan_prefix(&prefix) {
+            if let Ok((_key, value)) = result {
+                if let Ok(doc) = serde_json::from_slice::<Document>(&value) {
                     documents.push(doc);
                 }
             }
@@ -940,19 +961,18 @@ impl Aurora {
 
     pub async fn get_all_collection(&self, collection: &str) -> Result<Vec<Document>> {
         self.ensure_indices_initialized().await?;
+        // Flush write buffer to ensure all data is in cold storage before scanning
+        self.flush()?;
         self.scan_collection(collection)
     }
 
     pub fn get_data_by_pattern(&self, pattern: &str) -> Result<Vec<(String, DataInfo)>> {
         let mut data = Vec::new();
 
-        if let Some(index) = self
-            .primary_indices
-            .get(pattern.split(':').next().unwrap_or(""))
-        {
-            for entry in index.iter() {
-                if entry.key().contains(pattern) {
-                    let value = entry.value();
+        // Scan from cold storage instead of primary index
+        for result in self.cold.scan() {
+            if let Ok((key, value)) = result {
+                if key.contains(pattern) {
                     let info = if value.starts_with(b"BLOB:") {
                         DataInfo::Blob { size: value.len() }
                     } else {
@@ -963,7 +983,7 @@ impl Aurora {
                         }
                     };
 
-                    data.push((entry.key().clone(), info));
+                    data.push((key.clone(), info));
                 }
             }
         }
@@ -1944,8 +1964,9 @@ impl Aurora {
                 // 2. Update hot cache
                 self.hot.set(key.clone(), value.clone(), None);
 
-                // 3. Update primary index
-                primary_index.insert(key.clone(), value.clone());
+                // 3. Update primary index with metadata only
+                let location = DiskLocation::new(value.len());
+                primary_index.insert(key.clone(), location);
 
                 // 4. Update secondary indices
                 if !indexed_fields.is_empty()
