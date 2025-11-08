@@ -496,28 +496,181 @@ impl<'a> QueryBuilder<'a> {
 
     /// Watch the query for real-time updates
     ///
-    /// Returns a QueryWatcher that emits updates when documents are added,
-    /// removed, or modified in ways that affect the query results.
+    /// Returns a QueryWatcher that streams live updates when documents are added,
+    /// removed, or modified in ways that affect the query results. Perfect for
+    /// building reactive UIs, live dashboards, and real-time applications.
     ///
-    /// Note: This method requires the QueryBuilder to have a 'static lifetime,
+    /// # Performance
+    /// - Zero overhead for queries without watchers
+    /// - Updates delivered asynchronously via channels
+    /// - Automatic filtering - only matching changes are emitted
+    /// - Memory efficient - only tracks matching documents
+    ///
+    /// # Requirements
+    /// This method requires the QueryBuilder to have a 'static lifetime,
     /// which means the database reference must also be 'static (e.g., Arc<Aurora>).
     ///
     /// # Examples
+    ///
     /// ```
+    /// use aurora_db::{Aurora, types::Value};
+    /// use std::sync::Arc;
+    ///
+    /// let db = Arc::new(Aurora::open("mydb.db")?);
+    ///
+    /// // Basic reactive query - watch active users
     /// let mut watcher = db.query("users")
-    ///     .filter(|f| f.eq("active", true))
+    ///     .filter(|f| f.eq("active", Value::Bool(true)))
     ///     .watch()
     ///     .await?;
     ///
     /// // Receive updates in real-time
     /// while let Some(update) = watcher.next().await {
     ///     match update {
-    ///         QueryUpdate::Added(doc) => println!("New: {:?}", doc),
-    ///         QueryUpdate::Removed(doc) => println!("Removed: {:?}", doc),
-    ///         QueryUpdate::Modified { old, new } => println!("Modified: {:?}", new),
+    ///         QueryUpdate::Added(doc) => {
+    ///             println!("New active user: {}", doc.id);
+    ///         },
+    ///         QueryUpdate::Removed(doc) => {
+    ///             println!("User deactivated: {}", doc.id);
+    ///         },
+    ///         QueryUpdate::Modified { old, new } => {
+    ///             println!("User updated: {} -> {}", old.id, new.id);
+    ///         },
     ///     }
     /// }
     /// ```
+    ///
+    /// # Real-World Use Cases
+    ///
+    /// **Live Leaderboard:**
+    /// ```
+    /// // Watch top players by score
+    /// let mut leaderboard = db.query("players")
+    ///     .filter(|f| f.gte("score", Value::Int(1000)))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Some(update) = leaderboard.next().await {
+    ///         // Update UI with new rankings
+    ///         broadcast_to_clients(&update).await;
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Activity Feed:**
+    /// ```
+    /// // Watch recent posts for a user's feed
+    /// let mut feed = db.query("posts")
+    ///     .filter(|f| f.eq("author_id", user_id))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// // Stream updates to WebSocket
+    /// while let Some(update) = feed.next().await {
+    ///     match update {
+    ///         QueryUpdate::Added(post) => {
+    ///             websocket.send(json!({"type": "new_post", "post": post})).await?;
+    ///         },
+    ///         _ => {}
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// **Real-Time Dashboard:**
+    /// ```
+    /// // Watch critical metrics
+    /// let mut alerts = db.query("metrics")
+    ///     .filter(|f| f.gt("cpu_usage", Value::Float(80.0)))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Some(update) = alerts.next().await {
+    ///         if let QueryUpdate::Added(metric) = update {
+    ///             // Alert on high CPU usage
+    ///             send_alert(format!("High CPU: {:?}", metric)).await;
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Collaborative Editing:**
+    /// ```
+    /// // Watch document for changes from other users
+    /// let doc_id = "doc-123";
+    /// let mut changes = db.query("documents")
+    ///     .filter(|f| f.eq("id", doc_id))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Some(update) = changes.next().await {
+    ///         if let QueryUpdate::Modified { old, new } = update {
+    ///             // Merge changes from other editors
+    ///             apply_remote_changes(&old, &new).await;
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Stock Ticker:**
+    /// ```
+    /// // Watch price changes
+    /// let mut price_watcher = db.query("stocks")
+    ///     .filter(|f| f.eq("symbol", "AAPL"))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// while let Some(update) = price_watcher.next().await {
+    ///     if let QueryUpdate::Modified { old, new } = update {
+    ///         if let (Some(old_price), Some(new_price)) =
+    ///             (old.data.get("price"), new.data.get("price")) {
+    ///             println!("AAPL: {} -> {}", old_price, new_price);
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Multiple Watchers Pattern
+    ///
+    /// ```
+    /// // Watch multiple queries concurrently
+    /// let mut high_priority = db.query("tasks")
+    ///     .filter(|f| f.eq("priority", Value::String("high".into())))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// let mut urgent = db.query("tasks")
+    ///     .filter(|f| f.eq("status", Value::String("urgent".into())))
+    ///     .watch()
+    ///     .await?;
+    ///
+    /// tokio::spawn(async move {
+    ///     loop {
+    ///         tokio::select! {
+    ///             Some(update) = high_priority.next() => {
+    ///                 println!("High priority: {:?}", update);
+    ///             },
+    ///             Some(update) = urgent.next() => {
+    ///                 println!("Urgent: {:?}", update);
+    ///             },
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// # Important Notes
+    /// - Requires Arc<Aurora> for 'static lifetime
+    /// - Updates are delivered asynchronously
+    /// - Watcher keeps running until dropped
+    /// - Only matching documents trigger updates
+    /// - Use tokio::spawn to process updates in background
+    ///
+    /// # See Also
+    /// - `Aurora::listen()` for collection-level change notifications
+    /// - `QueryWatcher::next()` to receive the next update
+    /// - `QueryWatcher::try_next()` for non-blocking checks
     pub async fn watch(mut self) -> Result<crate::reactive::QueryWatcher>
     where
         'a: 'static,

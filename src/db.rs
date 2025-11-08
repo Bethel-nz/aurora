@@ -560,42 +560,292 @@ impl Aurora {
     /// Listen for real-time changes in a collection
     ///
     /// Returns a stream of change events (inserts, updates, deletes) that you can subscribe to.
-    /// Perfect for building reactive UIs, caches, or synchronization systems.
+    /// Perfect for building reactive UIs, cache invalidation, audit logging, webhooks, and
+    /// data synchronization systems.
     ///
     /// # Performance
     /// - Zero overhead when no listeners are active
     /// - Events are broadcast to all listeners asynchronously
     /// - Non-blocking - doesn't slow down write operations
+    /// - Multiple listeners can watch the same collection
     ///
     /// # Examples
     ///
     /// ```
-    /// use aurora_db::{Aurora, ChangeType};
+    /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
     ///
-    /// // Listen to user changes
+    /// // Basic listener
     /// let mut listener = db.listen("users");
     ///
-    /// // In a background task
     /// tokio::spawn(async move {
-    ///     while let Some(event) = listener.recv().await {
+    ///     while let Ok(event) = listener.recv().await {
     ///         match event.change_type {
-    ///             ChangeType::Insert => println!("New user: {:?}", event.after),
-    ///             ChangeType::Update => println!("Updated: {:?} -> {:?}", event.before, event.after),
-    ///             ChangeType::Delete => println!("Deleted: {:?}", event.before),
+    ///             ChangeType::Insert => println!("New user: {:?}", event.document),
+    ///             ChangeType::Update => println!("Updated user: {:?}", event.document),
+    ///             ChangeType::Delete => println!("Deleted user ID: {}", event.id),
     ///         }
     ///     }
     /// });
     ///
     /// // Now any insert/update/delete will trigger the listener
-    /// db.insert_into("users", vec![("name", Value::String("Alice".into()))])?;
+    /// db.insert_into("users", vec![("name", Value::String("Alice".into()))]).await?;
     /// ```
+    ///
+    /// # Real-World Use Cases
+    ///
+    /// **Cache Invalidation:**
+    /// ```
+    /// use std::sync::Arc;
+    /// use tokio::sync::RwLock;
+    /// use std::collections::HashMap;
+    ///
+    /// let cache = Arc::new(RwLock::new(HashMap::new()));
+    /// let cache_clone = Arc::clone(&cache);
+    ///
+    /// let mut listener = db.listen("products");
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = listener.recv().await {
+    ///         // Invalidate cache entry when product changes
+    ///         cache_clone.write().await.remove(&event.id);
+    ///         println!("Cache invalidated for product: {}", event.id);
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Webhook Notifications:**
+    /// ```
+    /// let mut listener = db.listen("orders");
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = listener.recv().await {
+    ///         if event.change_type == ChangeType::Insert {
+    ///             // Send webhook for new orders
+    ///             send_webhook("https://api.example.com/webhooks/order", &event).await;
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Audit Logging:**
+    /// ```
+    /// let mut listener = db.listen("sensitive_data");
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = listener.recv().await {
+    ///         // Log all changes to audit trail
+    ///         db.insert_into("audit_log", vec![
+    ///             ("collection", Value::String("sensitive_data".into())),
+    ///             ("action", Value::String(format!("{:?}", event.change_type))),
+    ///             ("document_id", Value::String(event.id.clone())),
+    ///             ("timestamp", Value::String(chrono::Utc::now().to_rfc3339())),
+    ///         ]).await?;
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Data Synchronization:**
+    /// ```
+    /// let mut listener = db.listen("users");
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = listener.recv().await {
+    ///         // Sync changes to external system
+    ///         match event.change_type {
+    ///             ChangeType::Insert | ChangeType::Update => {
+    ///                 if let Some(doc) = event.document {
+    ///                     external_api.upsert_user(&doc).await?;
+    ///                 }
+    ///             },
+    ///             ChangeType::Delete => {
+    ///                 external_api.delete_user(&event.id).await?;
+    ///             },
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Real-Time Notifications:**
+    /// ```
+    /// let mut listener = db.listen("messages");
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = listener.recv().await {
+    ///         if event.change_type == ChangeType::Insert {
+    ///             if let Some(msg) = event.document {
+    ///                 // Push notification to connected websockets
+    ///                 if let Some(recipient) = msg.data.get("recipient_id") {
+    ///                     websocket_manager.send_to_user(recipient, &msg).await;
+    ///                 }
+    ///             }
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Filtered Listener:**
+    /// ```
+    /// use aurora_db::pubsub::EventFilter;
+    ///
+    /// // Only listen for inserts
+    /// let mut listener = db.listen("users")
+    ///     .filter(EventFilter::ChangeType(ChangeType::Insert));
+    ///
+    /// // Only listen for documents with specific field value
+    /// let mut listener = db.listen("users")
+    ///     .filter(EventFilter::FieldEquals("role".to_string(), Value::String("admin".into())));
+    /// ```
+    ///
+    /// # Important Notes
+    /// - Listener stays active until dropped
+    /// - Events are delivered in order
+    /// - Each listener has its own event stream
+    /// - Use filters to reduce unnecessary event processing
+    /// - Listeners don't affect write performance
+    ///
+    /// # See Also
+    /// - `listen_all()` to listen to all collections
+    /// - `ChangeListener::filter()` to filter events
+    /// - `query().watch()` for reactive queries with filtering
     pub fn listen(&self, collection: impl Into<String>) -> crate::pubsub::ChangeListener {
         self.pubsub.listen(collection)
     }
 
     /// Listen for all changes across all collections
+    ///
+    /// Returns a stream of change events for every insert, update, and delete
+    /// operation across the entire database. Useful for global audit logging,
+    /// replication, and monitoring systems.
+    ///
+    /// # Performance
+    /// - Same performance as single collection listener
+    /// - Filter events by collection in your handler
+    /// - Consider using `listen(collection)` if only watching specific collections
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aurora_db::Aurora;
+    ///
+    /// let db = Aurora::open("mydb.db")?;
+    ///
+    /// // Listen to everything
+    /// let mut listener = db.listen_all();
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = listener.recv().await {
+    ///         println!("Change in {}: {:?}", event.collection, event.change_type);
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// # Real-World Use Cases
+    ///
+    /// **Global Audit Trail:**
+    /// ```
+    /// let mut listener = db.listen_all();
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = listener.recv().await {
+    ///         // Log every database change
+    ///         audit_logger.log(AuditEntry {
+    ///             timestamp: chrono::Utc::now(),
+    ///             collection: event.collection,
+    ///             action: event.change_type,
+    ///             document_id: event.id,
+    ///             user_id: get_current_user_id(),
+    ///         }).await;
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Database Replication:**
+    /// ```
+    /// let mut listener = db.listen_all();
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = listener.recv().await {
+    ///         // Replicate to secondary database
+    ///         replica_db.apply_change(event).await?;
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Change Data Capture (CDC):**
+    /// ```
+    /// let mut listener = db.listen_all();
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = listener.recv().await {
+    ///         // Stream changes to Kafka/RabbitMQ
+    ///         kafka_producer.send(
+    ///             &format!("cdc.{}", event.collection),
+    ///             serde_json::to_string(&event)?
+    ///         ).await?;
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Monitoring & Metrics:**
+    /// ```
+    /// use std::sync::atomic::{AtomicUsize, Ordering};
+    ///
+    /// let write_counter = Arc::new(AtomicUsize::new(0));
+    /// let counter_clone = Arc::clone(&write_counter);
+    ///
+    /// let mut listener = db.listen_all();
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(_event) = listener.recv().await {
+    ///         counter_clone.fetch_add(1, Ordering::Relaxed);
+    ///     }
+    /// });
+    ///
+    /// // Report metrics every 60 seconds
+    /// tokio::spawn(async move {
+    ///     loop {
+    ///         tokio::time::sleep(Duration::from_secs(60)).await;
+    ///         let count = write_counter.swap(0, Ordering::Relaxed);
+    ///         println!("Writes per minute: {}", count);
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// **Selective Processing:**
+    /// ```
+    /// let mut listener = db.listen_all();
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = listener.recv().await {
+    ///         // Handle different collections differently
+    ///         match event.collection.as_str() {
+    ///             "users" => handle_user_change(event).await,
+    ///             "orders" => handle_order_change(event).await,
+    ///             "payments" => handle_payment_change(event).await,
+    ///             _ => {} // Ignore others
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// # When to Use
+    /// - Global audit logging
+    /// - Database replication
+    /// - Change data capture (CDC)
+    /// - Monitoring and metrics
+    /// - Event sourcing systems
+    ///
+    /// # When NOT to Use
+    /// - Only need to watch 1-2 collections → Use `listen(collection)` instead
+    /// - High write volume with selective interest → Use collection-specific listeners
+    /// - Need complex filtering → Use `query().watch()` instead
+    ///
+    /// # See Also
+    /// - `listen()` for single collection listening
+    /// - `listener_count()` to check active listeners
+    /// - `query().watch()` for filtered reactive queries
     pub fn listen_all(&self) -> crate::pubsub::ChangeListener {
         self.pubsub.listen_all()
     }
