@@ -37,15 +37,14 @@ impl JobQueue {
         let prefix = format!("{}:", self.collection);
 
         for entry in self.storage.scan_prefix(&prefix) {
-            if let Ok((key, value)) = entry {
-                if let Ok(job) = bincode::deserialize::<Job>(&value) {
+            if let Ok((key, value)) = entry
+                && let Ok(job) = bincode::deserialize::<Job>(&value) {
                     // Only load jobs that aren't completed
                     if !matches!(job.status, JobStatus::Completed) {
                         let job_id = key.strip_prefix(&prefix).unwrap_or(&key).to_string();
                         self.jobs.insert(job_id, job);
                     }
                 }
-            }
         }
 
         Ok(())
@@ -90,13 +89,10 @@ impl JobQueue {
                     best_job = Some((entry.key().clone(), job.clone()));
                 }
                 Some((_, current_best)) => {
-                    // Higher priority wins
-                    if job.priority > current_best.priority {
-                        best_job = Some((entry.key().clone(), job.clone()));
-                    }
-                    // Same priority, older job wins
-                    else if job.priority == current_best.priority
-                        && job.created_at < current_best.created_at
+                    // Higher priority wins, or same priority but older job wins
+                    if job.priority > current_best.priority
+                        || (job.priority == current_best.priority
+                            && job.created_at < current_best.created_at)
                     {
                         best_job = Some((entry.key().clone(), job.clone()));
                     }

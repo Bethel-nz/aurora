@@ -44,17 +44,17 @@ impl ReactiveQueryState {
             let mut results = self.results.write().await;
             let id = doc.id.clone();
 
-            if results.contains_key(&id) {
-                // Document already in results, this is a modification
-                let old = results.insert(id, doc.clone());
-                Some(QueryUpdate::Modified {
-                    old: old.unwrap(),
-                    new: doc,
-                })
-            } else {
-                // New document added to results
-                results.insert(id, doc.clone());
-                Some(QueryUpdate::Added(doc))
+            match results.entry(id) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    // Document already in results, this is a modification
+                    let old = e.insert(doc.clone());
+                    Some(QueryUpdate::Modified { old, new: doc })
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    // New document added to results
+                    e.insert(doc.clone());
+                    Some(QueryUpdate::Added(doc))
+                }
             }
         } else {
             None

@@ -8,6 +8,12 @@ static TRANSACTION_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TransactionId(u64);
 
+impl Default for TransactionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TransactionId {
     pub fn new() -> Self {
         Self(TRANSACTION_ID_COUNTER.fetch_add(1, Ordering::SeqCst))

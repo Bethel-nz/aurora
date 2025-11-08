@@ -171,8 +171,10 @@ impl Aurora {
     /// let db = Aurora::open("customer_data.db")?;
     /// ```
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let mut config = AuroraConfig::default();
-        config.db_path = Self::resolve_path(path)?;
+        let config = AuroraConfig {
+            db_path: Self::resolve_path(path)?,
+            ..Default::default()
+        };
         Self::with_config(config)
     }
 
@@ -199,13 +201,11 @@ impl Aurora {
     pub fn with_config(config: AuroraConfig) -> Result<Self> {
         let path = Self::resolve_path(&config.db_path)?;
 
-        if config.create_dirs {
-            if let Some(parent) = path.parent() {
-                if !parent.exists() {
+        if config.create_dirs
+            && let Some(parent) = path.parent()
+                && !parent.exists() {
                     std::fs::create_dir_all(parent)?;
                 }
-            }
-        }
 
         // Fix method calls to pass all required parameters
         let cold = Arc::new(ColdStore::with_config(
@@ -270,20 +270,18 @@ impl Aurora {
                                 eprintln!("Background checkpoint flush error: {}", e);
                             }
                             // Truncate WAL after successful flush
-                            if let Some(ref wal) = wal_clone {
-                                if let Ok(mut wal_guard) = wal.write() {
+                            if let Some(ref wal) = wal_clone
+                                && let Ok(mut wal_guard) = wal.write() {
                                     let _ = wal_guard.truncate();
                                 }
-                            }
                         }
                         _ = shutdown_rx.recv() => {
                             // Final checkpoint before shutdown
                             let _ = cold_clone.flush();
-                            if let Some(ref wal) = wal_clone {
-                                if let Ok(mut wal_guard) = wal.write() {
+                            if let Some(ref wal) = wal_clone
+                                && let Ok(mut wal_guard) = wal.write() {
                                     let _ = wal_guard.truncate();
                                 }
-                            }
                             break;
                         }
                     }
@@ -359,7 +357,7 @@ impl Aurora {
                     eprintln!("Failed to initialize indices: {:?}", e);
                 }
                 println!("Indices initialized");
-                ()
+                
             })
             .await;
         Ok(())
@@ -368,7 +366,7 @@ impl Aurora {
     fn initialize_indices(&self) -> Result<()> {
         for result in self.cold.scan() {
             let (key, value) = result?;
-            let key_str = std::str::from_utf8(&key.as_bytes())
+            let key_str = std::str::from_utf8(key.as_bytes())
                 .map_err(|_| AuroraError::InvalidKey("Invalid UTF-8".into()))?;
 
             if let Some(collection_name) = key_str.split(':').next() {
@@ -386,15 +384,13 @@ impl Aurora {
         }
 
         // Check primary index
-        if let Some(collection) = key.split(':').next() {
-            if let Some(index) = self.primary_indices.get(collection) {
-                if let Some(value) = index.get(key) {
+        if let Some(collection) = key.split(':').next()
+            && let Some(index) = self.primary_indices.get(collection)
+                && let Some(value) = index.get(key) {
                     // Promote to hot cache
                     self.hot.set(key.to_string(), value.clone(), None);
                     return Ok(Some(value.clone()));
                 }
-            }
-        }
 
         // Fallback to cold storage
         let value = self.cold.get(key)?;
@@ -478,11 +474,10 @@ impl Aurora {
         self.cold.flush()?;
 
         // Truncate WAL after successful flush (data is now in cold storage)
-        if let Some(ref wal) = self.wal {
-            if let Ok(mut wal_lock) = wal.write() {
+        if let Some(ref wal) = self.wal
+            && let Ok(mut wal_lock) = wal.write() {
                 wal_lock.truncate()?;
             }
-        }
 
         Ok(())
     }
@@ -498,13 +493,12 @@ impl Aurora {
             )));
         }
 
-        if let Some(ref wal) = self.wal {
-            if self.config.durability_mode != DurabilityMode::None {
+        if let Some(ref wal) = self.wal
+            && self.config.durability_mode != DurabilityMode::None {
                 wal.write()
                     .unwrap()
                     .append(Operation::Put, &key, Some(&value))?;
             }
-        }
 
         if let Some(ref write_buffer) = self.write_buffer {
             write_buffer.write(key.clone(), value.clone())?;
@@ -514,11 +508,10 @@ impl Aurora {
 
         self.hot.set(key.clone(), value.clone(), ttl);
 
-        if let Some(collection_name) = key.split(':').next() {
-            if !collection_name.starts_with('_') {
+        if let Some(collection_name) = key.split(':').next()
+            && !collection_name.starts_with('_') {
                 self.index_value(collection_name, &key, &value)?;
             }
-        }
 
         Ok(())
     }
@@ -536,11 +529,10 @@ impl Aurora {
                         self.hot.set(entry.key.clone(), value.clone(), None);
 
                         // Rebuild indices
-                        if let Some(collection) = entry.key.split(':').next() {
-                            if !collection.starts_with('_') {
+                        if let Some(collection) = entry.key.split(':').next()
+                            && !collection.starts_with('_') {
                                 self.index_value(collection, &entry.key, &value)?;
                             }
-                        }
                     }
                 }
                 Operation::Delete => {
@@ -567,7 +559,7 @@ impl Aurora {
         // Update primary index (always index for fast full collection scans)
         self.primary_indices
             .entry(collection.to_string())
-            .or_insert_with(DashMap::new)
+            .or_default()
             .insert(key.to_string(), value.to_vec());
 
         // Try to get schema from cache first, otherwise load and cache it
@@ -625,7 +617,7 @@ impl Aurora {
                 let secondary_index = self
                     .secondary_indices
                     .entry(index_key)
-                    .or_insert_with(DashMap::new);
+                    .or_default();
 
                 // Check if we're at the index limit
                 let max_entries = self.config.max_index_entries_per_field;
@@ -856,14 +848,13 @@ impl Aurora {
         }
 
         // Write to WAL in batch (if enabled)
-        if let Some(ref wal) = self.wal {
-            if self.config.durability_mode != DurabilityMode::None {
+        if let Some(ref wal) = self.wal
+            && self.config.durability_mode != DurabilityMode::None {
                 let mut wal_lock = wal.write().unwrap();
                 for (key, value) in &pairs {
                     wal_lock.append(Operation::Put, key, Some(value))?;
                 }
             }
-        }
 
         // Bypass write buffer - go directly to cold storage batch API
         self.cold.batch_set(pairs.clone())?;
@@ -874,11 +865,10 @@ impl Aurora {
         for (key, value) in pairs {
             self.hot.set(key.clone(), value.clone(), None);
 
-            if let Some(collection_name) = key.split(':').next() {
-                if !collection_name.starts_with('_') {
+            if let Some(collection_name) = key.split(':').next()
+                && !collection_name.starts_with('_') {
                     self.index_value(collection_name, &key, &value)?;
                 }
-            }
         }
 
         // Publish events
@@ -1034,20 +1024,18 @@ impl Aurora {
             let value = item.value();
             self.cold.set(key.clone(), value.clone())?;
             self.hot.set(key.clone(), value.clone(), None);
-            if let Some(collection_name) = key.split(':').next() {
-                if !collection_name.starts_with('_') {
+            if let Some(collection_name) = key.split(':').next()
+                && !collection_name.starts_with('_') {
                     self.index_value(collection_name, key, value)?;
                 }
-            }
         }
 
         for item in buffer.deletes.iter() {
             let key = item.key();
-            if let Some((collection, id)) = key.split_once(':') {
-                if let Ok(Some(doc)) = self.get_document(collection, id) {
+            if let Some((collection, id)) = key.split_once(':')
+                && let Ok(Some(doc)) = self.get_document(collection, id) {
                     self.remove_from_indices(collection, &doc)?;
                 }
-            }
             self.cold.delete(key)?;
             self.hot.delete(key);
         }
@@ -1100,11 +1088,10 @@ impl Aurora {
         // Index all existing documents in the collection
         let prefix = format!("{}:", collection);
         for result in self.cold.scan_prefix(&prefix) {
-            if let Ok((_, data)) = result {
-                if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+            if let Ok((_, data)) = result
+                && let Ok(doc) = serde_json::from_slice::<Document>(&data) {
                     let _ = index.insert(&doc);
                 }
-            }
         }
 
         // Store the index
@@ -1281,11 +1268,10 @@ impl Aurora {
         // Remove from secondary indices
         for (field, value) in &doc.data {
             let index_key = format!("{}:{}", collection, field);
-            if let Some(index) = self.secondary_indices.get(&index_key) {
-                if let Some(mut doc_ids) = index.get_mut(&value.to_string()) {
+            if let Some(index) = self.secondary_indices.get(&index_key)
+                && let Some(mut doc_ids) = index.get_mut(&value.to_string()) {
                     doc_ids.retain(|id| id != &doc.id);
                 }
-            }
         }
 
         Ok(())
@@ -1301,11 +1287,10 @@ impl Aurora {
         let docs = self.get_all_collection(collection).await?;
 
         for doc in docs {
-            if let Some(Value::String(text)) = doc.data.get(field) {
-                if text.to_lowercase().contains(&query.to_lowercase()) {
+            if let Some(Value::String(text)) = doc.data.get(field)
+                && text.to_lowercase().contains(&query.to_lowercase()) {
                     results.push(doc);
                 }
-            }
         }
 
         Ok(results)
@@ -1340,9 +1325,9 @@ impl Aurora {
             let (key, value) = result?;
 
             // Only process documents from the specified collection
-            if let Some(key_collection) = key.split(':').next() {
-                if key_collection == collection && !key.starts_with("_collection:") {
-                    if let Ok(doc) = serde_json::from_slice::<Document>(&value) {
+            if let Some(key_collection) = key.split(':').next()
+                && key_collection == collection && !key.starts_with("_collection:")
+                    && let Ok(doc) = serde_json::from_slice::<Document>(&value) {
                         // Convert Value enum to raw JSON values
                         let mut clean_doc = serde_json::Map::new();
                         for (k, v) in doc.data {
@@ -1382,8 +1367,6 @@ impl Aurora {
                         }
                         docs.push(JsonValue::Object(clean_doc));
                     }
-                }
-            }
         }
 
         let output = JsonValue::Object(serde_json::Map::from_iter(vec![(
@@ -1414,9 +1397,9 @@ impl Aurora {
             let (key, value) = result?;
 
             // Only process documents from the specified collection
-            if let Some(key_collection) = key.split(':').next() {
-                if key_collection == collection && !key.starts_with("_collection:") {
-                    if let Ok(doc) = serde_json::from_slice::<Document>(&value) {
+            if let Some(key_collection) = key.split(':').next()
+                && key_collection == collection && !key.starts_with("_collection:")
+                    && let Ok(doc) = serde_json::from_slice::<Document>(&value) {
                         // Write headers from first document
                         if first_doc && !doc.data.is_empty() {
                             headers = doc.data.keys().cloned().collect();
@@ -1436,8 +1419,6 @@ impl Aurora {
                             .collect();
                         writer.write_record(&values)?;
                     }
-                }
-            }
         }
 
         writer.flush()?;
@@ -1689,7 +1670,7 @@ impl Aurora {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         // Check if document with this ID already exists
-        if let Some(_) = self.get_document(collection, &doc_id)? {
+        if self.get_document(collection, &doc_id)?.is_some() {
             return Ok(ImportResult::Skipped);
         }
 
@@ -1721,7 +1702,7 @@ impl Aurora {
         }
 
         // Check for duplicates by unique fields
-        let unique_fields = self.get_unique_fields(&collection_def);
+        let unique_fields = self.get_unique_fields(collection_def);
         for unique_field in &unique_fields {
             if let Some(value) = data_map.get(unique_field) {
                 // Query for existing documents with this unique value
@@ -1770,6 +1751,7 @@ impl Aurora {
     }
 
     /// Convert a JSON value to our internal Value type
+    #[allow(clippy::only_used_in_recursion)]
     fn json_to_value(&self, json_value: &JsonValue) -> Result<Value> {
         match json_value {
             JsonValue::Null => Ok(Value::Null),
@@ -1956,7 +1938,7 @@ impl Aurora {
             let primary_index = self
                 .primary_indices
                 .entry(collection_name.to_string())
-                .or_insert_with(DashMap::new);
+                .or_default();
 
             for (key, value) in batch {
                 // 2. Update hot cache
@@ -1966,8 +1948,8 @@ impl Aurora {
                 primary_index.insert(key.clone(), value.clone());
 
                 // 4. Update secondary indices
-                if !indexed_fields.is_empty() {
-                    if let Ok(doc) = serde_json::from_slice::<Document>(&value) {
+                if !indexed_fields.is_empty()
+                    && let Ok(doc) = serde_json::from_slice::<Document>(&value) {
                         for (field, field_value) in doc.data {
                             if indexed_fields.contains(&field) {
                                 let value_str = match &field_value {
@@ -1978,7 +1960,7 @@ impl Aurora {
                                 let secondary_index = self
                                     .secondary_indices
                                     .entry(index_key)
-                                    .or_insert_with(DashMap::new);
+                                    .or_default();
 
                                 let max_entries = self.config.max_index_entries_per_field;
                                 secondary_index
@@ -1992,7 +1974,6 @@ impl Aurora {
                             }
                         }
                     }
-                }
             }
         }
 
@@ -2154,11 +2135,9 @@ impl Aurora {
 
         // Index all existing documents in the collection
         let prefix = format!("{}:", collection);
-        for result in self.cold.scan_prefix(&prefix) {
-            if let Ok((_, data)) = result {
-                let doc: Document = serde_json::from_slice(&data)?;
-                index.insert(&doc)?;
-            }
+        for (_, data) in self.cold.scan_prefix(&prefix).flatten() {
+            let doc: Document = serde_json::from_slice(&data)?;
+            index.insert(&doc)?;
         }
 
         Ok(())
@@ -2271,11 +2250,10 @@ impl Aurora {
 
             for id in ids {
                 let doc_key = format!("{}:{}", &builder.collection, id);
-                if let Some(data) = self.get(&doc_key)? {
-                    if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                if let Some(data) = self.get(&doc_key)?
+                    && let Ok(doc) = serde_json::from_slice::<Document>(&data) {
                         final_docs.push(doc);
                     }
-                }
             }
         } else {
             // --- Path 2: Full Collection Scan (Fallback) ---
@@ -2294,13 +2272,13 @@ impl Aurora {
                 }
 
                 match filter {
-                    Filter::Eq(field, value) => doc.data.get(field).map_or(false, |v| v == value),
-                    Filter::Gt(field, value) => doc.data.get(field).map_or(false, |v| v > value),
-                    Filter::Gte(field, value) => doc.data.get(field).map_or(false, |v| v >= value),
-                    Filter::Lt(field, value) => doc.data.get(field).map_or(false, |v| v < value),
-                    Filter::Lte(field, value) => doc.data.get(field).map_or(false, |v| v <= value),
+                    Filter::Eq(field, value) => doc.data.get(field) == Some(value),
+                    Filter::Gt(field, value) => doc.data.get(field).is_some_and(|v| v > value),
+                    Filter::Gte(field, value) => doc.data.get(field).is_some_and(|v| v >= value),
+                    Filter::Lt(field, value) => doc.data.get(field).is_some_and(|v| v < value),
+                    Filter::Lte(field, value) => doc.data.get(field).is_some_and(|v| v <= value),
                     Filter::Contains(field, value_str) => {
-                        doc.data.get(field).map_or(false, |v| match v {
+                        doc.data.get(field).is_some_and(|v| match v {
                             Value::String(s) => s.contains(value_str),
                             Value::Array(arr) => arr.contains(&Value::String(value_str.clone())),
                             _ => false,
@@ -2375,7 +2353,7 @@ impl Aurora {
                 filters.iter().all(|filter| {
                     doc.data
                         .get(&filter.field)
-                        .map_or(false, |doc_val| check_filter(doc_val, filter))
+                        .is_some_and(|doc_val| check_filter(doc_val, filter))
                 })
             });
         }
@@ -2397,7 +2375,6 @@ impl Aurora {
         }
 
         // 3. Apply Pagination
-        let mut docs = docs;
         if let Some(offset) = payload.offset {
             docs = docs.into_iter().skip(offset).collect();
         }
@@ -2406,8 +2383,8 @@ impl Aurora {
         }
 
         // 4. Apply Field Selection (Projection)
-        if let Some(select_fields) = &payload.select {
-            if !select_fields.is_empty() {
+        if let Some(select_fields) = &payload.select
+            && !select_fields.is_empty() {
                 docs = docs
                     .into_iter()
                     .map(|mut doc| {
@@ -2416,7 +2393,6 @@ impl Aurora {
                     })
                     .collect();
             }
-        }
 
         Ok(docs)
     }

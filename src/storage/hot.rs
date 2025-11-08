@@ -52,6 +52,12 @@ impl Clone for HotStore {
     }
 }
 
+impl Default for HotStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HotStore {
     pub fn new() -> Self {
         Self::new_with_size_limit(128)
@@ -75,7 +81,7 @@ impl HotStore {
             access_count: Arc::new(DashMap::new()),
             hit_count: Arc::new(AtomicU64::new(0)),
             miss_count: Arc::new(AtomicU64::new(0)),
-            max_size: cache_size_mb.checked_mul(1024 * 1024).unwrap_or(usize::MAX),
+            max_size: cache_size_mb.saturating_mul(1024 * 1024),
             current_size: Arc::new(AtomicUsize::new(0)),
             eviction_policy,
             eviction_lock: Arc::new(Mutex::new(())),
@@ -88,7 +94,7 @@ impl HotStore {
             access_count: Arc::new(DashMap::new()),
             hit_count: Arc::new(AtomicU64::new(0)),
             miss_count: Arc::new(AtomicU64::new(0)),
-            max_size: max_size_mb.checked_mul(1024 * 1024).unwrap_or(usize::MAX),
+            max_size: max_size_mb.saturating_mul(1024 * 1024),
             current_size: Arc::new(AtomicUsize::new(0)),
             eviction_policy: EvictionPolicy::Hybrid,
             eviction_lock: Arc::new(Mutex::new(())),
@@ -103,8 +109,8 @@ impl HotStore {
         self.increment_access(key);
 
         if let Some(mut entry) = self.data.get_mut(key) {
-            if let Some(expires_at) = entry.expires_at {
-                if SystemTime::now() > expires_at {
+            if let Some(expires_at) = entry.expires_at
+                && SystemTime::now() > expires_at {
                     self.data.remove(key);
                     self.access_count.remove(key);
                     let size = entry.data.len();
@@ -112,7 +118,6 @@ impl HotStore {
                     self.miss_count.fetch_add(1, Ordering::Relaxed);
                     return None;
                 }
-            }
 
             entry.last_accessed = SystemTime::now();
             self.hit_count.fetch_add(1, Ordering::Relaxed);

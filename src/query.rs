@@ -39,6 +39,9 @@ where
     }
 }
 
+/// Type alias for document filter functions
+type DocumentFilter<'a> = Box<dyn Fn(&Document) -> bool + Send + Sync + 'a>;
+
 /// Builder for creating and executing document queries.
 ///
 /// QueryBuilder uses a fluent interface pattern to construct
@@ -58,8 +61,7 @@ where
 pub struct QueryBuilder<'a> {
     db: &'a Aurora,
     collection: String,
-    // CHANGE 1: Add `+ Send + Sync` to make the boxed closure thread-safe.
-    filters: Vec<Box<dyn Fn(&Document) -> bool + Send + Sync + 'a>>,
+    filters: Vec<DocumentFilter<'a>>,
     order_by: Option<(String, bool)>,
     limit: Option<usize>,
     offset: Option<usize>,
@@ -106,7 +108,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn eq<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| v == &value)
+        self.doc.data.get(field) == Some(&value)
     }
 
     /// Check if a field is greater than a value
@@ -117,7 +119,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn gt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| v > &value)
+        self.doc.data.get(field).is_some_and(|v| v > &value)
     }
 
     /// Check if a field is greater than or equal to a value
@@ -128,7 +130,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn gte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| v >= &value)
+        self.doc.data.get(field).is_some_and(|v| v >= &value)
     }
 
     /// Check if a field is less than a value
@@ -139,7 +141,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn lt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| v < &value)
+        self.doc.data.get(field).is_some_and(|v| v < &value)
     }
 
     /// Check if a field is less than or equal to a value
@@ -150,7 +152,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn lte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| v <= &value)
+        self.doc.data.get(field).is_some_and(|v| v <= &value)
     }
 
     /// Check if a field contains a value
@@ -160,7 +162,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.contains("name", "widget"))
     /// ```
     pub fn contains(&self, field: &str, value: &str) -> bool {
-        self.doc.data.get(field).map_or(false, |v| match v {
+        self.doc.data.get(field).is_some_and(|v| match v {
             Value::String(s) => s.contains(value),
             Value::Array(arr) => arr.contains(&Value::String(value.to_string())),
             _ => false,
@@ -178,7 +180,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
         self.doc
             .data
             .get(field)
-            .map_or(false, |v| values.contains(v))
+            .is_some_and(|v| values.contains(v))
     }
 
     /// Check if a field is between two values (inclusive)
@@ -201,7 +203,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
         self.doc
             .data
             .get(field)
-            .map_or(false, |v| !matches!(v, Value::Null))
+            .is_some_and(|v| !matches!(v, Value::Null))
     }
 
     /// Check if a field doesn't exist or is null
@@ -214,7 +216,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
         self.doc
             .data
             .get(field)
-            .map_or(true, |v| matches!(v, Value::Null))
+            .is_none_or(|v| matches!(v, Value::Null))
     }
 
     /// Check if a field starts with a prefix
@@ -224,7 +226,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.starts_with("name", "John"))
     /// ```
     pub fn starts_with(&self, field: &str, prefix: &str) -> bool {
-        self.doc.data.get(field).map_or(false, |v| match v {
+        self.doc.data.get(field).is_some_and(|v| match v {
             Value::String(s) => s.starts_with(prefix),
             _ => false,
         })
@@ -237,7 +239,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.ends_with("name", "son"))
     /// ```
     pub fn ends_with(&self, field: &str, suffix: &str) -> bool {
-        self.doc.data.get(field).map_or(false, |v| match v {
+        self.doc.data.get(field).is_some_and(|v| match v {
             Value::String(s) => s.ends_with(suffix),
             _ => false,
         })
@@ -251,7 +253,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn array_contains(&self, field: &str, value: impl Into<Value>) -> bool {
         let value = value.into();
-        self.doc.data.get(field).map_or(false, |v| match v {
+        self.doc.data.get(field).is_some_and(|v| match v {
             Value::Array(arr) => arr.contains(&value),
             _ => false,
         })
@@ -264,7 +266,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// .filter(|f| f.array_len_eq("status", 2))
     /// ```
     pub fn array_len_eq(&self, field: &str, len: usize) -> bool {
-        self.doc.data.get(field).map_or(false, |v| match v {
+        self.doc.data.get(field).is_some_and(|v| match v {
             Value::Array(arr) => arr.len() == len,
             _ => false,
         })
@@ -299,7 +301,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn nested_eq<T: Into<Value>>(&self, path: &str, value: T) -> bool {
         let value = value.into();
-        self.get_nested_value(path).map_or(false, |v| v == &value)
+        self.get_nested_value(path) == Some(&value)
     }
 
     /// Check if a field matches a regular expression
@@ -312,7 +314,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
         use regex::Regex;
 
         if let Ok(re) = Regex::new(pattern) {
-            self.doc.data.get(field).map_or(false, |v| match v {
+            self.doc.data.get(field).is_some_and(|v| match v {
                 Value::String(s) => re.is_match(s),
                 _ => false,
             })

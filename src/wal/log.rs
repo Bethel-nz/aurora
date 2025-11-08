@@ -36,7 +36,7 @@ impl WriteAheadLog {
             OpenOptions::new()
                 .create(true)
                 .read(true)
-                .write(true)
+                
                 .append(true)
                 .open(&wal_path)?,
         );

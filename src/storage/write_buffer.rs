@@ -48,7 +48,7 @@ impl WriteBuffer {
 
                         // Flush if batch is full
                         if batch.len() >= buffer_size {
-                            if let Err(e) = cold.batch_set(batch.drain(..).collect()) {
+                            if let Err(e) = cold.batch_set(std::mem::take(&mut batch)) {
                                 eprintln!("Write buffer flush error: {}", e);
                             }
                             last_flush = Instant::now();
@@ -56,7 +56,7 @@ impl WriteBuffer {
                     }
                     Ok(WriteOp::Flush(response)) => {
                         let result = if !batch.is_empty() {
-                            cold.batch_set(batch.drain(..).collect())
+                            cold.batch_set(std::mem::take(&mut batch))
                         } else {
                             Ok(())
                         };
@@ -65,17 +65,16 @@ impl WriteBuffer {
                     }
                     Ok(WriteOp::Shutdown) => {
                         // Final flush before shutdown
-                        if !batch.is_empty() {
-                            if let Err(e) = cold.batch_set(batch) {
+                        if !batch.is_empty()
+                            && let Err(e) = cold.batch_set(batch) {
                                 eprintln!("Write buffer shutdown flush error: {}", e);
                             }
-                        }
                         break; // Exit gracefully
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         // Periodic flush
                         if !batch.is_empty() && last_flush.elapsed() >= flush_duration {
-                            if let Err(e) = cold.batch_set(batch.drain(..).collect()) {
+                            if let Err(e) = cold.batch_set(std::mem::take(&mut batch)) {
                                 eprintln!("Write buffer periodic flush error: {}", e);
                             }
                             last_flush = Instant::now();
@@ -83,11 +82,10 @@ impl WriteBuffer {
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         // Channel closed, flush and exit
-                        if !batch.is_empty() {
-                            if let Err(e) = cold.batch_set(batch) {
+                        if !batch.is_empty()
+                            && let Err(e) = cold.batch_set(batch) {
                                 eprintln!("Write buffer final flush error: {}", e);
                             }
-                        }
                         break;
                     }
                 }
@@ -176,7 +174,8 @@ mod tests {
             buffer.write(format!("key{}", i), format!("value{}", i).into_bytes())?;
         }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Wait for flush interval (1000ms) plus some buffer
+        tokio::time::sleep(Duration::from_millis(1500)).await;
 
         for i in 0..10 {
             assert_eq!(

@@ -503,8 +503,8 @@ impl FullTextIndex {
         let avg_doc_len = self.total_term_count.load(Ordering::Relaxed) as f32 / total_docs;
 
         // Use FST for efficient fuzzy matching
-        if let Ok(fst_guard) = self.term_fst.read() {
-            if let Some(ref fst) = *fst_guard {
+        if let Ok(fst_guard) = self.term_fst.read()
+            && let Some(ref fst) = *fst_guard {
                 for query_term in query_terms {
                     // Create Levenshtein automaton for efficient fuzzy matching
                     if let Ok(lev) = Levenshtein::new(&query_term, max_distance as u32) {
@@ -551,7 +551,6 @@ impl FullTextIndex {
                     }
                 }
             }
-        }
 
         // Sort by relevance score
         let mut results: Vec<_> = scores.into_iter().collect();
@@ -615,11 +614,10 @@ impl FullTextIndex {
             let mut sorted_terms = terms;
             sorted_terms.sort();
 
-            if let Ok(fst) = fst::Set::from_iter(sorted_terms) {
-                if let Ok(mut fst_guard) = self.term_fst.write() {
+            if let Ok(fst) = fst::Set::from_iter(sorted_terms)
+                && let Ok(mut fst_guard) = self.term_fst.write() {
                     *fst_guard = Some(fst);
                 }
-            }
         }
     }
 

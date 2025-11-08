@@ -30,14 +30,13 @@ impl ComputedExpression {
             ComputedExpression::Concat(fields) => {
                 let mut result = String::new();
                 for field in fields {
-                    if let Some(value) = doc.data.get(field) {
-                        if let Some(s) = value.as_str() {
+                    if let Some(value) = doc.data.get(field)
+                        && let Some(s) = value.as_str() {
                             if !result.is_empty() {
                                 result.push(' ');
                             }
                             result.push_str(s);
                         }
-                    }
                 }
                 Some(Value::String(result))
             }
@@ -45,11 +44,10 @@ impl ComputedExpression {
             ComputedExpression::Sum(fields) => {
                 let mut sum = 0i64;
                 for field in fields {
-                    if let Some(value) = doc.data.get(field) {
-                        if let Some(i) = value.as_i64() {
+                    if let Some(value) = doc.data.get(field)
+                        && let Some(i) = value.as_i64() {
                             sum += i;
                         }
-                    }
                 }
                 Some(Value::Int(sum))
             }
@@ -57,11 +55,10 @@ impl ComputedExpression {
             ComputedExpression::Product(fields) => {
                 let mut product = 1i64;
                 for field in fields {
-                    if let Some(value) = doc.data.get(field) {
-                        if let Some(i) = value.as_i64() {
+                    if let Some(value) = doc.data.get(field)
+                        && let Some(i) = value.as_i64() {
                             product *= i;
                         }
-                    }
                 }
                 Some(Value::Int(product))
             }
@@ -119,7 +116,7 @@ impl ComputedFields {
         let collection = collection.into();
         self.fields
             .entry(collection)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(field.into(), expression);
     }
 
