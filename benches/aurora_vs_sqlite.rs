@@ -8,7 +8,7 @@ use rusqlite::{Connection, params};
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
 
-const NUM_DOCS: usize = 100_000;
+const NUM_DOCS: usize = 10_000;
 const BATCH_SIZE: usize = 1000;
 
 #[derive(Debug)]
@@ -128,7 +128,7 @@ fn main() {
     println!("  - Total documents: {}", NUM_DOCS);
     println!("  - Batch size: {}", BATCH_SIZE);
     println!("  - Single insert test: 1,000 docs");
-    println!("  - Update/Delete test: 10,000 docs each");
+    println!("  - Update/Delete test: 1,000 docs each");
     println!();
 
     // Create tokio runtime for Aurora's async operations
@@ -224,7 +224,7 @@ async fn run_aurora_benchmarks() -> TestResults {
     // Test 6: Update
     println!("  [6/8] Update operations...");
     let update = time_operation_async(|| async {
-        for i in 0..10000 {
+        for i in 0..1000 {
             let docs = db.query("users")
                 .filter(|f| f.eq("score", Value::Int((i * 10) as i64)))
                 .collect()
@@ -243,7 +243,7 @@ async fn run_aurora_benchmarks() -> TestResults {
     println!("  [7/8] Delete operations...");
     let delete = time_operation_async(|| async {
         let docs = db.query("users")
-            .limit(10000)
+            .limit(1000)
             .collect()
             .await
             .unwrap();
@@ -353,7 +353,7 @@ fn run_sqlite_benchmarks() -> TestResults {
     // Test 6: Update
     println!("  [6/8] Update operations...");
     let update = time_operation(|| {
-        for i in 0..10000 {
+        for i in 0..1000 {
             conn.execute(
                 "UPDATE users SET score = ?1 WHERE score = ?2",
                 params![i * 10 + 5, i * 10],
@@ -364,7 +364,7 @@ fn run_sqlite_benchmarks() -> TestResults {
     // Test 7: Delete
     println!("  [7/8] Delete operations...");
     let delete = time_operation(|| {
-        conn.execute("DELETE FROM users WHERE id <= 10000", []).unwrap();
+        conn.execute("DELETE FROM users WHERE id <= 1000", []).unwrap();
     });
 
     // Test 8: Transaction
