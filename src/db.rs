@@ -50,8 +50,10 @@ use crate::network::http_models::{
 };
 use crate::query::{Filter, FilterBuilder, QueryBuilder, SearchBuilder, SimpleQueryBuilder};
 use crate::storage::{ColdStore, HotStore, WriteBuffer};
-use crate::types::{AuroraConfig, Collection, Document, FieldDefinition, FieldType, Value, DurabilityMode};
-use crate::wal::{WriteAheadLog, Operation};
+use crate::types::{
+    AuroraConfig, Collection, Document, DurabilityMode, FieldDefinition, FieldType, Value,
+};
+use crate::wal::{Operation, WriteAheadLog};
 use dashmap::DashMap;
 use serde_json::Value as JsonValue;
 use serde_json::from_str;
@@ -256,7 +258,8 @@ impl Aurora {
             let checkpoint_interval = config.checkpoint_interval_ms;
 
             tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_millis(checkpoint_interval));
+                let mut interval =
+                    tokio::time::interval(Duration::from_millis(checkpoint_interval));
                 loop {
                     tokio::select! {
                         _ = interval.tick() => {
@@ -498,27 +501,22 @@ impl Aurora {
             )));
         }
 
-        // Step 1: Write to WAL FIRST (if enabled and durability requires it)
-        // This ensures we have a durable record even if we crash before flushing
         if let Some(ref wal) = self.wal {
             if self.config.durability_mode != DurabilityMode::None {
-                wal.write().unwrap().append(Operation::Put, &key, Some(&value))?;
+                wal.write()
+                    .unwrap()
+                    .append(Operation::Put, &key, Some(&value))?;
             }
         }
 
-        // Step 2: Write to storage - use write buffer if enabled
         if let Some(ref write_buffer) = self.write_buffer {
             write_buffer.write(key.clone(), value.clone())?;
         } else {
             self.cold.set(key.clone(), value.clone())?;
         }
 
-        // Step 3: Update hot cache after storage write
-        // Note: Durability is handled by background checkpoint process
         self.hot.set(key.clone(), value.clone(), ttl);
 
-        // Step 4: FIXED RACE CONDITION: Update indices only AFTER storage write succeeds
-        // This ensures indices never point to non-existent data
         if let Some(collection_name) = key.split(':').next() {
             if !collection_name.starts_with('_') {
                 self.index_value(collection_name, &key, &value)?;
@@ -2241,8 +2239,6 @@ impl Aurora {
 
                     // Do we have a secondary index for this field?
                     if let Some(index) = self.secondary_indices.get(&index_key) {
-                        // For Contains queries, we need to scan through the index keys
-                        // to find those that contain the search term
                         let mut matching_ids = Vec::new();
 
                         for entry in index.iter() {
@@ -2274,9 +2270,6 @@ impl Aurora {
         let mut final_docs: Vec<Document>;
 
         if let Some(ids) = doc_ids_to_load {
-            // --- Path 1: Index-based Fetch ---
-            // We have a specific list of IDs to load. This is fast.
-            println!("📊 Loading {} documents via index", ids.len());
             final_docs = Vec::with_capacity(ids.len());
 
             for id in ids {
@@ -2289,11 +2282,7 @@ impl Aurora {
             }
         } else {
             // --- Path 2: Full Collection Scan (Fallback) ---
-            // No suitable index was found, so we must do the slow scan
-            println!(
-                "⚠️  INDEX MISS. Falling back to full collection scan for '{}'",
-                &builder.collection
-            );
+
             final_docs = self.get_all_collection(&builder.collection).await?;
         }
 
@@ -2324,13 +2313,7 @@ impl Aurora {
             })
         });
 
-        println!(
-            "✅ Query completed. Returning {} documents",
-            final_docs.len()
-        );
-
         // NOTE: This implementation does not yet support ordering, limits, or offsets.
-        // Those would be added here in a production system.
         Ok(final_docs)
     }
 
@@ -2510,7 +2493,7 @@ impl Aurora {
                     collection, field, e
                 );
             } else {
-                println!("✅ Created index for {}.{}", collection, field);
+                println!("Created index for {}.{}", collection, field);
             }
         }
         Ok(())
