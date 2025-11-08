@@ -656,6 +656,45 @@ impl Aurora {
         Ok(())
     }
 
+    /// Scan collection with filter and early termination support
+    /// Used by QueryBuilder for optimized queries with LIMIT
+    pub fn scan_and_filter<F>(&self, collection: &str, filter: F, limit: Option<usize>)
+        -> Result<Vec<Document>>
+    where
+        F: Fn(&Document) -> bool,
+    {
+        let mut documents = Vec::new();
+
+        if let Some(index) = self.primary_indices.get(collection) {
+            for entry in index.iter() {
+                // Early termination
+                if let Some(max) = limit {
+                    if documents.len() >= max {
+                        break;
+                    }
+                }
+
+                let key = entry.key();
+                if let Some(data) = self.get(key)? {
+                    if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                        if filter(&doc) {
+                            documents.push(doc);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Fallback
+            documents = self.scan_collection(collection)?;
+            documents.retain(|doc| filter(doc));
+            if let Some(max) = limit {
+                documents.truncate(max);
+            }
+        }
+
+        Ok(documents)
+    }
+
     /// Smart collection scan that uses the primary index as a key directory
     /// Avoids forced flushes and leverages hot cache for better performance
     fn scan_collection(&self, collection: &str) -> Result<Vec<Document>> {
@@ -2195,9 +2234,20 @@ impl Aurora {
 
         // A place to store the IDs of the documents we need to fetch
         let mut doc_ids_to_load: Option<Vec<String>> = None;
-        let mut used_filter_index: Option<usize> = None;
 
         // --- The "Query Planner" ---
+        // Smart heuristic: For range queries with small LIMITs, full scan can be faster
+        // than collecting millions of IDs from secondary index
+        let use_index_for_range = if let Some(limit) = builder.limit {
+            // If limit is small (< 1000), prefer full scan for range queries
+            // The secondary index would scan all entries anyway, might as well
+            // scan documents directly and benefit from early termination
+            limit >= 1000
+        } else {
+            // No limit? Index might still help if result set is small
+            true
+        };
+
         // Look for an opportunity to use an index
         for (filter_idx, filter) in builder.filters.iter().enumerate() {
             match filter {
@@ -2209,7 +2259,6 @@ impl Aurora {
                         // Yes! Let's use it.
                         if let Some(matching_ids) = index.get(&value.to_string()) {
                             doc_ids_to_load = Some(matching_ids.clone());
-                            used_filter_index = Some(filter_idx);
                             break; // Stop searching for other indexes for now
                         }
                     }
@@ -2218,6 +2267,11 @@ impl Aurora {
                 | Filter::Gte(field, value)
                 | Filter::Lt(field, value)
                 | Filter::Lte(field, value) => {
+                    // Skip index for range queries with small LIMITs (see query planner heuristic above)
+                    if !use_index_for_range {
+                        continue;
+                    }
+
                     let index_key = format!("{}:{}", &builder.collection, field);
 
                     // Do we have a secondary index for this field?
@@ -2248,7 +2302,6 @@ impl Aurora {
 
                         if !matching_ids.is_empty() {
                             doc_ids_to_load = Some(matching_ids);
-                            used_filter_index = Some(filter_idx);
                             break;
                         }
                     }
@@ -2278,7 +2331,6 @@ impl Aurora {
                             matching_ids.dedup();
 
                             doc_ids_to_load = Some(matching_ids);
-                            used_filter_index = Some(filter_idx);
                             break;
                         }
                     }
@@ -2289,6 +2341,16 @@ impl Aurora {
         let mut final_docs: Vec<Document>;
 
         if let Some(ids) = doc_ids_to_load {
+            // Index path
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/aurora_query_stats.log") {
+                let _ = writeln!(file, "[INDEX PATH] IDs to load: {} | Collection: {}",
+                    ids.len(), builder.collection);
+            }
+
             final_docs = Vec::with_capacity(ids.len());
 
             for id in ids {
@@ -2299,37 +2361,98 @@ impl Aurora {
                     }
             }
         } else {
-            // --- Path 2: Full Collection Scan (Fallback) ---
+            // --- Path 2: Full Collection Scan with Early Termination ---
 
-            final_docs = self.get_all_collection(&builder.collection).await?;
-        }
+            // Optimization: If we have a LIMIT but no ORDER BY, we can stop scanning
+            // as soon as we have enough matching documents
+            let early_termination_target = if builder.order_by.is_none() {
+                builder.limit.map(|l| l + builder.offset.unwrap_or(0))
+            } else {
+                // With ORDER BY, we need all matching docs to sort correctly
+                None
+            };
 
-        // Now, apply the *rest* of the filters in memory
-        // This is important for queries with multiple filters, where only one might be indexed
-        // Skip the filter we already used for the index lookup
-        final_docs.retain(|doc| {
-            builder.filters.iter().enumerate().all(|(idx, filter)| {
-                // Skip the filter we already used for index lookup
-                if Some(idx) == used_filter_index {
-                    return true;
-                }
+            // Smart scan with early termination support
+            final_docs = Vec::new();
+            let mut scan_stats = (0usize, 0usize, 0usize); // (keys_scanned, docs_fetched, matches_found)
 
-                match filter {
-                    Filter::Eq(field, value) => doc.data.get(field) == Some(value),
-                    Filter::Gt(field, value) => doc.data.get(field).is_some_and(|v| v > value),
-                    Filter::Gte(field, value) => doc.data.get(field).is_some_and(|v| v >= value),
-                    Filter::Lt(field, value) => doc.data.get(field).is_some_and(|v| v < value),
-                    Filter::Lte(field, value) => doc.data.get(field).is_some_and(|v| v <= value),
-                    Filter::Contains(field, value_str) => {
-                        doc.data.get(field).is_some_and(|v| match v {
-                            Value::String(s) => s.contains(value_str),
-                            Value::Array(arr) => arr.contains(&Value::String(value_str.clone())),
-                            _ => false,
-                        })
+            if let Some(index) = self.primary_indices.get(&builder.collection) {
+                for entry in index.iter() {
+                    let key = entry.key();
+                    scan_stats.0 += 1; // keys scanned
+
+                    // Early termination check
+                    if let Some(target) = early_termination_target {
+                        if final_docs.len() >= target {
+                            break; // We have enough documents!
+                        }
+                    }
+
+                    // Fetch and filter document
+                    if let Some(data) = self.get(key)? {
+                        scan_stats.1 += 1; // docs fetched
+
+                        if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                            // Apply all filters
+                            let matches_all_filters = builder.filters.iter().all(|filter| {
+                                match filter {
+                                    Filter::Eq(field, value) => doc.data.get(field) == Some(value),
+                                    Filter::Gt(field, value) => doc.data.get(field).is_some_and(|v| v > value),
+                                    Filter::Gte(field, value) => doc.data.get(field).is_some_and(|v| v >= value),
+                                    Filter::Lt(field, value) => doc.data.get(field).is_some_and(|v| v < value),
+                                    Filter::Lte(field, value) => doc.data.get(field).is_some_and(|v| v <= value),
+                                    Filter::Contains(field, value_str) => {
+                                        doc.data.get(field).is_some_and(|v| match v {
+                                            Value::String(s) => s.contains(value_str),
+                                            Value::Array(arr) => arr.contains(&Value::String(value_str.clone())),
+                                            _ => false,
+                                        })
+                                    }
+                                }
+                            });
+
+                            if matches_all_filters {
+                                scan_stats.2 += 1; // matches found
+                                final_docs.push(doc);
+                            }
+                        }
                     }
                 }
-            })
-        });
+
+                // Debug logging for query performance analysis
+                use std::io::Write;
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/aurora_query_stats.log") {
+                    let _ = writeln!(file, "[SCAN PATH] Scanned: {} keys | Fetched: {} docs | Matched: {} | Collection: {}",
+                        scan_stats.0, scan_stats.1, scan_stats.2, builder.collection);
+                }
+            } else {
+                // Fallback: scan from cold storage if index not initialized
+                final_docs = self.get_all_collection(&builder.collection).await?;
+
+                // Apply filters
+                final_docs.retain(|doc| {
+                    builder.filters.iter().all(|filter| {
+                        match filter {
+                            Filter::Eq(field, value) => doc.data.get(field) == Some(value),
+                            Filter::Gt(field, value) => doc.data.get(field).is_some_and(|v| v > value),
+                            Filter::Gte(field, value) => doc.data.get(field).is_some_and(|v| v >= value),
+                            Filter::Lt(field, value) => doc.data.get(field).is_some_and(|v| v < value),
+                            Filter::Lte(field, value) => doc.data.get(field).is_some_and(|v| v <= value),
+                            Filter::Contains(field, value_str) => {
+                                doc.data.get(field).is_some_and(|v| match v {
+                                    Value::String(s) => s.contains(value_str),
+                                    Value::Array(arr) => arr.contains(&Value::String(value_str.clone())),
+                                    _ => false,
+                                })
+                            }
+                        }
+                    })
+                });
+            }
+        }
 
         // Apply ordering
         if let Some((field, ascending)) = &builder.order_by {

@@ -435,10 +435,18 @@ impl<'a> QueryBuilder<'a> {
         // Ensure indices are initialized
         self.db.ensure_indices_initialized().await?;
 
-        let mut docs = self.db.get_all_collection(&self.collection).await?;
-
-        // Apply filters
-        docs.retain(|doc| self.filters.iter().all(|f| f(doc)));
+        // Optimization: Use early termination for queries with LIMIT but no ORDER BY
+        let mut docs = if self.order_by.is_none() && self.limit.is_some() {
+            // Early termination path - scan only until we have enough results
+            let target = self.limit.unwrap() + self.offset.unwrap_or(0);
+            let filter = |doc: &Document| self.filters.iter().all(|f| f(doc));
+            self.db.scan_and_filter(&self.collection, filter, Some(target))?
+        } else {
+            // Standard path - need all matching docs (for sorting or no limit)
+            let mut docs = self.db.get_all_collection(&self.collection).await?;
+            docs.retain(|doc| self.filters.iter().all(|f| f(doc)));
+            docs
+        };
 
         // Apply ordering
         if let Some((field, ascending)) = self.order_by {
