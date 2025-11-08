@@ -2024,18 +2024,24 @@ impl Aurora {
             .collect();
 
         for collection in collections {
-            let prefix = format!("{}:", collection);
-
-            // Count documents
-            let count = self.cold.scan_prefix(&prefix).count();
-
-            // Estimate size
-            let size: usize = self
-                .cold
-                .scan_prefix(&prefix)
-                .filter_map(|r| r.ok())
-                .map(|(_, v)| v.len())
-                .sum();
+            // Use primary index for fast stats (count + size from DiskLocation)
+            let (count, size) = if let Some(index) = self.primary_indices.get(&collection) {
+                let count = index.len();
+                // Sum up sizes from DiskLocation metadata (much faster than disk scan)
+                let size: usize = index.iter().map(|entry| entry.value().size as usize).sum();
+                (count, size)
+            } else {
+                // Fallback: scan from cold storage if index not available
+                let prefix = format!("{}:", collection);
+                let count = self.cold.scan_prefix(&prefix).count();
+                let size: usize = self
+                    .cold
+                    .scan_prefix(&prefix)
+                    .filter_map(|r| r.ok())
+                    .map(|(_, v)| v.len())
+                    .sum();
+                (count, size)
+            };
 
             stats.insert(
                 collection,
