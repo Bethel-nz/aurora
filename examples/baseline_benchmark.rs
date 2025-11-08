@@ -120,21 +120,70 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
         num_docs as f64 / write_duration.as_secs_f64()));
     output.push_str(&format!("Avg memory per doc: {:.0} bytes\n", avg_doc_size_bytes));
 
-    // READ TEST (sample reads)
-    let read_count = num_docs.min(10_000);
-    let read_start = Instant::now();
+    // READ TEST - Hot Cache (warm-up phase)
+    // First, populate hot cache with a subset of documents
+    let hot_set_size = (num_docs / 10).max(100).min(10_000); // 10% of docs, capped
 
-    for i in 0..read_count {
-        let idx = (i * num_docs) / read_count; // Distributed sampling
+    output.push_str("\n--- Hot Cache Warm-up ---\n");
+    for i in 0..hot_set_size {
+        let key = format!("bench:doc_{:08}", i);
+        let _ = db.get(&key)?; // This populates the hot cache
+    }
+
+    // Now measure hot reads (should be very fast)
+    let hot_read_count = hot_set_size.min(5_000);
+    let hot_read_start = Instant::now();
+
+    for i in 0..hot_read_count {
+        let key = format!("bench:doc_{:08}", i);
+        let _ = db.get(&key)?; // Should hit hot cache
+    }
+
+    let hot_read_duration = hot_read_start.elapsed();
+    let hot_read_throughput = hot_read_count as f64 / hot_read_duration.as_secs_f64();
+
+    output.push_str(&format!("Hot reads: {} in {:.3}s ({:.0} reads/sec)\n",
+        format_number(hot_read_count), hot_read_duration.as_secs_f64(), hot_read_throughput));
+
+    // READ TEST - Cold Cache (uncached reads)
+    // Access documents that are NOT in the hot cache
+    let cold_read_count = num_docs.min(5_000);
+    let cold_read_start = Instant::now();
+
+    for i in 0..cold_read_count {
+        // Access documents from the end of the dataset (not in hot cache)
+        let idx = num_docs.saturating_sub(cold_read_count) + i;
+        let key = format!("bench:doc_{:08}", idx);
+        let _ = db.get(&key)?; // Should hit cold storage
+    }
+
+    let cold_read_duration = cold_read_start.elapsed();
+    let cold_read_throughput = cold_read_count as f64 / cold_read_duration.as_secs_f64();
+
+    output.push_str(&format!("Cold reads: {} in {:.3}s ({:.0} reads/sec)\n",
+        format_number(cold_read_count), cold_read_duration.as_secs_f64(), cold_read_throughput));
+
+    // READ TEST - Mixed (realistic workload)
+    let mixed_read_count = num_docs.min(10_000);
+    let mixed_read_start = Instant::now();
+
+    for i in 0..mixed_read_count {
+        // 70% hot (likely cached), 30% cold (likely uncached)
+        let idx = if i % 10 < 7 {
+            i % hot_set_size // Access hot set
+        } else {
+            let cold_range = num_docs.saturating_sub(hot_set_size).max(1);
+            hot_set_size + (i % cold_range) // Access cold set
+        };
         let key = format!("bench:doc_{:08}", idx);
         let _ = db.get(&key)?;
     }
 
-    let read_duration = read_start.elapsed();
-    let read_throughput = read_count as f64 / read_duration.as_secs_f64();
+    let mixed_read_duration = mixed_read_start.elapsed();
+    let mixed_read_throughput = mixed_read_count as f64 / mixed_read_duration.as_secs_f64();
 
-    output.push_str(&format!("Read test: {} samples in {:.3}s ({:.0} reads/sec)\n",
-        format_number(read_count), read_duration.as_secs_f64(), read_throughput));
+    output.push_str(&format!("Mixed reads (70/30 hot/cold): {} in {:.3}s ({:.0} reads/sec)\n",
+        format_number(mixed_read_count), mixed_read_duration.as_secs_f64(), mixed_read_throughput));
 
     // QUERY TEST
     let query_start = Instant::now();

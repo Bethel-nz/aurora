@@ -656,16 +656,34 @@ impl Aurora {
         Ok(())
     }
 
-    // Simplified collection scan (fallback)
+    /// Smart collection scan that uses the primary index as a key directory
+    /// Avoids forced flushes and leverages hot cache for better performance
     fn scan_collection(&self, collection: &str) -> Result<Vec<Document>> {
-        let prefix = format!("{}:", collection);
         let mut documents = Vec::new();
 
-        // Read from cold storage instead of primary index
-        for result in self.cold.scan_prefix(&prefix) {
-            if let Ok((_key, value)) = result {
-                if let Ok(doc) = serde_json::from_slice::<Document>(&value) {
-                    documents.push(doc);
+        // Use the primary index as a "key directory" - it contains all document keys
+        if let Some(index) = self.primary_indices.get(collection) {
+            // Iterate through all keys in the primary index (fast, in-memory)
+            for entry in index.iter() {
+                let key = entry.key();
+
+                // Fetch each document using get() which checks:
+                // 1. Hot cache first (instant)
+                // 2. Cold storage if not cached (disk I/O only for uncached items)
+                if let Some(data) = self.get(key)? {
+                    if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                        documents.push(doc);
+                    }
+                }
+            }
+        } else {
+            // Fallback: scan from cold storage if primary index not yet initialized
+            let prefix = format!("{}:", collection);
+            for result in self.cold.scan_prefix(&prefix) {
+                if let Ok((_key, value)) = result {
+                    if let Ok(doc) = serde_json::from_slice::<Document>(&value) {
+                        documents.push(doc);
+                    }
                 }
             }
         }
@@ -961,8 +979,6 @@ impl Aurora {
 
     pub async fn get_all_collection(&self, collection: &str) -> Result<Vec<Document>> {
         self.ensure_indices_initialized().await?;
-        // Flush write buffer to ensure all data is in cold storage before scanning
-        self.flush()?;
         self.scan_collection(collection)
     }
 

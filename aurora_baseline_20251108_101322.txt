@@ -1,0 +1,125 @@
+================================================================================
+AURORA BASELINE PERFORMANCE BENCHMARK
+Architecture: Primary Index with full Vec<u8> values
+Timestamp: 2025-11-08 10:11:58
+================================================================================
+
+Scale: 1 documents
+Initial RSS: 89 MB
+After writes RSS: 89 MB (growth: 0 MB)
+Write time: 0.000s
+Write throughput: 3985 docs/sec
+Avg memory per doc: 0 bytes
+
+--- Hot Cache Warm-up ---
+Hot reads: 100 in 0.000s (1795332 reads/sec)
+Cold reads: 1 in 0.000s (1453488 reads/sec)
+Mixed reads (70/30 hot/cold): 1 in 0.000s (1672241 reads/sec)
+Query test: 0 results in 0.000s
+Disk size: 1 MB
+Memory/Disk ratio: 0.00x
+Cache: 2 items, 0.00 MB, 1.5% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 10 documents
+Initial RSS: 85 MB
+After writes RSS: 85 MB (growth: 0 MB)
+Write time: 0.001s
+Write throughput: 12121 docs/sec
+Avg memory per doc: 0 bytes
+
+--- Hot Cache Warm-up ---
+Hot reads: 100 in 0.000s (1961823 reads/sec)
+Cold reads: 10 in 0.000s (2030045 reads/sec)
+Mixed reads (70/30 hot/cold): 10 in 0.000s (2013288 reads/sec)
+Query test: 4 results in 0.000s
+Disk size: 1 MB
+Memory/Disk ratio: 0.00x
+Cache: 11 items, 0.00 MB, 8.7% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 100 documents
+Initial RSS: 90 MB
+After writes RSS: 90 MB (growth: 0 MB)
+Write time: 0.007s
+Write throughput: 13763 docs/sec
+Avg memory per doc: 0 bytes
+
+--- Hot Cache Warm-up ---
+Hot reads: 100 in 0.000s (1789517 reads/sec)
+Cold reads: 100 in 0.000s (1860154 reads/sec)
+Mixed reads (70/30 hot/cold): 100 in 0.000s (1533178 reads/sec)
+Query test: 49 results in 0.000s
+Disk size: 1 MB
+Memory/Disk ratio: 0.00x
+Cache: 101 items, 0.02 MB, 33.4% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 1,000 documents
+Initial RSS: 90 MB
+After writes RSS: 93 MB (growth: 3 MB)
+Write time: 0.042s
+Write throughput: 23808 docs/sec
+Avg memory per doc: 3146 bytes
+
+--- Hot Cache Warm-up ---
+Hot reads: 100 in 0.000s (1500600 reads/sec)
+Cold reads: 1,000 in 0.001s (1178859 reads/sec)
+Mixed reads (70/30 hot/cold): 1,000 in 0.001s (1731611 reads/sec)
+Query test: 100 results in 0.002s
+Disk size: 1 MB
+Memory/Disk ratio: 3.00x
+Cache: 1001 items, 0.25 MB, 47.6% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 10,000 documents
+Initial RSS: 93 MB
+After writes RSS: 106 MB (growth: 13 MB)
+Write time: 0.338s
+Write throughput: 29610 docs/sec
+Avg memory per doc: 1363 bytes
+
+--- Hot Cache Warm-up ---
+Hot reads: 1,000 in 0.001s (1521801 reads/sec)
+Cold reads: 5,000 in 0.006s (803987 reads/sec)
+Mixed reads (70/30 hot/cold): 10,000 in 0.009s (1114247 reads/sec)
+Query test: 100 results in 0.081s
+Disk size: 8 MB
+Memory/Disk ratio: 1.62x
+Cache: 10001 items, 2.51 MB, 54.1% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 100,000 documents
+Initial RSS: 118 MB
+After writes RSS: 221 MB (growth: 103 MB)
+Write time: 3.020s
+Write throughput: 33113 docs/sec
+Avg memory per doc: 1080 bytes
+
+--- Hot Cache Warm-up ---
+Hot reads: 5,000 in 0.004s (1141447 reads/sec)
+Cold reads: 5,000 in 0.009s (562168 reads/sec)
+Mixed reads (70/30 hot/cold): 10,000 in 0.013s (751876 reads/sec)
+Query test: 100 results in 0.775s
+Disk size: 67 MB
+Memory/Disk ratio: 1.54x
+Cache: 100001 items, 25.25 MB, 87.0% hit rate
+--------------------------------------------------------------------------------
+
+Scale: 1,000,000 documents
+Initial RSS: 334 MB
+After writes RSS: 957 MB (growth: 623 MB)
+Write time: 66.073s
+Write throughput: 15135 docs/sec
+Avg memory per doc: 653 bytes
+
+--- Hot Cache Warm-up ---
+Hot reads: 5,000 in 0.006s (818756 reads/sec)
+Cold reads: 5,000 in 0.011s (456651 reads/sec)
+Mixed reads (70/30 hot/cold): 10,000 in 0.015s (682841 reads/sec)
+Query test: 100 results in 6.812s
+Disk size: 636 MB
+Memory/Disk ratio: 0.98x
+Cache: 1000001 items, 254.42 MB, 98.5% hit rate
+--------------------------------------------------------------------------------
+
