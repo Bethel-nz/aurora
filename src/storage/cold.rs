@@ -41,9 +41,63 @@ impl ColdStore {
             ColdStoreMode::LowSpace => sled_config.mode(sled::Mode::LowSpace),
         };
 
-        let db = sled_config.open()?;
+        let db = sled_config.open().map_err(|e| {
+            let error_msg = e.to_string();
+
+            // Check for Windows "Access is denied" error (file locked by another process)
+            if error_msg.contains("Access is denied") || error_msg.contains("os error 5") {
+                let lock_hint = if std::path::Path::new(&db_path).exists() {
+                    "\n\nPossible solutions:\n\
+                    1. Close any other Aurora instances using this database\n\
+                    2. If no other instance is running, the previous instance may have crashed.\n\
+                       Delete the lock file in the database directory and try again\n\
+                    3. Run as administrator if permission is the issue"
+                } else {
+                    "\n\nThe database directory may require administrator privileges to create."
+                };
+
+                AuroraError::IoError(format!(
+                    "Cannot open database at '{}': file is locked or access denied.{}",
+                    db_path, lock_hint
+                ))
+            } else {
+                AuroraError::Storage(e)
+            }
+        })?;
 
         Ok(Self { db, db_path })
+    }
+
+    /// Attempt to detect and remove stale lock files
+    ///
+    /// This is useful for recovering from crashes where the lock file wasn't properly cleaned up.
+    /// Only call this if you're sure no other process is using the database.
+    ///
+    /// # Safety
+    /// This function should only be used when you're certain the database is not in use by another process.
+    /// Calling this while another Aurora instance is running could lead to data corruption.
+    pub fn try_remove_stale_lock(db_path: &str) -> Result<bool> {
+        use std::path::Path;
+
+        let path = if !db_path.ends_with(".db") {
+            format!("{}.db", db_path)
+        } else {
+            db_path.to_string()
+        };
+
+        let db_dir = Path::new(&path);
+        if !db_dir.exists() {
+            return Ok(false);
+        }
+
+        // Sled uses a .lock file in the db directory
+        let lock_file = db_dir.join(".lock");
+        if lock_file.exists() {
+            std::fs::remove_file(&lock_file)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
