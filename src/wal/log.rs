@@ -28,16 +28,21 @@ pub struct WriteAheadLog {
 }
 
 impl WriteAheadLog {
+    /// Create or open a Write-Ahead Log file
+    ///
+    /// Opens existing WAL files in append mode, preserving their contents
+    /// for crash recovery. WAL entries are automatically replayed on database
+    /// startup and cleared after successful checkpoint.
     pub fn new(path: &str) -> Result<Self> {
         let path = PathBuf::from(path);
         let wal_path = path.with_extension("wal");
 
+        // Open in append mode - preserves existing WAL entries for recovery
         let file = BufWriter::new(
             OpenOptions::new()
                 .create(true)
                 .read(true)
-                
-                .append(true)
+                .append(true)  // Never truncates existing WAL on open
                 .open(&wal_path)?,
         );
 

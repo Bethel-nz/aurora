@@ -145,8 +145,9 @@ fn main() {
 async fn run_aurora_benchmarks() -> TestResults {
     println!("📦 Running Aurora benchmarks...");
 
-    // Setup
-    let _ = std::fs::remove_file("bench_aurora.db");
+    // Setup - clean up old benchmark files
+    let _ = std::fs::remove_dir_all("bench_aurora.db");
+    let _ = std::fs::remove_file("bench_aurora.wal");
     let config = AuroraConfig {
         db_path: "bench_aurora.db".into(),
         ..Default::default()
