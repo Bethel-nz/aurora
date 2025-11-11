@@ -166,6 +166,38 @@ impl fmt::Debug for Aurora {
 }
 
 impl Aurora {
+    /// Remove stale lock files from a database directory
+    ///
+    /// If Aurora crashes or is forcefully terminated, it may leave behind lock files
+    /// that prevent the database from being reopened. This method safely removes
+    /// those lock files.
+    ///
+    /// # Safety
+    /// Only call this when you're certain no other Aurora instance is using the database.
+    /// Removing lock files while another process is running could cause data corruption.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use aurora_db::Aurora;
+    ///
+    /// // If you get "Access denied" error when opening:
+    /// if let Err(e) = Aurora::open("my_db") {
+    ///     eprintln!("Failed to open: {}", e);
+    ///     // Try removing stale lock
+    ///     if Aurora::remove_stale_lock("my_db").unwrap_or(false) {
+    ///         println!("Removed stale lock, try opening again");
+    ///         let db = Aurora::open("my_db")?;
+    ///     }
+    /// }
+    /// # Ok::<(), aurora_db::error::AuroraError>(())
+    /// ```
+    pub fn remove_stale_lock<P: AsRef<Path>>(path: P) -> Result<bool> {
+        let resolved_path = Self::resolve_path(path)?;
+        crate::storage::cold::ColdStore::try_remove_stale_lock(
+            resolved_path.to_str().unwrap()
+        )
+    }
+
     /// Open or create a database at the specified location
     ///
     /// # Arguments
