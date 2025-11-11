@@ -1,15 +1,19 @@
 #[cfg(any(feature = "http", feature = "binary"))]
 fn setup_database() -> std::io::Result<Arc<Aurora>> {
     let db_path = "aurora_data";
-    if std::path::Path::new(db_path).exists() {
-        println!("🗑️ Removing old database directory for a clean run...");
-        std::fs::remove_dir_all(db_path)?;
-    }
+
+    // Open existing database or create new one
     let db = Arc::new(
         Aurora::open(db_path)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?,
     );
-    println!("💽 Database opened at '{}'", db_path);
+
+    if std::path::Path::new(db_path).exists() {
+        println!("💽 Opened existing database at '{}'", db_path);
+    } else {
+        println!("💽 Created new database at '{}'", db_path);
+    }
+
     Ok(db)
 }
 
