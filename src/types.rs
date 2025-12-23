@@ -9,7 +9,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[archive(check_bytes)]
 pub enum FieldType {
     String,
     Int,
@@ -18,16 +19,19 @@ pub enum FieldType {
     Float,
     Array,
     Object,
+    Any,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[archive(check_bytes)]
 pub struct FieldDefinition {
     pub field_type: FieldType,
     pub unique: bool,
     pub indexed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[archive(check_bytes)]
 pub struct Collection {
     pub name: String,
     pub fields: HashMap<String, FieldDefinition>,

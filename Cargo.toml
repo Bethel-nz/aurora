@@ -32,6 +32,21 @@ base64 = "0.21"
 actix-web = { version = "4.11.0", optional = true }
 fst = { version = "0.4", features = ["levenshtein"] }
 
+# AQL Dependencies
+pest = "2.7"
+pest_derive = "2.7"
+moka = { version = "0.12", features = ["future", "sync"] }
+rhai = { version = "1.17", features = ["serde", "metadata"] }
+rkyv = { version = "0.7", features = ["validation"] }
+bumpalo = "3.14"
+async-stream = "0.3"
+quote = "1.0"
+color-eyre = "0.6"
+futures = "0.3"
+
+# Future features
+ndarray = "0.15"
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.3.0"
@@ -61,3 +76,17 @@ harness = false
 [[bench]]
 name = "aurora_vs_sqlite"
 harness = false
+
+[profile.dev.package."*"]
+opt-level = 0
+debug = 0
+strip = "debuginfo"
+
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
+
+# Reduce debug info for tests to avoid Windows 65k section limit
+[profile.test]
+debug = 1
+incremental = true

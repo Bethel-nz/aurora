@@ -45,7 +45,7 @@
 pub use crate::db::Aurora;
 pub use crate::db::DataInfo;
 pub use crate::error::{AuroraError, Result};
-pub use crate::query::{FilterBuilder, QueryBuilder, SearchBuilder};
+pub use crate::query::{QueryBuilder, SearchBuilder};
 pub use types::{
     AuroraConfig, ColdStoreMode, Collection, Document, DurabilityMode, FieldDefinition, FieldType,
     Value,
@@ -64,6 +64,7 @@ pub use workers::{Job, JobPriority, JobStatus};
 pub use transaction::{TransactionBuffer, TransactionId};
 
 // Module declarations
+// TODO: pub mod aql; // AQL parser module - coming in Phase 2
 pub mod client;
 pub mod computed;
 pub mod db;

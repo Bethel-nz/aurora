@@ -14,6 +14,7 @@ pub enum WriteOp {
 pub struct WriteBuffer {
     sender: mpsc::SyncSender<WriteOp>,
     is_alive: Arc<AtomicBool>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WriteBuffer {
@@ -24,7 +25,7 @@ impl WriteBuffer {
 
         // Use a real OS thread instead of tokio::spawn
         // This allows Drop to safely block without async context issues
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             struct TaskGuard(Arc<AtomicBool>);
             impl Drop for TaskGuard {
                 fn drop(&mut self) {
@@ -92,7 +93,7 @@ impl WriteBuffer {
             }
         });
 
-        Self { sender, is_alive }
+        Self { sender, is_alive, thread_handle: Some(handle) }
     }
 
     pub fn write(&self, key: String, value: Vec<u8>) -> Result<()> {
@@ -124,14 +125,12 @@ impl WriteBuffer {
 
 impl Drop for WriteBuffer {
     fn drop(&mut self) {
-        // Signal graceful shutdown
-        // The background thread (not tokio task) will perform final flush
-        // We can safely send because we're using std::sync::mpsc
         let _ = self.sender.send(WriteOp::Shutdown);
-
-        // Give the background thread a moment to flush
-        // The thread will exit cleanly after flushing
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        
+        // HACK: Join thread to prevent Windows zombie process (causing LNK1104 on next build)
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 

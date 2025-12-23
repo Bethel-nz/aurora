@@ -51,6 +51,9 @@ pub enum AuroraError {
     #[error("Invalid value: {0}")]
     InvalidValue(String),
 
+    #[error("Invalid definition: {0}")]
+    InvalidDefinition(String),
+
     #[error("Zip error: {0}")]
     Zip(#[from] ZipError),
 

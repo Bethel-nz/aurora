@@ -42,6 +42,7 @@ impl WriteAheadLog {
             OpenOptions::new()
                 .create(true)
                 .read(true)
+                .write(true)
                 .append(true)  // Never truncates existing WAL on open
                 .open(&wal_path)?,
         );
