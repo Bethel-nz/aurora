@@ -1147,4 +1147,42 @@ pub enum Filter {
     Lt(String, Value),
     Lte(String, Value),
     Contains(String, String),
+    And(Vec<Filter>),
+    Or(Vec<Filter>),
+}
+
+impl Filter {
+    /// Checks if a document matches the filter.
+    pub fn matches(&self, doc: &Document) -> bool {
+        let get_value = |path: &str| -> Option<&Value> {
+            if path.contains('.') {
+                let mut current = doc.data.get(path.split('.').next().unwrap())?;
+                for part in path.split('.').skip(1) {
+                    if let Value::Object(map) = current {
+                        current = map.get(part)?;
+                    } else {
+                        return None;
+                    }
+                }
+                Some(current)
+            } else {
+                doc.data.get(path)
+            }
+        };
+
+        match self {
+            Filter::Eq(field, value) => get_value(field) == Some(value),
+            Filter::Gt(field, value) => get_value(field).is_some_and(|v| v > value),
+            Filter::Gte(field, value) => get_value(field).is_some_and(|v| v >= value),
+            Filter::Lt(field, value) => get_value(field).is_some_and(|v| v < value),
+            Filter::Lte(field, value) => get_value(field).is_some_and(|v| v <= value),
+            Filter::Contains(field, value) => get_value(field).is_some_and(|v| match v {
+                Value::String(s) => s.contains(value),
+                Value::Array(arr) => arr.contains(&Value::String(value.to_string())),
+                _ => false,
+            }),
+            Filter::And(filters) => filters.iter().all(|f| f.matches(doc)),
+            Filter::Or(filters) => filters.iter().any(|f| f.matches(doc)),
+        }
+    }
 }
