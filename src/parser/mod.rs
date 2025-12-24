@@ -6,6 +6,7 @@ use pest::Parser;
 use pest_derive::Parser;
 
 pub mod ast;
+pub mod validator;
 
 #[derive(Parser)]
 #[grammar = "parser/grammar.pest"]
