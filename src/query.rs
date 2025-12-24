@@ -1150,3 +1150,29 @@ pub enum Filter {
     And(Vec<Filter>),
     Or(Vec<Filter>),
 }
+
+impl Filter {
+    /// Check if a document matches this filter
+    pub fn matches(&self, doc: &Document) -> bool {
+        match self {
+            Filter::Eq(field, value) => doc.data.get(field) == Some(value),
+            Filter::Gt(field, value) => doc.data.get(field).is_some_and(|v| v > value),
+            Filter::Gte(field, value) => doc.data.get(field).is_some_and(|v| v >= value),
+            Filter::Lt(field, value) => doc.data.get(field).is_some_and(|v| v < value),
+            Filter::Lte(field, value) => doc.data.get(field).is_some_and(|v| v <= value),
+            Filter::Contains(field, substr) => {
+                doc.data.get(field).is_some_and(|v| {
+                    if let Value::String(s) = v {
+                        s.contains(substr)
+                    } else if let Value::Array(arr) = v {
+                        arr.contains(&Value::String(substr.clone()))
+                    } else {
+                        false
+                    }
+                })
+            }
+            Filter::And(filters) => filters.iter().all(|f| f.matches(doc)),
+            Filter::Or(filters) => filters.iter().any(|f| f.matches(doc)),
+        }
+    }
+}

@@ -64,7 +64,7 @@ pub use workers::{Job, JobPriority, JobStatus};
 pub use transaction::{TransactionBuffer, TransactionId};
 
 // Module declarations
-// TODO: pub mod aql; // AQL parser module - coming in Phase 2
+pub mod parser; // AQL parser module
 pub mod client;
 pub mod computed;
 pub mod db;

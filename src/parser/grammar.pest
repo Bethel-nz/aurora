@@ -1,0 +1,906 @@
+// ============================================================================
+// Aurora Query Language (AQL) - Complete Grammar
+// ============================================================================
+// This grammar defines the complete syntax for AQL including current
+// features and all planned future enhancements.
+// ============================================================================
+
+// ============================================================================
+// WHITESPACE & COMMENTS
+// ============================================================================
+
+WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
+COMMENT = _{ "#" ~ (!"\n" ~ ANY)* ~ "\n"? }
+
+// ============================================================================
+// ENTRY POINT
+// ============================================================================
+
+document = { SOI ~ operation+ ~ EOI }
+
+operation = {
+    query_operation |
+    mutation_operation |
+    subscription_operation |
+    schema_definition
+}
+
+// ============================================================================
+// QUERY OPERATIONS
+// ============================================================================
+
+query_operation = {
+    "query" ~ identifier? ~ variable_definitions? ~ directives? ~ "{" ~ selection_set ~ "}"
+}
+
+selection_set = {
+    field+
+}
+
+field = {
+    fragment_spread |
+    alias_name? ~ identifier ~ arguments? ~ directives? ~ sub_selection?
+}
+
+alias_name = {
+    identifier ~ ":"
+}
+
+sub_selection = {
+    "{" ~ selection_set ~ "}"
+}
+
+// ============================================================================
+// MUTATION OPERATIONS
+// ============================================================================
+
+mutation_operation = {
+    "mutation" ~ identifier? ~ variable_definitions? ~ directives? ~ "{" ~ mutation_set ~ "}"
+}
+
+mutation_set = {
+    mutation_field+
+}
+
+mutation_field = {
+    alias_name? ~ mutation_call ~ directives?
+}
+
+mutation_call = {
+    insert_mutation |
+    insert_many_mutation |
+    update_mutation |
+    upsert_mutation |
+    delete_mutation |
+    enqueue_job_mutation |
+    enqueue_jobs_mutation |
+    import_mutation |
+    export_mutation |
+    transaction_block
+}
+
+// Insert Operations
+insert_mutation = {
+    "insertInto" ~ "(" ~ insert_args ~ ")" ~ sub_selection?
+}
+
+insert_args = {
+    argument ~ ("," ~ argument)*
+}
+
+insert_many_mutation = {
+    "insertMany" ~ "(" ~ insert_many_args ~ ")" ~ sub_selection?
+}
+
+insert_many_args = {
+    argument ~ ("," ~ argument)*
+}
+
+// Update Operations
+update_mutation = {
+    "update" ~ "(" ~ update_args ~ ")" ~ sub_selection?
+}
+
+update_args = {
+    argument ~ ("," ~ argument)*
+}
+
+// Upsert Operations
+upsert_mutation = {
+    "upsert" ~ "(" ~ upsert_args ~ ")" ~ sub_selection?
+}
+
+upsert_args = {
+    argument ~ ("," ~ argument)*
+}
+
+// Delete Operations
+delete_mutation = {
+    "deleteFrom" ~ "(" ~ delete_args ~ ")" ~ sub_selection?
+}
+
+delete_args = {
+    argument ~ ("," ~ argument)*
+}
+
+// Job Operations
+enqueue_job_mutation = {
+    "enqueueJob" ~ "(" ~ job_args ~ ")" ~ sub_selection?
+}
+
+enqueue_jobs_mutation = {
+    "enqueueJobs" ~ "(" ~ jobs_args ~ ")" ~ sub_selection?
+}
+
+job_args = {
+    argument ~ ("," ~ argument)*
+}
+
+jobs_args = {
+    argument ~ ("," ~ argument)*
+}
+
+// Import/Export Operations
+import_mutation = {
+    "import" ~ "(" ~ import_args ~ ")" ~ sub_selection?
+}
+
+import_args = {
+    argument ~ ("," ~ argument)*
+}
+
+export_mutation = {
+    "export" ~ "(" ~ export_args ~ ")" ~ sub_selection?
+}
+
+export_args = {
+    argument ~ ("," ~ argument)*
+}
+
+// Transaction Block
+transaction_block = {
+    "transaction" ~ "{" ~ mutation_set ~ "}"
+}
+
+// ============================================================================
+// SUBSCRIPTION OPERATIONS
+// ============================================================================
+
+subscription_operation = {
+    "subscription" ~ identifier? ~ variable_definitions? ~ directives? ~ "{" ~ subscription_set ~ "}"
+}
+
+subscription_set = {
+    subscription_field+
+}
+
+subscription_field = {
+    alias_name? ~ identifier ~ arguments? ~ directives? ~ sub_selection
+}
+
+// ============================================================================
+// ARGUMENTS
+// ============================================================================
+
+arguments = {
+    "(" ~ argument_list ~ ")"
+}
+
+argument_list = {
+    argument ~ ("," ~ argument)*
+}
+
+argument = {
+    identifier ~ ":" ~ value
+}
+
+// Special argument structures
+where_clause = {
+    "where" ~ ":" ~ filter_object
+}
+
+order_by_clause = {
+    "orderBy" ~ ":" ~ (order_by_single | order_by_multiple)
+}
+
+order_by_single = {
+    "{" ~ "field" ~ ":" ~ string ~ "," ~ "direction" ~ ":" ~ sort_direction ~ "}"
+}
+
+order_by_multiple = {
+    "[" ~ order_by_single ~ ("," ~ order_by_single)* ~ "]"
+}
+
+sort_direction = {
+    "ASC" | "DESC"
+}
+
+// ============================================================================
+// FILTER SYSTEM
+// ============================================================================
+
+filter_object = {
+    "{" ~ filter_field_list? ~ "}"
+}
+
+filter_field_list = {
+    filter_field ~ ("," ~ filter_field)*
+}
+
+filter_field = {
+    logical_operator |
+    field_filter |
+    nested_field_filter
+}
+
+// Logical Operators
+logical_operator = {
+    and_operator |
+    or_operator |
+    not_operator
+}
+
+and_operator = {
+    "and" ~ ":" ~ "[" ~ filter_object ~ ("," ~ filter_object)* ~ "]"
+}
+
+or_operator = {
+    "or" ~ ":" ~ "[" ~ filter_object ~ ("," ~ filter_object)* ~ "]"
+}
+
+not_operator = {
+    "not" ~ ":" ~ filter_object
+}
+
+// Field Filters
+field_filter = {
+    identifier ~ ":" ~ filter_condition
+}
+
+nested_field_filter = {
+    string ~ ":" ~ filter_condition
+}
+
+filter_condition = {
+    "{" ~ filter_operator_list ~ "}"
+}
+
+filter_operator_list = {
+    filter_operator ~ ("," ~ filter_operator)*
+}
+
+filter_operator = {
+    eq_operator |
+    ne_operator |
+    gt_operator |
+    gte_operator |
+    lt_operator |
+    lte_operator |
+    in_operator |
+    nin_operator |
+    contains_operator |
+    contains_any_operator |
+    contains_all_operator |
+    starts_with_operator |
+    ends_with_operator |
+    matches_operator |
+    is_null_operator |
+    is_not_null_operator |
+    near_operator |
+    within_operator |
+    increment_operator |
+    decrement_operator |
+    push_operator |
+    pull_operator |
+    add_to_set_operator
+}
+
+// Comparison Operators
+eq_operator = { "eq" ~ ":" ~ value }
+ne_operator = { "ne" ~ ":" ~ value }
+gt_operator = { "gt" ~ ":" ~ value }
+gte_operator = { "gte" ~ ":" ~ value }
+lt_operator = { "lt" ~ ":" ~ value }
+lte_operator = { "lte" ~ ":" ~ value }
+
+// Array Operators
+in_operator = { "in" ~ ":" ~ array }
+nin_operator = { "nin" ~ ":" ~ array }
+contains_operator = { "contains" ~ ":" ~ value }
+contains_any_operator = { "containsAny" ~ ":" ~ array }
+contains_all_operator = { "containsAll" ~ ":" ~ array }
+
+// String Operators
+starts_with_operator = { "startsWith" ~ ":" ~ value }
+ends_with_operator = { "endsWith" ~ ":" ~ value }
+matches_operator = { "matches" ~ ":" ~ value }
+
+// Null Operators
+is_null_operator = { "isNull" ~ ":" ~ boolean }
+is_not_null_operator = { "isNotNull" ~ ":" ~ boolean }
+
+// Geospatial Operators
+near_operator = {
+    "near" ~ ":" ~ "{" ~ geo_near_args ~ "}"
+}
+
+geo_near_args = {
+    "coordinates" ~ ":" ~ array ~ "," ~ "maxDistance" ~ ":" ~ number
+}
+
+within_operator = {
+    "within" ~ ":" ~ "{" ~ geo_within_args ~ "}"
+}
+
+geo_within_args = {
+    "type" ~ ":" ~ string ~ "," ~ "coordinates" ~ ":" ~ array
+}
+
+// Update Field Modifiers
+increment_operator = { "increment" ~ ":" ~ number }
+decrement_operator = { "decrement" ~ ":" ~ number }
+push_operator = { "push" ~ ":" ~ value }
+pull_operator = { "pull" ~ ":" ~ value }
+add_to_set_operator = { "addToSet" ~ ":" ~ value }
+
+// ============================================================================
+// COMPUTED FIELDS
+// ============================================================================
+
+computed_field = {
+    identifier ~ ":" ~ computed_expression
+}
+
+computed_expression = {
+    template_string |
+    function_call |
+    pipe_expression |
+    sql_expression |
+    aggregate_function |
+    geo_function
+}
+
+// Template String Syntax
+template_string = ${
+    "\"" ~ template_content ~ "\""
+}
+
+template_content = @{
+    template_part*
+}
+
+template_part = {
+    template_interpolation |
+    template_text
+}
+
+template_interpolation = ${
+    "${" ~ expression ~ "}"
+}
+
+template_text = @{
+    (!("${" | "\"" | "\\") ~ ANY)+ |
+    "\\" ~ ANY
+}
+
+// Function Call Syntax
+function_call = {
+    function_name ~ "(" ~ function_args? ~ ")"
+}
+
+function_name = {
+    // String functions
+    "concat" | "uppercase" | "lowercase" | "trim" | "substring" |
+    "replace" | "length" | "format" |
+    
+    // Math functions
+    "add" | "subtract" | "multiply" | "divide" | "mod" |
+    "abs" | "round" | "floor" | "ceil" | "min" | "max" | "pow" | "sqrt" |
+    
+    // Logical functions
+    "if" | "and" | "or" | "not" |
+    
+    // Comparison functions
+    "eq" | "ne" | "gt" | "gte" | "lt" | "lte" |
+    "isNull" | "isNotNull" |
+    
+    // Array functions
+    "sum" | "avg" | "count" | "first" | "last" |
+    "pluck" | "join" | "filter" | "map" | "sort" |
+    
+    // Date functions
+    "now" | "dateAdd" | "dateDiff" | "year" | "month" | "day" |
+    "hour" | "minute" | "second" |
+    
+    // Geospatial functions
+    "geoDistance" | "point" |
+    
+    // Type conversion
+    "toString" | "toInt" | "toFloat" | "toBoolean"
+}
+
+function_args = {
+    expression ~ ("," ~ expression)*
+}
+
+// Pipe Expression Syntax
+pipe_expression = {
+    expression ~ ("|" ~ pipe_operation)+
+}
+
+pipe_operation = {
+    function_name ~ ("(" ~ function_args ~ ")")?
+}
+
+// SQL Expression Syntax
+sql_expression = {
+    "expr" ~ "(" ~ string ~ ")"
+}
+
+// Aggregate Functions
+aggregate_function = {
+    aggregate_name ~ "(" ~ aggregate_args ~ ")"
+}
+
+aggregate_name = {
+    "sum" | "avg" | "count" | "min" | "max"
+}
+
+aggregate_args = {
+    "field" ~ ":" ~ string |
+    "fields" ~ ":" ~ array
+}
+
+// Geospatial Functions
+geo_function = {
+    geo_function_name ~ "(" ~ function_args ~ ")"
+}
+
+geo_function_name = {
+    "geoDistance" | "point" | "polygon" | "lineString"
+}
+
+// ============================================================================
+// EXPRESSIONS
+// ============================================================================
+
+expression = {
+    ternary_expression
+}
+
+ternary_expression = {
+    logical_or_expression ~ ("?" ~ expression ~ ":" ~ expression)?
+}
+
+logical_or_expression = {
+    logical_and_expression ~ ("||" ~ logical_and_expression)*
+}
+
+logical_and_expression = {
+    equality_expression ~ ("&&" ~ equality_expression)*
+}
+
+equality_expression = {
+    relational_expression ~ (("==" | "!=") ~ relational_expression)*
+}
+
+relational_expression = {
+    additive_expression ~ ((">=" | "<=" | ">" | "<") ~ additive_expression)*
+}
+
+additive_expression = {
+    multiplicative_expression ~ (("+" | "-") ~ multiplicative_expression)*
+}
+
+multiplicative_expression = {
+    unary_expression ~ (("*" | "/" | "%") ~ unary_expression)*
+}
+
+unary_expression = {
+    ("!" | "-")? ~ primary_expression
+}
+
+primary_expression = {
+    function_call |
+    field_access |
+    variable |
+    literal |
+    "(" ~ expression ~ ")"
+}
+
+field_access = {
+    identifier ~ ("." ~ (identifier | "*"))*
+}
+
+// ============================================================================
+// VARIABLES
+// ============================================================================
+
+variable_definitions = {
+    "(" ~ variable_definition ~ ("," ~ variable_definition)* ~ ")"
+}
+
+variable_definition = {
+    variable ~ ":" ~ type_annotation ~ default_value?
+}
+
+variable = {
+    "$" ~ identifier
+}
+
+type_annotation = {
+    type_name ~ type_modifier?
+}
+
+type_name = {
+    "String" | "Int" | "Float" | "Boolean" | "ID" | "Uuid" |
+    "DateTime" | "Date" | "Time" | "JSON" | "Email" | "URL" | "PhoneNumber" |
+    array_type | custom_scalar
+}
+
+array_type = {
+    "[" ~ type_annotation ~ "]"
+}
+
+type_modifier = {
+    "!" 
+}
+
+custom_scalar = {
+    identifier
+}
+
+default_value = {
+    "=" ~ value
+}
+
+// ============================================================================
+// DIRECTIVES
+// ============================================================================
+
+directives = {
+    directive+
+}
+
+directive = {
+    "@" ~ directive_name ~ arguments?
+}
+
+directive_name = {
+    "include" | "skip" | "defer" | "stream" |
+    "relation" | "validate" | "auth" | "require" |
+    "allow" | "primary" | "unique" | "indexed" |
+    "explain" | "useIndex" |
+    identifier
+}
+
+// ============================================================================
+// SPECIAL QUERIES
+// ============================================================================
+
+// Aggregation
+aggregate_selection = {
+    "aggregate" ~ "{" ~ aggregate_field_list ~ "}"
+}
+
+aggregate_field_list = {
+    aggregate_field ~ ("," ~ aggregate_field)*
+}
+
+aggregate_field = {
+    "count" |
+    aggregate_function
+}
+
+// Group By
+group_by_selection = {
+    "groupBy" ~ "(" ~ group_by_args ~ ")" ~ "{" ~ group_by_fields ~ "}"
+}
+
+group_by_args = {
+    ("field" ~ ":" ~ string) |
+    ("fields" ~ ":" ~ array) |
+    ("field" ~ ":" ~ string ~ "," ~ "interval" ~ ":" ~ string)
+}
+
+group_by_fields = {
+    group_by_field ~ ("," ~ group_by_field)*
+}
+
+group_by_field = {
+    "key" | "keys" | "count" | "timestamp" |
+    "aggregate" | "nodes" | identifier
+}
+
+// Lookup (Manual Joins)
+lookup_selection = {
+    "lookup" ~ "(" ~ lookup_args ~ ")" ~ sub_selection?
+}
+
+lookup_args = {
+    "collection" ~ ":" ~ string ~ "," ~
+    "localField" ~ ":" ~ string ~ "," ~
+    "foreignField" ~ ":" ~ string ~
+    ("," ~ "where" ~ ":" ~ filter_object)?
+}
+
+// Pagination Info
+page_info_selection = {
+    "pageInfo" ~ "{" ~ page_info_fields ~ "}"
+}
+
+page_info_fields = {
+    page_info_field ~ ("," ~ page_info_field)*
+}
+
+page_info_field = {
+    "hasNextPage" | "hasPreviousPage" | "startCursor" | "endCursor"
+}
+
+// Edges (Cursor Pagination)
+edges_selection = {
+    "edges" ~ "{" ~ edge_fields ~ "}"
+}
+
+edge_fields = {
+    edge_field ~ ("," ~ edge_field)*
+}
+
+edge_field = {
+    "cursor" |
+    ("node" ~ "{" ~ selection_set ~ "}")
+}
+
+// Search
+search_args = {
+    "search" ~ ":" ~ "{" ~ search_options ~ "}"
+}
+
+search_options = {
+    search_option ~ ("," ~ search_option)*
+}
+
+search_option = {
+    ("query" ~ ":" ~ string) |
+    ("fields" ~ ":" ~ array) |
+    ("fuzzy" ~ ":" ~ boolean) |
+    ("minScore" ~ ":" ~ number)
+}
+
+// Validation
+validate_args = {
+    "validate" ~ ":" ~ "{" ~ validation_rules ~ "}"
+}
+
+validation_rules = {
+    validation_rule ~ ("," ~ validation_rule)*
+}
+
+validation_rule = {
+    identifier ~ ":" ~ "{" ~ validation_constraints ~ "}"
+}
+
+validation_constraints = {
+    validation_constraint ~ ("," ~ validation_constraint)*
+}
+
+validation_constraint = {
+    ("format" ~ ":" ~ string) |
+    ("min" ~ ":" ~ number) |
+    ("max" ~ ":" ~ number) |
+    ("minLength" ~ ":" ~ number) |
+    ("maxLength" ~ ":" ~ number) |
+    ("pattern" ~ ":" ~ string)
+}
+
+// Window Functions (Time-Series)
+window_function = {
+    identifier ~ ":" ~ "windowFunc" ~ "(" ~ window_args ~ ")"
+}
+
+window_args = {
+    "field" ~ ":" ~ string ~ "," ~
+    "function" ~ ":" ~ string ~ "," ~
+    "windowSize" ~ ":" ~ number
+}
+
+// Downsample (Time-Series)
+downsample_selection = {
+    "downsample" ~ "(" ~ downsample_args ~ ")" ~ sub_selection?
+}
+
+downsample_args = {
+    "interval" ~ ":" ~ string ~ "," ~
+    "aggregation" ~ ":" ~ string
+}
+
+// ============================================================================
+// FRAGMENTS
+// ============================================================================
+
+fragment_definition = {
+    "fragment" ~ identifier ~ "on" ~ identifier ~ "{" ~ selection_set ~ "}"
+}
+
+fragment_spread = {
+    "..." ~ identifier
+}
+
+inline_fragment = {
+    "..." ~ "on" ~ identifier ~ "{" ~ selection_set ~ "}"
+}
+
+// ============================================================================
+// SCHEMA DEFINITION
+// ============================================================================
+
+schema_definition = {
+    "schema" ~ "{" ~ collection_definition+ ~ "}"
+}
+
+collection_definition = {
+    directives? ~ "collection" ~ identifier ~ "{" ~ field_definition+ ~ "}"
+}
+
+field_definition = {
+    identifier ~ ":" ~ type_annotation ~ directives?
+}
+
+// ============================================================================
+// INTROSPECTION
+// ============================================================================
+
+introspection_query = {
+    "__schema" ~ arguments? ~ "{" ~ introspection_fields ~ "}"
+}
+
+introspection_fields = {
+    introspection_field ~ ("," ~ introspection_field)*
+}
+
+introspection_field = {
+    "collections" |
+    "fields" |
+    "relations" |
+    identifier
+}
+
+// ============================================================================
+// VALUES & LITERALS
+// ============================================================================
+
+value = {
+    object |
+    array |
+    string |
+    number |
+    boolean |
+    null |
+    variable |
+    enum_value
+}
+
+object = {
+    "{" ~ object_field_list? ~ "}"
+}
+
+object_field_list = {
+    object_field ~ ("," ~ object_field)*
+}
+
+object_field = {
+    (identifier | string) ~ ":" ~ value
+}
+
+array = {
+    "[" ~ array_value_list? ~ "]"
+}
+
+array_value_list = {
+    value ~ ("," ~ value)*
+}
+
+string = ${
+    "\"" ~ string_inner ~ "\"" |
+    "\"\"\"" ~ multiline_string_inner ~ "\"\"\""
+}
+
+string_inner = @{
+    string_char*
+}
+
+string_char = {
+    !("\"" | "\\" | "\n") ~ ANY |
+    "\\" ~ escape_sequence
+}
+
+multiline_string_inner = @{
+    multiline_string_char*
+}
+
+multiline_string_char = {
+    !"\"\"\"" ~ ANY
+}
+
+escape_sequence = {
+    "\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" |
+    "u" ~ ASCII_HEX_DIGIT{4}
+}
+
+number = @{
+    "-"? ~ int ~ ("." ~ ASCII_DIGIT+)? ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+}
+
+int = {
+    "0" |
+    ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*
+}
+
+boolean = {
+    "true" | "false"
+}
+
+null = {
+    "null"
+}
+
+enum_value = {
+    // Job priorities
+    "LOW" | "NORMAL" | "HIGH" | "CRITICAL" |
+    
+    // Job statuses
+    "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SCHEDULED" |
+    
+    // Event types
+    "INSERT" | "UPDATE" | "DELETE" |
+    
+    // Change types
+    "ADDED" | "MODIFIED" | "REMOVED" |
+    
+    // Export formats
+    "JSON" | "CSV" | "EXCEL" | "PARQUET" |
+    
+    // Custom enums (fallback)
+    identifier
+}
+
+// ============================================================================
+// IDENTIFIERS
+// ============================================================================
+
+identifier = @{
+    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*
+}
+
+literal = {
+    string | number | boolean | null
+}
+
+// ============================================================================
+// SPECIAL TOKENS
+// ============================================================================
+
+// Special field names
+special_field = {
+    "nodes" | "edges" | "pageInfo" | "aggregate" | "groupBy" |
+    "affected" | "deletedIds" | "operation" | "jobId" | "jobIds" |
+    "totalCount" | "score" | "__schema" | "__versions" | "__all__"
+}
+
+// Reserved keywords
+keyword = {
+    "query" | "mutation" | "subscription" | "fragment" | "on" |
+    "transaction" | "schema" | "collection" | "type" | "enum" | "scalar" |
+    "insertInto" | "insertMany" | "update" | "upsert" | "deleteFrom" |
+    "enqueueJob" | "enqueueJobs" | "import" | "export" |
+    "where" | "orderBy" | "limit" | "offset" | "first" | "last" |
+    "after" | "before" | "search" | "validate" | "lookup" |
+    "aggregate" | "groupBy" | "windowFunc" | "downsample" |
+    "and" | "or" | "not" |
+    "eq" | "ne" | "gt" | "gte" | "lt" | "lte" |
+    "in" | "nin" | "contains" | "containsAny" | "containsAll" |
+    "startsWith" | "endsWith" | "matches" |
+    "isNull" | "isNotNull" | "near" | "within" |
+    "true" | "false" | "null" |
+    "ASC" | "DESC"
+}
