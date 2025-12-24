@@ -1,15 +1,15 @@
 use chrono::{DateTime, Utc};
+use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Archive, RkyvSerialize, RkyvDeserialize)]
 #[archive(check_bytes)]
 pub enum FieldType {
     String,
@@ -22,16 +22,14 @@ pub enum FieldType {
     Any,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-#[archive(check_bytes)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FieldDefinition {
     pub field_type: FieldType,
     pub unique: bool,
     pub indexed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-#[archive(check_bytes)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Collection {
     pub name: String,
     pub fields: HashMap<String, FieldDefinition>,
@@ -447,8 +445,8 @@ pub struct AuroraConfig {
 
     // Durability config
     pub durability_mode: DurabilityMode, // Trade-off between performance and data safety
-    pub enable_wal: bool,                 // Enable write-ahead logging
-    pub checkpoint_interval_ms: u64,      // Background checkpoint interval (flush + WAL truncate)
+    pub enable_wal: bool,                // Enable write-ahead logging
+    pub checkpoint_interval_ms: u64,     // Background checkpoint interval (flush + WAL truncate)
 }
 
 /// Durability mode determines the trade-off between performance and data safety

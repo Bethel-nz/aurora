@@ -37,7 +37,7 @@ pest = "2.7"
 pest_derive = "2.7"
 moka = { version = "0.12", features = ["future", "sync"] }
 rhai = { version = "1.17", features = ["serde", "metadata"] }
-rkyv = { version = "0.7", features = ["validation"] }
+rkyv = { version = "0.7", features = ["validation", "uuid"] }
 bumpalo = "3.14"
 async-stream = "0.3"
 quote = "1.0"
