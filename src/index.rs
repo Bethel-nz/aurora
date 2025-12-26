@@ -53,8 +53,8 @@ impl Index {
         match self.data.get_mut(&key) {
             Some(mut ids) => {
                 if self.definition.unique && !ids.is_empty() {
-                    return Err(crate::error::AuroraError::InvalidOperation(
-                        "Unique constraint violation".into(),
+                    return Err(crate::error::AqlError::invalid_operation(
+                        "Unique constraint violation".to_string(),
                     ));
                 }
                 ids.push(doc_id.clone());

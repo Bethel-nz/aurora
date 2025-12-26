@@ -16,7 +16,7 @@
 //! ```
 
 use crate::Aurora;
-use crate::error::AuroraError;
+use crate::error::AqlError;
 use crate::error::Result;
 use crate::types::{Document, Value};
 use serde::{Deserialize, Serialize};
@@ -177,10 +177,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn in_values<T: Into<Value> + Clone>(&self, field: &str, values: &[T]) -> bool {
         let values: Vec<Value> = values.iter().map(|v| v.clone().into()).collect();
-        self.doc
-            .data
-            .get(field)
-            .is_some_and(|v| values.contains(v))
+        self.doc.data.get(field).is_some_and(|v| values.contains(v))
     }
 
     /// Check if a field is between two values (inclusive)
@@ -440,7 +437,8 @@ impl<'a> QueryBuilder<'a> {
             // Early termination path - scan only until we have enough results
             let target = self.limit.unwrap() + self.offset.unwrap_or(0);
             let filter = |doc: &Document| self.filters.iter().all(|f| f(doc));
-            self.db.scan_and_filter(&self.collection, filter, Some(target))?
+            self.db
+                .scan_and_filter(&self.collection, filter, Some(target))?
         } else {
             // Standard path - need all matching docs (for sorting or no limit)
             let mut docs = self.db.get_all_collection(&self.collection).await?;
@@ -763,7 +761,8 @@ impl<'a> QueryBuilder<'a> {
                     format!("{}:{}", collection, updated_doc.id),
                     serde_json::to_vec(&updated_doc)?,
                     None,
-                )?;
+                )
+                .await?;
                 updated_count += 1;
             }
         }
@@ -852,10 +851,10 @@ impl<'a> SearchBuilder<'a> {
     pub async fn collect(self) -> Result<Vec<Document>> {
         let field = self
             .field
-            .ok_or_else(|| AuroraError::InvalidOperation("Search field not specified".into()))?;
+            .ok_or_else(|| AqlError::invalid_operation("Search field not specified".to_string()))?;
         let query = self
             .query
-            .ok_or_else(|| AuroraError::InvalidOperation("Search query not specified".into()))?;
+            .ok_or_else(|| AqlError::invalid_operation("Search query not specified".to_string()))?;
 
         self.db.search_text(&self.collection, &field, &query).await
     }
@@ -1160,17 +1159,15 @@ impl Filter {
             Filter::Gte(field, value) => doc.data.get(field).is_some_and(|v| v >= value),
             Filter::Lt(field, value) => doc.data.get(field).is_some_and(|v| v < value),
             Filter::Lte(field, value) => doc.data.get(field).is_some_and(|v| v <= value),
-            Filter::Contains(field, substr) => {
-                doc.data.get(field).is_some_and(|v| {
-                    if let Value::String(s) = v {
-                        s.contains(substr)
-                    } else if let Value::Array(arr) = v {
-                        arr.contains(&Value::String(substr.clone()))
-                    } else {
-                        false
-                    }
-                })
-            }
+            Filter::Contains(field, substr) => doc.data.get(field).is_some_and(|v| {
+                if let Value::String(s) = v {
+                    s.contains(substr)
+                } else if let Value::Array(arr) = v {
+                    arr.contains(&Value::String(substr.clone()))
+                } else {
+                    false
+                }
+            }),
             Filter::And(filters) => filters.iter().all(|f| f.matches(doc)),
             Filter::Or(filters) => filters.iter().any(|f| f.matches(doc)),
         }

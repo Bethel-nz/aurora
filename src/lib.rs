@@ -44,7 +44,7 @@
 // Re-export primary types and modules
 pub use crate::db::Aurora;
 pub use crate::db::DataInfo;
-pub use crate::error::{AuroraError, Result};
+pub use crate::error::{AqlError, Result};
 pub use crate::query::{QueryBuilder, SearchBuilder};
 pub use types::{
     AuroraConfig, ColdStoreMode, Collection, Document, DurabilityMode, FieldDefinition, FieldType,
@@ -64,13 +64,13 @@ pub use workers::{Job, JobPriority, JobStatus};
 pub use transaction::{TransactionBuffer, TransactionId};
 
 // Module declarations
-pub mod parser; // AQL parser module
 pub mod client;
 pub mod computed;
 pub mod db;
 pub mod error;
 pub mod index;
 pub mod network;
+pub mod parser; // AQL parser module
 pub mod pubsub;
 pub mod query;
 pub mod reactive;
