@@ -1,6 +1,7 @@
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, ErrorCode, Result};
 use crate::types::{AuroraConfig, ColdStoreMode};
 use sled::Db;
+use std::sync::Arc;
 
 pub struct ColdStore {
     db: Db,
@@ -56,12 +57,16 @@ impl ColdStore {
                     "\n\nThe database directory may require administrator privileges to create."
                 };
 
-                AuroraError::IoError(format!(
-                    "Cannot open database at '{}': file is locked or access denied.{}",
-                    db_path, lock_hint
-                ))
+                AqlError::new(
+                    ErrorCode::IoError,
+                    format!(
+                        "Cannot open database at '{}': file is locked or access denied.{}",
+                        db_path,
+                        lock_hint
+                    ),
+                )
             } else {
-                AuroraError::Storage(e)
+                AqlError::from(e)
             }
         })?;
 
@@ -106,7 +111,6 @@ impl ColdStore {
 
     pub fn set(&self, key: String, value: Vec<u8>) -> Result<()> {
         self.db.insert(key.as_bytes(), value)?;
-        self.db.flush()?;
         Ok(())
     }
 
@@ -117,16 +121,14 @@ impl ColdStore {
 
     pub fn scan(&self) -> impl Iterator<Item = Result<(String, Vec<u8>)>> + '_ {
         self.db.iter().map(|result| {
-            result
-                .map_err(AuroraError::Storage)
-                .and_then(|(key, value)| {
-                    Ok((
-                        String::from_utf8(key.to_vec()).map_err(|_| {
-                            AuroraError::Protocol("Invalid UTF-8 in key".to_string())
-                        })?,
-                        value.to_vec(),
-                    ))
-                })
+            result.map_err(AqlError::from).and_then(|(key, value)| {
+                Ok((
+                    String::from_utf8(key.to_vec()).map_err(|_| {
+                        AqlError::new(ErrorCode::ProtocolError, "Invalid UTF-8 in key".to_string())
+                    })?,
+                    value.to_vec(),
+                ))
+            })
         })
     }
 
@@ -135,16 +137,14 @@ impl ColdStore {
         prefix: &str,
     ) -> impl Iterator<Item = Result<(String, Vec<u8>)>> + '_ {
         self.db.scan_prefix(prefix.as_bytes()).map(|result| {
-            result
-                .map_err(AuroraError::Storage)
-                .and_then(|(key, value)| {
-                    Ok((
-                        String::from_utf8(key.to_vec()).map_err(|_| {
-                            AuroraError::Protocol("Invalid UTF-8 in key".to_string())
-                        })?,
-                        value.to_vec(),
-                    ))
-                })
+            result.map_err(AqlError::from).and_then(|(key, value)| {
+                Ok((
+                    String::from_utf8(key.to_vec()).map_err(|_| {
+                        AqlError::new(ErrorCode::ProtocolError, "Invalid UTF-8 in key".to_string())
+                    })?,
+                    value.to_vec(),
+                ))
+            })
         })
     }
 
@@ -157,7 +157,22 @@ impl ColdStore {
             });
 
         self.db.apply_batch(batch)?;
-        self.db.flush()?;
+        Ok(())
+    }
+
+    // CHANGED: New optimized method for WriteBuffer
+    pub fn batch_set_arc(&self, pairs: Vec<(Arc<String>, Arc<Vec<u8>>)>) -> Result<()> {
+        let batch = pairs
+            .into_iter()
+            .fold(sled::Batch::default(), |mut batch, (key, value)| {
+                // Sled accepts &[u8], so we deref the Arc. 
+                // This avoids cloning the Vec<u8> before passing it to Sled.
+                batch.insert(key.as_bytes(), value.as_slice());
+                batch
+            });
+
+        self.db.apply_batch(batch)?;
+        // Note: No explicit flush here (Sled handles it based on flush_every_ms)
         Ok(())
     }
 
