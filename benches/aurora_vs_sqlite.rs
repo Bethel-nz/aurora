@@ -5,8 +5,8 @@
 
 use aurora_db::{Aurora, AuroraConfig, types::Value};
 use rusqlite::{Connection, params};
-use std::time::{Duration, Instant};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 const NUM_DOCS: usize = 10_000;
 const BATCH_SIZE: usize = 1000;
@@ -37,29 +37,53 @@ impl BenchmarkResults {
         println!("║  Test Scenario                │  Aurora      │  SQLite      │  Winner ║");
         println!("╠═══════════════════════════════════════════════════════════════════════╣");
 
-        self.print_row("Single Insert (1,000 docs)",
-            self.aurora.single_insert, self.sqlite.single_insert);
+        self.print_row(
+            "Single Insert (1,000 docs)",
+            self.aurora.single_insert,
+            self.sqlite.single_insert,
+        );
 
-        self.print_row(&format!("Batch Insert ({} docs)", NUM_DOCS),
-            self.aurora.batch_insert, self.sqlite.batch_insert);
+        self.print_row(
+            &format!("Batch Insert ({} docs)", NUM_DOCS),
+            self.aurora.batch_insert,
+            self.sqlite.batch_insert,
+        );
 
-        self.print_row("Query without Index",
-            self.aurora.query_no_index, self.sqlite.query_no_index);
+        self.print_row(
+            "Query without Index",
+            self.aurora.query_no_index,
+            self.sqlite.query_no_index,
+        );
 
-        self.print_row("Query with Index",
-            self.aurora.query_with_index, self.sqlite.query_with_index);
+        self.print_row(
+            "Query with Index",
+            self.aurora.query_with_index,
+            self.sqlite.query_with_index,
+        );
 
-        self.print_row("Query with LIMIT 100",
-            self.aurora.query_with_limit, self.sqlite.query_with_limit);
+        self.print_row(
+            "Query with LIMIT 100",
+            self.aurora.query_with_limit,
+            self.sqlite.query_with_limit,
+        );
 
-        self.print_row("Update (10,000 docs)",
-            self.aurora.update, self.sqlite.update);
+        self.print_row(
+            "Update (10,000 docs)",
+            self.aurora.update,
+            self.sqlite.update,
+        );
 
-        self.print_row("Delete (10,000 docs)",
-            self.aurora.delete, self.sqlite.delete);
+        self.print_row(
+            "Delete (10,000 docs)",
+            self.aurora.delete,
+            self.sqlite.delete,
+        );
 
-        self.print_row("Transaction (1,000 ops)",
-            self.aurora.transaction, self.sqlite.transaction);
+        self.print_row(
+            "Transaction (1,000 ops)",
+            self.aurora.transaction,
+            self.sqlite.transaction,
+        );
 
         println!("╚═══════════════════════════════════════════════════════════════════════╝");
 
@@ -86,16 +110,25 @@ impl BenchmarkResults {
         println!("   Insert throughput:");
         println!("     Aurora: {:.0} docs/sec", aurora_insert_throughput);
         println!("     SQLite: {:.0} docs/sec", sqlite_insert_throughput);
-        println!("     Difference: {:.1}x", aurora_insert_throughput / sqlite_insert_throughput);
+        println!(
+            "     Difference: {:.1}x",
+            aurora_insert_throughput / sqlite_insert_throughput
+        );
     }
 
     fn print_row(&self, name: &str, aurora_time: Duration, sqlite_time: Duration) {
-        let winner = if aurora_time < sqlite_time { "Aurora" } else { "SQLite" };
+        let winner = if aurora_time < sqlite_time {
+            "Aurora"
+        } else {
+            "SQLite"
+        };
         let aurora_str = format!("{:.3}s", aurora_time.as_secs_f64());
         let sqlite_str = format!("{:.3}s", sqlite_time.as_secs_f64());
 
-        println!("║ {:<30}│ {:>12} │ {:>12} │ {:>7} ║",
-            name, aurora_str, sqlite_str, winner);
+        println!(
+            "║ {:<30}│ {:>12} │ {:>12} │ {:>7} ║",
+            name, aurora_str, sqlite_str, winner
+        );
     }
 
     fn count_wins(&self, aurora: bool) -> usize {
@@ -154,25 +187,36 @@ async fn run_aurora_benchmarks() -> TestResults {
     };
     let db = Aurora::with_config(config).unwrap();
 
-    db.new_collection("users", vec![
-        ("name", aurora_db::types::FieldType::String, false),
-        ("age", aurora_db::types::FieldType::Int, false),
-        ("email", aurora_db::types::FieldType::String, false),
-        ("score", aurora_db::types::FieldType::Int, false),
-    ]).unwrap();
+    db.new_collection(
+        "users",
+        vec![
+            ("name", aurora_db::types::FieldType::String, false),
+            ("age", aurora_db::types::FieldType::Int, false),
+            ("email", aurora_db::types::FieldType::String, false),
+            ("score", aurora_db::types::FieldType::Int, false),
+        ],
+    )
+    .await
+    .unwrap();
 
     // Test 1: Single inserts
     println!("  [1/8] Single inserts...");
     let single_insert = time_operation_async(|| async {
         for i in 0..1000 {
-            let _ = db.insert_into("users", vec![
-                ("name", Value::String(format!("User {}", i))),
-                ("age", Value::Int((20 + i % 50) as i64)),
-                ("email", Value::String(format!("user{}@example.com", i))),
-                ("score", Value::Int((i * 10) as i64)),
-            ]).await;
+            let _ = db
+                .insert_into(
+                    "users",
+                    vec![
+                        ("name", Value::String(format!("User {}", i))),
+                        ("age", Value::Int((20 + i % 50) as i64)),
+                        ("email", Value::String(format!("user{}@example.com", i))),
+                        ("score", Value::Int((i * 10) as i64)),
+                    ],
+                )
+                .await;
         }
-    }).await;
+    })
+    .await;
 
     // Test 2: Batch insert
     println!("  [2/8] Batch insert...");
@@ -182,23 +226,29 @@ async fn run_aurora_benchmarks() -> TestResults {
                 let mut map = HashMap::new();
                 map.insert("name".to_string(), Value::String(format!("User {}", i)));
                 map.insert("age".to_string(), Value::Int((20 + i % 50) as i64));
-                map.insert("email".to_string(), Value::String(format!("user{}@example.com", i)));
+                map.insert(
+                    "email".to_string(),
+                    Value::String(format!("user{}@example.com", i)),
+                );
                 map.insert("score".to_string(), Value::Int((i * 10) as i64));
                 map
             })
             .collect();
 
         let _ = db.batch_insert("users", docs).await;
-    }).await;
+    })
+    .await;
 
     // Test 3: Query without index
     println!("  [3/8] Query without index...");
     let query_no_index = time_operation_async(|| async {
-        let _ = db.query("users")
+        let _ = db
+            .query("users")
             .filter(|f| f.gt("score", Value::Int(500000)))
             .collect()
             .await;
-    }).await;
+    })
+    .await;
 
     // Create index
     db.create_index("users", "score").await.unwrap();
@@ -206,53 +256,60 @@ async fn run_aurora_benchmarks() -> TestResults {
     // Test 4: Query with index
     println!("  [4/8] Query with index...");
     let query_with_index = time_operation_async(|| async {
-        let _ = db.query("users")
+        let _ = db
+            .query("users")
             .filter(|f| f.gt("score", Value::Int(500000)))
             .collect()
             .await;
-    }).await;
+    })
+    .await;
 
     // Test 5: Query with LIMIT (Aurora's early termination advantage)
     println!("  [5/8] Query with LIMIT 100...");
     let query_with_limit = time_operation_async(|| async {
-        let _ = db.query("users")
+        let _ = db
+            .query("users")
             .filter(|f| f.gt("score", Value::Int(500000)))
             .limit(100)
             .collect()
             .await;
-    }).await;
+    })
+    .await;
 
     // Test 6: Update
     println!("  [6/8] Update operations...");
     let update = time_operation_async(|| async {
         for i in 0..1000 {
-            let docs = db.query("users")
+            let docs = db
+                .query("users")
                 .filter(|f| f.eq("score", Value::Int((i * 10) as i64)))
                 .collect()
                 .await
                 .unwrap();
 
             if let Some(doc) = docs.first() {
-                let _ = db.update_document("users", &doc.id, vec![
-                    ("score", Value::Int((i * 10 + 5) as i64)),
-                ]).await;
+                let _ = db
+                    .update_document(
+                        "users",
+                        &doc.id,
+                        vec![("score", Value::Int((i * 10 + 5) as i64))],
+                    )
+                    .await;
             }
         }
-    }).await;
+    })
+    .await;
 
     // Test 7: Delete
     println!("  [7/8] Delete operations...");
     let delete = time_operation_async(|| async {
-        let docs = db.query("users")
-            .limit(1000)
-            .collect()
-            .await
-            .unwrap();
+        let docs = db.query("users").limit(1000).collect().await.unwrap();
 
         for doc in docs {
             let _ = db.delete(&format!("users:{}", doc.id)).await;
         }
-    }).await;
+    })
+    .await;
 
     // Test 8: Transaction
     println!("  [8/8] Transaction operations...");
@@ -260,16 +317,22 @@ async fn run_aurora_benchmarks() -> TestResults {
         for _ in 0..10 {
             let tx_id = db.begin_transaction();
             for i in 0..100 {
-                let _ = db.insert_into("users", vec![
-                    ("name", Value::String(format!("TX User {}", i))),
-                    ("age", Value::Int(25)),
-                    ("email", Value::String(format!("tx{}@example.com", i))),
-                    ("score", Value::Int(100)),
-                ]).await;
+                let _ = db
+                    .insert_into(
+                        "users",
+                        vec![
+                            ("name", Value::String(format!("TX User {}", i))),
+                            ("age", Value::Int(25)),
+                            ("email", Value::String(format!("tx{}@example.com", i))),
+                            ("score", Value::Int(100)),
+                        ],
+                    )
+                    .await;
             }
             let _ = db.commit_transaction(tx_id);
         }
-    }).await;
+    })
+    .await;
 
     println!("  ✅ Aurora benchmarks complete\n");
 
@@ -301,7 +364,8 @@ fn run_sqlite_benchmarks() -> TestResults {
             score INTEGER
         )",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Test 1: Single inserts
     println!("  [1/8] Single inserts...");
@@ -309,8 +373,14 @@ fn run_sqlite_benchmarks() -> TestResults {
         for i in 0..1000 {
             conn.execute(
                 "INSERT INTO users (name, age, email, score) VALUES (?1, ?2, ?3, ?4)",
-                params![format!("User {}", i), 20 + (i % 50), format!("user{}@example.com", i), i * 10],
-            ).unwrap();
+                params![
+                    format!("User {}", i),
+                    20 + (i % 50),
+                    format!("user{}@example.com", i),
+                    i * 10
+                ],
+            )
+            .unwrap();
         }
     });
 
@@ -321,8 +391,14 @@ fn run_sqlite_benchmarks() -> TestResults {
         for i in 0..NUM_DOCS {
             conn.execute(
                 "INSERT INTO users (name, age, email, score) VALUES (?1, ?2, ?3, ?4)",
-                params![format!("User {}", i), 20 + (i % 50), format!("user{}@example.com", i), i * 10],
-            ).unwrap();
+                params![
+                    format!("User {}", i),
+                    20 + (i % 50),
+                    format!("user{}@example.com", i),
+                    i * 10
+                ],
+            )
+            .unwrap();
         }
         tx.commit().unwrap();
     });
@@ -330,24 +406,31 @@ fn run_sqlite_benchmarks() -> TestResults {
     // Test 3: Query without index
     println!("  [3/8] Query without index...");
     let query_no_index = time_operation(|| {
-        let mut stmt = conn.prepare("SELECT * FROM users WHERE score > 500000").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT * FROM users WHERE score > 500000")
+            .unwrap();
         let _: Vec<_> = stmt.query_map([], |_row| Ok(())).unwrap().collect();
     });
 
     // Create index
-    conn.execute("CREATE INDEX idx_score ON users(score)", []).unwrap();
+    conn.execute("CREATE INDEX idx_score ON users(score)", [])
+        .unwrap();
 
     // Test 4: Query with index
     println!("  [4/8] Query with index...");
     let query_with_index = time_operation(|| {
-        let mut stmt = conn.prepare("SELECT * FROM users WHERE score > 500000").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT * FROM users WHERE score > 500000")
+            .unwrap();
         let _: Vec<_> = stmt.query_map([], |_row| Ok(())).unwrap().collect();
     });
 
     // Test 5: Query with LIMIT
     println!("  [5/8] Query with LIMIT 100...");
     let query_with_limit = time_operation(|| {
-        let mut stmt = conn.prepare("SELECT * FROM users WHERE score > 500000 LIMIT 100").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT * FROM users WHERE score > 500000 LIMIT 100")
+            .unwrap();
         let _: Vec<_> = stmt.query_map([], |_row| Ok(())).unwrap().collect();
     });
 
@@ -358,14 +441,16 @@ fn run_sqlite_benchmarks() -> TestResults {
             conn.execute(
                 "UPDATE users SET score = ?1 WHERE score = ?2",
                 params![i * 10 + 5, i * 10],
-            ).unwrap();
+            )
+            .unwrap();
         }
     });
 
     // Test 7: Delete
     println!("  [7/8] Delete operations...");
     let delete = time_operation(|| {
-        conn.execute("DELETE FROM users WHERE id <= 1000", []).unwrap();
+        conn.execute("DELETE FROM users WHERE id <= 1000", [])
+            .unwrap();
     });
 
     // Test 8: Transaction
@@ -376,8 +461,14 @@ fn run_sqlite_benchmarks() -> TestResults {
             for i in 0..100 {
                 conn.execute(
                     "INSERT INTO users (name, age, email, score) VALUES (?1, ?2, ?3, ?4)",
-                    params![format!("TX User {}", i), 25, format!("tx{}@example.com", i), 100],
-                ).unwrap();
+                    params![
+                        format!("TX User {}", i),
+                        25,
+                        format!("tx{}@example.com", i),
+                        100
+                    ],
+                )
+                .unwrap();
             }
             tx.commit().unwrap();
         }

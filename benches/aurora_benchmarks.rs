@@ -1,24 +1,27 @@
-use aurora_db::{Aurora, AuroraError, Document, Result};
+use aurora_db::computed::{ComputedExpression, ComputedFields}; // Imports for computed fields
+use aurora_db::error::ErrorCode;
+use aurora_db::{Aurora, Document, Result};
 use aurora_db::{FieldType, Value};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempDir;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
-use tempfile::TempDir;
 
 const BULK_SIZE: usize = 100;
 
 fn setup() -> Result<(Aurora, TempDir)> {
-    let temp_dir = tempfile::tempdir()
-        .map_err(|e| AuroraError::InvalidOperation(format!("Failed to create temp dir: {}", e)))?;
+    let temp_dir = tempfile::tempdir().map_err(|e| {
+        aurora_db::AqlError::invalid_operation(format!("Failed to create temp dir: {}", e))
+    })?;
     let db_path = temp_dir.path().join("bench.db");
 
     // Configure for benchmarking: disable async features for consistent measurements
     let mut config = aurora_db::AuroraConfig::default();
     config.db_path = db_path;
     config.enable_write_buffering = false; // Synchronous writes for accurate benchmarking
-    config.enable_wal = false;              // Disable WAL for pure performance measurement
+    config.enable_wal = false; // Disable WAL for pure performance measurement
 
     let db = Aurora::with_config(config)?;
     Ok((db, temp_dir))
@@ -26,17 +29,21 @@ fn setup() -> Result<(Aurora, TempDir)> {
 
 fn bench_basic_operations(c: &mut Criterion) {
     let (db, _temp_dir) = setup().unwrap();
+    let rt = Runtime::new().unwrap();
     let mut group = c.benchmark_group("basic_operations");
     group.measurement_time(Duration::from_secs(5));
 
     group.bench_function("single_put", |b| {
         b.iter(|| {
-            db.put(
-                black_box("test_key".to_string()),
-                black_box(b"test_value".to_vec()),
-                None,
-            )
-            .unwrap()
+            rt.block_on(async {
+                db.put(
+                    black_box("test_key".to_string()),
+                    black_box(b"test_value".to_vec()),
+                    None,
+                )
+                .await
+                .unwrap()
+            })
         })
     });
 
@@ -46,14 +53,17 @@ fn bench_basic_operations(c: &mut Criterion) {
 
     group.bench_function("bulk_put_100", |b| {
         b.iter(|| {
-            for i in 0..BULK_SIZE {
-                db.put(
-                    format!("bulk_key_{}", i),
-                    format!("bulk_value_{}", i).into_bytes(),
-                    None,
-                )
-                .unwrap();
-            }
+            rt.block_on(async {
+                for i in 0..BULK_SIZE {
+                    db.put(
+                        format!("bulk_key_{}", i),
+                        format!("bulk_value_{}", i).into_bytes(),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                }
+            })
         })
     });
 
@@ -67,12 +77,15 @@ fn bench_basic_operations(c: &mut Criterion) {
 
     group.bench_function("bulk_put_get_mixed_100", |b| {
         b.iter(|| {
-            for i in 0..BULK_SIZE {
-                let key = format!("mixed_key_{}", i);
-                db.put(key.clone(), format!("mixed_value_{}", i).into_bytes(), None)
-                    .unwrap();
-                db.get(&key).unwrap();
-            }
+            rt.block_on(async {
+                for i in 0..BULK_SIZE {
+                    let key = format!("mixed_key_{}", i);
+                    db.put(key.clone(), format!("mixed_value_{}", i).into_bytes(), None)
+                        .await
+                        .unwrap();
+                    db.get(&key).unwrap();
+                }
+            })
         })
     });
 
@@ -81,19 +94,22 @@ fn bench_basic_operations(c: &mut Criterion) {
 
 fn bench_collection_operations(c: &mut Criterion) {
     let (db, _temp_dir) = setup().unwrap();
-    let rt = Runtime::new().unwrap(); // Create runtime once, not per iteration
+    let rt = Runtime::new().unwrap(); // Create runtime once
     let mut group = c.benchmark_group("collection_operations");
     group.measurement_time(Duration::from_secs(5));
 
-    db.new_collection(
-        "users",
-        vec![
-            ("name", FieldType::String, false),
-            ("id", FieldType::Uuid, true),
-            ("age", FieldType::Int, false),
-        ],
-    )
-    .unwrap();
+    rt.block_on(async {
+        db.new_collection(
+            "users",
+            vec![
+                ("name", FieldType::String, false),
+                ("id", FieldType::Uuid, true),
+                ("age", FieldType::Int, false),
+            ],
+        )
+        .await
+        .unwrap();
+    });
 
     group.bench_function("single_insert", |b| {
         b.iter(|| {
@@ -138,6 +154,7 @@ fn bench_collection_operations(c: &mut Criterion) {
 
 fn bench_blob_operations(c: &mut Criterion) {
     let (db, _temp_dir) = setup().unwrap();
+    let rt = Runtime::new().unwrap(); // Create runtime once
     let mut group = c.benchmark_group("blob_operations");
     group.measurement_time(Duration::from_secs(5));
 
@@ -148,52 +165,64 @@ fn bench_blob_operations(c: &mut Criterion) {
 
     group.bench_function("bulk_store_small_blobs_100", |b| {
         b.iter(|| {
-            for _ in 0..BULK_SIZE {
-                db.put(
-                    format!("small_blob:{}", Uuid::new_v4()),
-                    small_blob.clone(),
-                    None,
-                )
-                .unwrap();
-            }
+            rt.block_on(async {
+                for _ in 0..BULK_SIZE {
+                    db.put(
+                        format!("small_blob:{}", Uuid::new_v4()),
+                        small_blob.clone(),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                }
+            })
         })
     });
 
     group.bench_function("bulk_store_medium_blobs_10", |b| {
         b.iter(|| {
-            for _ in 0..5 {
-                db.put(
-                    format!("medium_blob:{}", Uuid::new_v4()),
-                    medium_blob.clone(),
-                    None,
-                )
-                .unwrap();
-            }
+            rt.block_on(async {
+                for _ in 0..5 {
+                    db.put(
+                        format!("medium_blob:{}", Uuid::new_v4()),
+                        medium_blob.clone(),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                }
+            })
         })
     });
 
     group.bench_function("store_large_blob", |b| {
         b.iter(|| {
-            db.put(
-                format!("large_blob:{}", Uuid::new_v4()),
-                large_blob.clone(),
-                None,
-            )
-            .unwrap()
+            rt.block_on(async {
+                db.put(
+                    format!("large_blob:{}", Uuid::new_v4()),
+                    large_blob.clone(),
+                    None,
+                )
+                .await
+                .unwrap()
+            })
         })
     });
 
     group.bench_function("store_huge_blob_should_fail", |b| {
         b.iter(|| {
-            let result = db.put(
-                format!("huge_blob:{}", Uuid::new_v4()),
-                huge_blob.clone(),
-                None,
-            );
+            let result = rt.block_on(async {
+                db.put(
+                    format!("huge_blob:{}", Uuid::new_v4()),
+                    huge_blob.clone(),
+                    None,
+                )
+                .await
+            });
             assert!(result.is_err(), "Expected error for blob > 50MB");
             assert!(matches!(
-                result.unwrap_err(),
-                AuroraError::InvalidOperation(_)
+                result.unwrap_err().code,
+                ErrorCode::InvalidOperation
             ));
         })
     });
@@ -218,6 +247,7 @@ fn bench_index_operations(c: &mut Criterion) {
                 ("in_stock", FieldType::Bool, false),
             ],
         )
+        .await
         .unwrap();
 
         db.create_index("products", "price").await.unwrap();
@@ -323,6 +353,7 @@ fn bench_complex_queries(c: &mut Criterion) {
                 ("items", FieldType::Int, false),
             ],
         )
+        .await
         .unwrap();
 
         db.create_index("orders", "customer_id").await.unwrap();
@@ -431,6 +462,7 @@ fn bench_cache_operations(c: &mut Criterion) {
                 ("data", FieldType::String, false),
             ],
         )
+        .await
         .unwrap();
 
         for i in 0..1000 {
@@ -498,6 +530,7 @@ fn bench_pubsub_operations(c: &mut Criterion) {
                 ("data", FieldType::String, false),
             ],
         )
+        .await
         .unwrap();
     });
 
@@ -585,9 +618,7 @@ fn bench_workers(c: &mut Criterion) {
 }
 
 fn bench_computed_fields(c: &mut Criterion) {
-    use aurora_db::computed::{ComputedExpression, ComputedFields};
-    use aurora_db::types::Document;
-
+    let (_db, _temp_dir) = setup().unwrap();
     let mut group = c.benchmark_group("computed_fields");
     group.measurement_time(Duration::from_secs(5));
 
@@ -595,11 +626,16 @@ fn bench_computed_fields(c: &mut Criterion) {
         let expr =
             ComputedExpression::Concat(vec!["first_name".to_string(), "last_name".to_string()]);
 
-        let mut doc = Document::new();
-        doc.data
-            .insert("first_name".to_string(), Value::String("John".to_string()));
-        doc.data
-            .insert("last_name".to_string(), Value::String("Doe".to_string()));
+        let doc = Document {
+            id: "bench-1".to_string(),
+            data: [
+                ("first_name".to_string(), Value::String("John".to_string())),
+                ("last_name".to_string(), Value::String("Doe".to_string())),
+            ]
+            .iter()
+            .cloned()
+            .collect(),
+        };
 
         b.iter(|| expr.evaluate(&doc))
     });
@@ -607,10 +643,17 @@ fn bench_computed_fields(c: &mut Criterion) {
     group.bench_function("sum_expression", |b| {
         let expr = ComputedExpression::Sum(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
 
-        let mut doc = Document::new();
-        doc.data.insert("a".to_string(), Value::Int(10 as i64));
-        doc.data.insert("b".to_string(), Value::Int(20 as i64));
-        doc.data.insert("c".to_string(), Value::Int(30 as i64));
+        let doc = Document {
+            id: "bench-2".to_string(),
+            data: [
+                ("a".to_string(), Value::Int(10 as i64)),
+                ("b".to_string(), Value::Int(20 as i64)),
+                ("c".to_string(), Value::Int(30 as i64)),
+            ]
+            .iter()
+            .cloned()
+            .collect(),
+        };
 
         b.iter(|| expr.evaluate(&doc))
     });
@@ -628,13 +671,18 @@ fn bench_computed_fields(c: &mut Criterion) {
             ComputedExpression::Sum(vec!["score1".to_string(), "score2".to_string()]),
         );
 
-        let mut doc = Document::new();
-        doc.data
-            .insert("first_name".to_string(), Value::String("Jane".to_string()));
-        doc.data
-            .insert("last_name".to_string(), Value::String("Smith".to_string()));
-        doc.data.insert("score1".to_string(), Value::Int(85 as i64));
-        doc.data.insert("score2".to_string(), Value::Int(92 as i64));
+        let doc = Document {
+            id: "bench-3".to_string(),
+            data: [
+                ("first_name".to_string(), Value::String("Jane".to_string())),
+                ("last_name".to_string(), Value::String("Smith".to_string())),
+                ("score1".to_string(), Value::Int(85 as i64)),
+                ("score2".to_string(), Value::Int(92 as i64)),
+            ]
+            .iter()
+            .cloned()
+            .collect(),
+        };
 
         b.iter(|| {
             let mut test_doc = doc.clone();
@@ -653,14 +701,17 @@ fn bench_write_performance(c: &mut Criterion) {
         let (db, _temp_dir) = setup().unwrap();
         let rt = Runtime::new().unwrap(); // Create runtime once
 
-        db.new_collection(
-            "write_test",
-            vec![
-                ("id", FieldType::String, true),
-                ("data", FieldType::String, false),
-            ],
-        )
-        .unwrap();
+        rt.block_on(async {
+            db.new_collection(
+                "write_test",
+                vec![
+                    ("id", FieldType::String, true),
+                    ("data", FieldType::String, false),
+                ],
+            )
+            .await
+            .unwrap();
+        });
 
         b.iter(|| {
             rt.block_on(async {
@@ -681,36 +732,43 @@ fn bench_write_performance(c: &mut Criterion) {
 
     group.bench_function("batch_write_100", |b| {
         let (db, _temp_dir) = setup().unwrap();
-        db.new_collection(
-            "batch_coll",
-            vec![
-                ("id", FieldType::String, true),
-                ("data", FieldType::String, false),
-            ],
-        )
-        .unwrap();
+        let rt = Runtime::new().unwrap();
+
+        rt.block_on(async {
+            db.new_collection(
+                "batch_coll",
+                vec![
+                    ("id", FieldType::String, true),
+                    ("data", FieldType::String, false),
+                ],
+            )
+            .await
+            .unwrap();
+        });
 
         b.iter(|| {
-            let pairs: Vec<(String, Vec<u8>)> = (0..100)
-                .map(|i| {
-                    let doc_id = Uuid::new_v4().to_string();
-                    let doc = Document {
-                        id: doc_id.clone(),
-                        data: [
-                            ("id".to_string(), Value::String(doc_id.clone())),
-                            ("data".to_string(), Value::String(format!("data-{}", i))),
-                        ]
-                        .iter()
-                        .cloned()
-                        .collect(),
-                    };
-                    let key = format!("batch_coll:{}", doc.id);
-                    let value = serde_json::to_vec(&doc).unwrap();
-                    (key, value)
-                })
-                .collect();
+            rt.block_on(async {
+                let pairs: Vec<(String, Vec<u8>)> = (0..100)
+                    .map(|i| {
+                        let doc_id = Uuid::new_v4().to_string();
+                        let doc = Document {
+                            id: doc_id.clone(),
+                            data: [
+                                ("id".to_string(), Value::String(doc_id.clone())),
+                                ("data".to_string(), Value::String(format!("data-{}", i))),
+                            ]
+                            .iter()
+                            .cloned()
+                            .collect(),
+                        };
+                        let key = format!("batch_coll:{}", doc.id);
+                        let value = serde_json::to_vec(&doc).unwrap();
+                        (key, value)
+                    })
+                    .collect();
 
-            db.batch_write(pairs).unwrap()
+                db.batch_write(pairs).await.unwrap()
+            })
         })
     });
 
