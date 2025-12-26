@@ -2,6 +2,7 @@ use super::events::{ChangeEvent, EventFilter};
 use tokio::sync::broadcast;
 
 /// Listener for change events on a collection
+#[derive(Debug)]
 pub struct ChangeListener {
     collection: String,
     receiver: broadcast::Receiver<ChangeEvent>,
