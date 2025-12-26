@@ -1,20 +1,14 @@
-// ============================================================================
-// Aurora Query Language (AQL) - Complete Grammar
-// ============================================================================
-// This grammar defines the complete syntax for AQL including current
-// features and all planned future enhancements.
-// ============================================================================
 
-// ============================================================================
+// Aurora Query Language (AURQL)
+// This grammar defines the complete syntax for AURQL including current
+// features and all planned future enhancements.
+
 // WHITESPACE & COMMENTS
-// ============================================================================
 
 WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
 COMMENT = _{ "#" ~ (!"\n" ~ ANY)* ~ "\n"? }
 
-// ============================================================================
 // ENTRY POINT
-// ============================================================================
 
 document = { SOI ~ operation+ ~ EOI }
 
@@ -22,12 +16,11 @@ operation = {
     query_operation |
     mutation_operation |
     subscription_operation |
-    schema_definition
+    schema_operation |
+    migration_operation
 }
 
-// ============================================================================
 // QUERY OPERATIONS
-// ============================================================================
 
 query_operation = {
     "query" ~ identifier? ~ variable_definitions? ~ directives? ~ "{" ~ selection_set ~ "}"
@@ -50,9 +43,7 @@ sub_selection = {
     "{" ~ selection_set ~ "}"
 }
 
-// ============================================================================
 // MUTATION OPERATIONS
-// ============================================================================
 
 mutation_operation = {
     "mutation" ~ identifier? ~ variable_definitions? ~ directives? ~ "{" ~ mutation_set ~ "}"
@@ -162,9 +153,7 @@ transaction_block = {
     "transaction" ~ "{" ~ mutation_set ~ "}"
 }
 
-// ============================================================================
 // SUBSCRIPTION OPERATIONS
-// ============================================================================
 
 subscription_operation = {
     "subscription" ~ identifier? ~ variable_definitions? ~ directives? ~ "{" ~ subscription_set ~ "}"
@@ -178,9 +167,7 @@ subscription_field = {
     alias_name? ~ identifier ~ arguments? ~ directives? ~ sub_selection
 }
 
-// ============================================================================
 // ARGUMENTS
-// ============================================================================
 
 arguments = {
     "(" ~ argument_list ~ ")"
@@ -215,9 +202,7 @@ sort_direction = {
     "ASC" | "DESC"
 }
 
-// ============================================================================
 // FILTER SYSTEM
-// ============================================================================
 
 filter_object = {
     "{" ~ filter_field_list? ~ "}"
@@ -286,8 +271,7 @@ filter_operator = {
     matches_operator |
     is_null_operator |
     is_not_null_operator |
-    near_operator |
-    within_operator |
+    is_not_null_operator |
     increment_operator |
     decrement_operator |
     push_operator |
@@ -319,22 +303,7 @@ matches_operator = { "matches" ~ ":" ~ value }
 is_null_operator = { "isNull" ~ ":" ~ boolean }
 is_not_null_operator = { "isNotNull" ~ ":" ~ boolean }
 
-// Geospatial Operators
-near_operator = {
-    "near" ~ ":" ~ "{" ~ geo_near_args ~ "}"
-}
-
-geo_near_args = {
-    "coordinates" ~ ":" ~ array ~ "," ~ "maxDistance" ~ ":" ~ number
-}
-
-within_operator = {
-    "within" ~ ":" ~ "{" ~ geo_within_args ~ "}"
-}
-
-geo_within_args = {
-    "type" ~ ":" ~ string ~ "," ~ "coordinates" ~ ":" ~ array
-}
+// Geospatial Operators (Removed)
 
 // Update Field Modifiers
 increment_operator = { "increment" ~ ":" ~ number }
@@ -343,9 +312,7 @@ push_operator = { "push" ~ ":" ~ value }
 pull_operator = { "pull" ~ ":" ~ value }
 add_to_set_operator = { "addToSet" ~ ":" ~ value }
 
-// ============================================================================
 // COMPUTED FIELDS
-// ============================================================================
 
 computed_field = {
     identifier ~ ":" ~ computed_expression
@@ -356,8 +323,7 @@ computed_expression = {
     function_call |
     pipe_expression |
     sql_expression |
-    aggregate_function |
-    geo_function
+    aggregate_function
 }
 
 // Template String Syntax
@@ -412,9 +378,6 @@ function_name = {
     "now" | "dateAdd" | "dateDiff" | "year" | "month" | "day" |
     "hour" | "minute" | "second" |
     
-    // Geospatial functions
-    "geoDistance" | "point" |
-    
     // Type conversion
     "toString" | "toInt" | "toFloat" | "toBoolean"
 }
@@ -451,18 +414,9 @@ aggregate_args = {
     "fields" ~ ":" ~ array
 }
 
-// Geospatial Functions
-geo_function = {
-    geo_function_name ~ "(" ~ function_args ~ ")"
-}
+// Geospatial Functions (Removed)
 
-geo_function_name = {
-    "geoDistance" | "point" | "polygon" | "lineString"
-}
-
-// ============================================================================
 // EXPRESSIONS
-// ============================================================================
 
 expression = {
     ternary_expression
@@ -512,9 +466,7 @@ field_access = {
     identifier ~ ("." ~ (identifier | "*"))*
 }
 
-// ============================================================================
 // VARIABLES
-// ============================================================================
 
 variable_definitions = {
     "(" ~ variable_definition ~ ("," ~ variable_definition)* ~ ")"
@@ -534,7 +486,7 @@ type_annotation = {
 
 type_name = {
     "String" | "Int" | "Float" | "Boolean" | "ID" | "Uuid" |
-    "DateTime" | "Date" | "Time" | "JSON" | "Email" | "URL" | "PhoneNumber" |
+    "DateTime" | "Date" | "Time" | "JSON" | "Email" | "URL" | "PhoneNumber" | "Any" |
     array_type | custom_scalar
 }
 
@@ -554,9 +506,7 @@ default_value = {
     "=" ~ value
 }
 
-// ============================================================================
 // DIRECTIVES
-// ============================================================================
 
 directives = {
     directive+
@@ -574,9 +524,7 @@ directive_name = {
     identifier
 }
 
-// ============================================================================
 // SPECIAL QUERIES
-// ============================================================================
 
 // Aggregation
 aggregate_selection = {
@@ -714,9 +662,7 @@ downsample_args = {
     "aggregation" ~ ":" ~ string
 }
 
-// ============================================================================
 // FRAGMENTS
-// ============================================================================
 
 fragment_definition = {
     "fragment" ~ identifier ~ "on" ~ identifier ~ "{" ~ selection_set ~ "}"
@@ -730,25 +676,80 @@ inline_fragment = {
     "..." ~ "on" ~ identifier ~ "{" ~ selection_set ~ "}"
 }
 
-// ============================================================================
-// SCHEMA DEFINITION
-// ============================================================================
+// SCHEMA OPERATIONS
+
+schema_operation = {
+    "schema" ~ "{" ~ schema_definition+ ~ "}"
+}
 
 schema_definition = {
-    "schema" ~ "{" ~ collection_definition+ ~ "}"
+    define_collection |
+    alter_collection |
+    drop_collection
 }
 
-collection_definition = {
-    directives? ~ "collection" ~ identifier ~ "{" ~ field_definition+ ~ "}"
+define_collection = {
+    "define" ~ "collection" ~ identifier ~
+    ("if" ~ "not" ~ "exists")? ~
+    "{" ~ field_definition+ ~ "}"
 }
+
+alter_collection = {
+    "alter" ~ "collection" ~ identifier ~ "{" ~ alter_action+ ~ "}"
+}
+
+alter_action = {
+    add_action |
+    drop_action |
+    rename_action |
+    modify_action
+}
+
+add_action = { "add" ~ field_definition }
+drop_action = { "drop" ~ identifier }
+rename_action = { "rename" ~ identifier ~ "to" ~ identifier }
+modify_action = { "modify" ~ field_definition }
+
+drop_collection = {
+    "drop" ~ "collection" ~ identifier ~ ("if" ~ "exists")?
+}
+
+// MIGRATION OPERATIONS
+
+migration_operation = {
+    "migrate" ~ "{" ~ migration_step+ ~ "}"
+}
+
+migration_step = {
+    migration_version ~ ":" ~ "{" ~ migration_action+ ~ "}"
+}
+
+migration_version = {
+    string
+}
+
+migration_action = {
+    define_collection |
+    alter_collection |
+    drop_collection |
+    data_migration
+}
+
+data_migration = {
+    "migrate" ~ "data" ~ "in" ~ identifier ~ "{" ~ data_transform+ ~ "}"
+}
+
+data_transform = {
+    "set" ~ identifier ~ "=" ~ expression ~ ("where" ~ filter_object)?
+}
+
+// ENHANCED FIELD DEFINITIONS
 
 field_definition = {
     identifier ~ ":" ~ type_annotation ~ directives?
 }
 
-// ============================================================================
 // INTROSPECTION
-// ============================================================================
 
 introspection_query = {
     "__schema" ~ arguments? ~ "{" ~ introspection_fields ~ "}"
@@ -765,9 +766,7 @@ introspection_field = {
     identifier
 }
 
-// ============================================================================
 // VALUES & LITERALS
-// ============================================================================
 
 value = {
     object |
@@ -864,9 +863,7 @@ enum_value = {
     identifier
 }
 
-// ============================================================================
 // IDENTIFIERS
-// ============================================================================
 
 identifier = @{
     (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*
@@ -876,9 +873,7 @@ literal = {
     string | number | boolean | null
 }
 
-// ============================================================================
 // SPECIAL TOKENS
-// ============================================================================
 
 // Special field names
 special_field = {

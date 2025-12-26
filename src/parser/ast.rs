@@ -15,6 +15,7 @@ pub enum Operation {
     Mutation(Mutation),
     Subscription(Subscription),
     Schema(Schema),
+    Migration(Migration),
 }
 
 /// Query operation
@@ -47,18 +48,65 @@ pub struct Subscription {
     pub variables_values: HashMap<String, Value>,
 }
 
-/// Schema definition
 #[derive(Debug, Clone)]
 pub struct Schema {
-    pub collections: Vec<CollectionDef>,
+    pub operations: Vec<SchemaOp>,
 }
 
-/// Collection definition in schema
 #[derive(Debug, Clone)]
-pub struct CollectionDef {
-    pub name: String,
-    pub fields: Vec<FieldDef>,
-    pub directives: Vec<Directive>,
+pub enum SchemaOp {
+    DefineCollection {
+        name: String,
+        if_not_exists: bool,
+        fields: Vec<FieldDef>,
+        directives: Vec<Directive>,
+    },
+    AlterCollection {
+        name: String,
+        actions: Vec<AlterAction>,
+    },
+    DropCollection {
+        name: String,
+        if_exists: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum AlterAction {
+    AddField(FieldDef),
+    DropField(String),
+    RenameField { from: String, to: String },
+    ModifyField(FieldDef),
+}
+
+#[derive(Debug, Clone)]
+pub struct Migration {
+    pub steps: Vec<MigrationStep>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MigrationStep {
+    pub version: String,
+    pub actions: Vec<MigrationAction>,
+}
+
+#[derive(Debug, Clone)]
+pub enum MigrationAction {
+    Schema(SchemaOp),
+    DataMigration(DataMigration),
+}
+
+#[derive(Debug, Clone)]
+pub struct DataMigration {
+    pub collection: String,
+    pub transforms: Vec<DataTransform>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DataTransform {
+    pub field: String,
+    pub expression: String, // Rhai expression
+    pub filter: Option<Filter>,
 }
 
 /// Field definition in schema

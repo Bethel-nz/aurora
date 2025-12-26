@@ -178,6 +178,7 @@ pub fn validate_document<S: SchemaProvider>(
             ast::Operation::Mutation(mutation) => validate_mutation(mutation, &mut ctx),
             ast::Operation::Subscription(sub) => validate_subscription(sub, &mut ctx),
             ast::Operation::Schema(_) => {} // Schema definitions don't need validation
+            ast::Operation::Migration(_) => {}
         }
         ctx.pop_path();
     }
@@ -535,6 +536,7 @@ pub fn resolve_variables(
                 resolve_in_fields(&mut sub.selection_set, variables)?;
             }
             ast::Operation::Schema(_) => {}
+            ast::Operation::Migration(_) => {}
         }
     }
     Ok(())
