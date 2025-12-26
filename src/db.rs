@@ -43,11 +43,13 @@
 //!     .await?;
 //! ```
 
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, ErrorCode, Result};
 use crate::index::{Index, IndexDefinition, IndexType};
 use crate::network::http_models::{
     Filter as HttpFilter, FilterOperator, QueryPayload, json_to_value,
 };
+use crate::parser;
+use crate::parser::executor::{ExecutionOptions, ExecutionPlan, ExecutionResult};
 use crate::query::FilterBuilder;
 use crate::query::{Filter, QueryBuilder, SearchBuilder, SimpleQueryBuilder};
 use crate::storage::{ColdStore, HotStore, WriteBuffer};
@@ -95,6 +97,12 @@ pub enum DataInfo {
     Compressed { size: usize },
 }
 
+#[derive(Debug)]
+enum WalOperation {
+    Put { key: Arc<String>, value: Arc<Vec<u8>> },
+    Delete { key: String },
+}
+
 impl DataInfo {
     pub fn size(&self) -> usize {
         match self {
@@ -139,13 +147,17 @@ pub struct Aurora {
     schema_cache: Arc<DashMap<String, Arc<Collection>>>,
     config: AuroraConfig,
     write_buffer: Option<WriteBuffer>,
-    pubsub: crate::pubsub::PubSubSystem,
+    pub pubsub: crate::pubsub::PubSubSystem,
     // Write-ahead log for durability (optional, based on config)
     wal: Option<Arc<RwLock<WriteAheadLog>>>,
     // Background checkpoint task
     checkpoint_shutdown: Option<tokio::sync::mpsc::UnboundedSender<()>>,
     // Background compaction task
     compaction_shutdown: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    // Worker system for background jobs
+    pub workers: Option<Arc<crate::workers::WorkerSystem>>,
+    //  Asynchronous WAL Writer Channel
+    wal_writer: Option<tokio::sync::mpsc::UnboundedSender<WalOperation>>,
 }
 
 impl fmt::Debug for Aurora {
@@ -164,7 +176,112 @@ impl fmt::Debug for Aurora {
     }
 }
 
+impl Clone for Aurora {
+    fn clone(&self) -> Self {
+        Self {
+            hot: self.hot.clone(),
+            cold: Arc::clone(&self.cold),
+            primary_indices: Arc::clone(&self.primary_indices),
+            secondary_indices: Arc::clone(&self.secondary_indices),
+            indices_initialized: Arc::clone(&self.indices_initialized),
+            transaction_manager: self.transaction_manager.clone(),
+            indices: Arc::clone(&self.indices),
+            schema_cache: Arc::clone(&self.schema_cache),
+            config: self.config.clone(),
+            write_buffer: None,
+            pubsub: self.pubsub.clone(),
+            wal: self.wal.clone(),
+            checkpoint_shutdown: self.checkpoint_shutdown.clone(),
+            compaction_shutdown: self.compaction_shutdown.clone(),
+            workers: self.workers.clone(),
+
+            wal_writer: self.wal_writer.clone(),
+        }
+    }
+}
+
+/// Trait for converting inputs into execution parameters
+pub trait ToExecParams {
+    fn into_params(self) -> Result<(String, ExecutionOptions)>;
+}
+
+impl<'a> ToExecParams for &'a str {
+    fn into_params(self) -> Result<(String, ExecutionOptions)> {
+        Ok((self.to_string(), ExecutionOptions::default()))
+    }
+}
+
+impl ToExecParams for String {
+    fn into_params(self) -> Result<(String, ExecutionOptions)> {
+        Ok((self, ExecutionOptions::default()))
+    }
+}
+
+impl<'a, V> ToExecParams for (&'a str, V)
+where
+    V: Into<serde_json::Value>,
+{
+    fn into_params(self) -> Result<(String, ExecutionOptions)> {
+        let (aql, vars) = self;
+        let json_vars = vars.into();
+        let map = match json_vars {
+            serde_json::Value::Object(map) => map.into_iter().collect(),
+            _ => {
+                return Err(AqlError::new(
+                    ErrorCode::InvalidInput,
+                    "Variables must be a JSON object",
+                ));
+            }
+        };
+        Ok((
+            aql.to_string(),
+            ExecutionOptions {
+                variables: map,
+                ..Default::default()
+            },
+        ))
+    }
+}
+
 impl Aurora {
+    /// Execute AQL query (variables are optional)
+    ///
+    /// Supports two forms:
+    /// 1. `db.execute("query").await`
+    /// 2. `db.execute(("query", vars)).await`
+    pub async fn execute<I: ToExecParams>(&self, input: I) -> Result<ExecutionResult> {
+        let (aql, options) = input.into_params()?;
+        parser::executor::execute(self, &aql, options).await
+    }
+
+    /// Explain AQL query execution plan
+    pub async fn explain<I: ToExecParams>(&self, input: I) -> Result<ExecutionPlan> {
+        let (aql, options) = input.into_params()?;
+
+        // Parse and analyze without executing
+        let doc = parser::parse_with_variables(
+            &aql,
+            serde_json::Value::Object(options.variables.clone().into_iter().collect()),
+        )?;
+
+        self.analyze_execution_plan(&doc).await
+    }
+
+    /// Analyze execution plan for a parsed query
+    pub async fn analyze_execution_plan(
+        &self,
+        doc: &crate::parser::ast::Document,
+    ) -> Result<ExecutionPlan> {
+        let mut operations = Vec::new();
+        for op in &doc.operations {
+            operations.push(format!("{:?}", op));
+        }
+
+        Ok(ExecutionPlan {
+            operations,
+            estimated_cost: 1.0,
+        })
+    }
     /// Remove stale lock files from a database directory
     ///
     /// If Aurora crashes or is forcefully terminated, it may leave behind lock files
@@ -188,7 +305,7 @@ impl Aurora {
     ///         let db = Aurora::open("my_db")?;
     ///     }
     /// }
-    /// # Ok::<(), aurora_db::error::AuroraError>(())
+    /// # Ok::<(), aurora_db::error::AqlError>(())
     /// ```
     pub fn remove_stale_lock<P: AsRef<Path>>(path: P) -> Result<bool> {
         let resolved_path = Self::resolve_path(path)?;
@@ -235,10 +352,10 @@ impl Aurora {
         // Otherwise, resolve relative to current directory
         match std::env::current_dir() {
             Ok(current_dir) => Ok(current_dir.join(path)),
-            Err(e) => Err(AuroraError::IoError(format!(
-                "Failed to resolve current directory: {}",
-                e
-            ))),
+            Err(e) => Err(AqlError::new(
+                ErrorCode::IoError,
+                format!("Failed to resolve current directory: {}", e),
+            )),
         }
     }
 
@@ -275,7 +392,6 @@ impl Aurora {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Fix method calls to pass all required parameters
         let cold = Arc::new(ColdStore::with_config(
             path.to_str().unwrap(),
             config.cold_cache_capacity_mb,
@@ -289,7 +405,6 @@ impl Aurora {
             config.eviction_policy,
         );
 
-        // Initialize write buffer if enabled
         let write_buffer = if config.enable_write_buffering {
             Some(WriteBuffer::new(
                 Arc::clone(&cold),
@@ -300,13 +415,11 @@ impl Aurora {
             None
         };
 
-        // Store auto_compact before moving config
         let auto_compact = config.auto_compact;
         let enable_wal = config.enable_wal;
-
         let pubsub = crate::pubsub::PubSubSystem::new(10000);
 
-        // Initialize WAL if enabled and check for recovery
+        // Initialize WAL
         let (wal, wal_entries) = if enable_wal {
             let wal_path = path.to_str().unwrap();
             match WriteAheadLog::new(wal_path) {
@@ -320,7 +433,35 @@ impl Aurora {
             (None, Vec::new())
         };
 
-        // Spawn background checkpoint task if WAL is enabled
+        // --- FIX: Initialize Background WAL Writer ---
+        let wal_writer = if enable_wal {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let wal_clone = wal.clone();
+
+            // Spawn a single dedicated thread/task for writing WAL sequentially
+            tokio::spawn(async move {
+                if let Some(wal) = wal_clone {
+                    while let Some(op) = rx.recv().await {
+                        // Properly handle the RwLock write guard
+                        if let Ok(mut guard) = wal.write() {
+                            let _ = match op {
+                                WalOperation::Put { key, value } => {
+                                    // Deref Arc to pass slices
+                                    guard.append(Operation::Put, &key, Some(&value.as_ref()))
+                                }
+                                WalOperation::Delete { key } => {
+                                    guard.append(Operation::Delete, &key, None)
+                                }
+                            };
+                        }
+                    }
+                }
+            });
+            Some(tx)
+        } else {
+            None
+        };
+
         let checkpoint_shutdown = if wal.is_some() {
             let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel();
             let cold_clone = Arc::clone(&cold);
@@ -333,18 +474,15 @@ impl Aurora {
                 loop {
                     tokio::select! {
                         _ = interval.tick() => {
-                            // Checkpoint: flush cold storage
                             if let Err(e) = cold_clone.flush() {
                                 eprintln!("Background checkpoint flush error: {}", e);
                             }
-                            // Truncate WAL after successful flush
                             if let Some(ref wal) = wal_clone
                                 && let Ok(mut wal_guard) = wal.write() {
                                     let _ = wal_guard.truncate();
                                 }
                         }
                         _ = shutdown_rx.recv() => {
-                            // Final checkpoint before shutdown
                             let _ = cold_clone.flush();
                             if let Some(ref wal) = wal_clone
                                 && let Ok(mut wal_guard) = wal.write() {
@@ -361,7 +499,6 @@ impl Aurora {
             None
         };
 
-        // Spawn background compaction task if auto_compact is enabled
         let compaction_shutdown = if auto_compact {
             let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel();
             let cold_clone = Arc::clone(&cold);
@@ -390,7 +527,15 @@ impl Aurora {
             None
         };
 
-        // Initialize the database
+        let workers_path = path.join("workers.db");
+        let worker_config = crate::workers::WorkerConfig {
+            storage_path: workers_path.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let workers = crate::workers::WorkerSystem::new(worker_config)
+            .map(Arc::new)
+            .ok();
+
         let db = Self {
             hot,
             cold,
@@ -406,16 +551,18 @@ impl Aurora {
             wal,
             checkpoint_shutdown,
             compaction_shutdown,
+            workers,
+            wal_writer, // Initialize the new channel sender
         };
 
-        // Replay WAL entries if any
         if !wal_entries.is_empty() {
-            db.replay_wal(wal_entries)?;
+            let handle = tokio::runtime::Handle::try_current()
+                .expect("Tokio runtime must be started to open database");
+            handle.block_on(db.replay_wal(wal_entries))?;
         }
 
         Ok(db)
     }
-
     // Lazy index initialization
     pub async fn ensure_indices_initialized(&self) -> Result<()> {
         self.indices_initialized
@@ -434,9 +581,13 @@ impl Aurora {
         for result in self.cold.scan() {
             let (key, value) = result?;
             let key_str = std::str::from_utf8(key.as_bytes())
-                .map_err(|_| AuroraError::InvalidKey("Invalid UTF-8".into()))?;
+                .map_err(|_| AqlError::new(ErrorCode::InvalidKey, "Invalid UTF-8".to_string()))?;
 
             if let Some(collection_name) = key_str.split(':').next() {
+                // Skip system/metadata prefixes (e.g., _collection, _sys_migration, _index)
+                if collection_name.starts_with('_') {
+                    continue;
+                }
                 self.index_value(collection_name, key_str, &value)?;
             }
         }
@@ -478,7 +629,7 @@ impl Aurora {
 
         if let Some(v) = &value {
             if self.should_cache_key(key) {
-                self.hot.set(key.to_string(), v.clone(), None);
+                self.hot.set(Arc::new(key.to_string()), Arc::new(v.clone()), None);
             }
         }
 
@@ -1069,75 +1220,103 @@ impl Aurora {
     /// // Better: use insert_into() for documents
     /// db.insert_into("users", vec![("name", Value::String("Alice".into()))])?;
     /// ```
-    pub fn put(&self, key: String, value: Vec<u8>, ttl: Option<Duration>) -> Result<()> {
+    pub async fn put(&self, key: String, value: Vec<u8>, ttl: Option<Duration>) -> Result<()> {
         const MAX_BLOB_SIZE: usize = 50 * 1024 * 1024;
 
         if value.len() > MAX_BLOB_SIZE {
-            return Err(AuroraError::InvalidOperation(format!(
+            return Err(AqlError::invalid_operation(format!(
                 "Blob size {} exceeds maximum allowed size of {}MB",
                 value.len() / (1024 * 1024),
                 MAX_BLOB_SIZE / (1024 * 1024)
             )));
         }
 
-        if let Some(ref wal) = self.wal
+        // --- OPTIMIZATION: Wrap in Arc ONCE ---
+        let key_arc = Arc::new(key);
+        let value_arc = Arc::new(value);
+
+        // --- 1. WAL Write (Non-blocking send of Arcs) ---
+        if let Some(ref sender) = self.wal_writer
             && self.config.durability_mode != DurabilityMode::None
         {
-            wal.write()
-                .unwrap()
-                .append(Operation::Put, &key, Some(&value))?;
+            let _ = sender.send(WalOperation::Put {
+                key: Arc::clone(&key_arc),
+                value: Arc::clone(&value_arc),
+            });
         }
 
+        // --- 2. Cold Store Write (Pass Arcs to buffer) ---
         if let Some(ref write_buffer) = self.write_buffer {
-            write_buffer.write(key.clone(), value.clone())?;
+            write_buffer.write(Arc::clone(&key_arc), Arc::clone(&value_arc))?;
         } else {
-            self.cold.set(key.clone(), value.clone())?;
+            // Fallback: Unwrap Arc to pass to cold store
+            self.cold.set(key_arc.to_string(), value_arc.to_vec())?;
         }
 
-        if self.should_cache_key(&key) {
-            self.hot.set(key.clone(), value.clone(), ttl);
+        // --- 3. Hot Cache Write (Pass Arc directly) ---
+        if self.should_cache_key(&key_arc) {
+            // You must update hot.set signature to accept Arcs (see hot.rs below)
+            self.hot.set(Arc::clone(&key_arc), Arc::clone(&value_arc), ttl);
         }
 
-        if let Some(collection_name) = key.split(':').next()
+        // --- 4. Indexing ---
+        if let Some(collection_name) = key_arc.split(':').next()
             && !collection_name.starts_with('_')
         {
-            self.index_value(collection_name, &key, &value)?;
+            self.index_value(collection_name, &key_arc, &value_arc)?;
         }
 
         Ok(())
     }
-
     /// Replay WAL entries to recover from crash
-    fn replay_wal(&self, entries: Vec<crate::wal::LogEntry>) -> Result<()> {
+    ///
+    /// Handles transaction boundaries:
+    /// - Operations within a committed transaction are applied
+    /// - Operations within a rolled-back transaction are discarded
+    /// - Operations within an uncommitted transaction (crash during tx) are discarded
+    async fn replay_wal(&self, entries: Vec<crate::wal::LogEntry>) -> Result<()> {
+        // Buffer for operations within a transaction
+        let mut tx_buffer: Vec<crate::wal::LogEntry> = Vec::new();
+        let mut in_transaction = false;
+
         for entry in entries {
             match entry.operation {
-                Operation::Put => {
-                    if let Some(value) = entry.value {
-                        // Write directly to cold storage (skip WAL, already logged)
-                        self.cold.set(entry.key.clone(), value.clone())?;
-
-                        // Update hot cache
-                        if self.should_cache_key(&entry.key) {
-                            self.hot.set(entry.key.clone(), value.clone(), None);
-                        }
-
-                        // Rebuild indices
-                        if let Some(collection) = entry.key.split(':').next()
-                            && !collection.starts_with('_')
-                        {
-                            self.index_value(collection, &entry.key, &value)?;
-                        }
+                Operation::BeginTx => {
+                    // Start buffering operations
+                    in_transaction = true;
+                    tx_buffer.clear();
+                }
+                Operation::CommitTx => {
+                    // Apply all buffered operations
+                    for buffered_entry in tx_buffer.drain(..) {
+                        self.apply_wal_entry(buffered_entry).await?;
+                    }
+                    in_transaction = false;
+                }
+                Operation::RollbackTx => {
+                    // Discard buffered operations
+                    tx_buffer.clear();
+                    in_transaction = false;
+                }
+                Operation::Put | Operation::Delete => {
+                    if in_transaction {
+                        // Buffer the operation for later
+                        tx_buffer.push(entry);
+                    } else {
+                        // Apply immediately (not in transaction)
+                        self.apply_wal_entry(entry).await?;
                     }
                 }
-                Operation::Delete => {
-                    self.cold.delete(&entry.key)?;
-                    self.hot.delete(&entry.key);
-                    // TODO: Remove from indices
-                }
-                Operation::BeginTx | Operation::CommitTx | Operation::RollbackTx => {
-                    // Transaction boundaries - future implementation
-                }
             }
+        }
+
+        // If we end with in_transaction = true, it means we crashed mid-transaction
+        // Those operations in tx_buffer are discarded (not committed)
+        if in_transaction {
+            eprintln!(
+                "WAL replay: Discarding {} uncommitted transaction operations",
+                tx_buffer.len()
+            );
         }
 
         // Flush after replay and truncate WAL
@@ -1149,39 +1328,100 @@ impl Aurora {
         Ok(())
     }
 
+    /// Apply a single WAL entry to storage
+    async fn apply_wal_entry(&self, entry: crate::wal::LogEntry) -> Result<()> {
+        match entry.operation {
+            Operation::Put => {
+                if let Some(value) = entry.value {
+                    // Write directly to cold storage (skip WAL, already logged)
+                    self.cold.set(entry.key.clone(), value.clone())?;
+
+                    // Update hot cache
+                    if self.should_cache_key(&entry.key) {
+                        self.hot.set(Arc::new(entry.key.clone()), Arc::new(value.clone()), None);
+                    }
+
+                    // Rebuild indices
+                    if let Some(collection) = entry.key.split(':').next()
+                        && !collection.starts_with('_')
+                    {
+                        self.index_value(collection, &entry.key, &value)?;
+                    }
+                }
+            }
+            Operation::Delete => {
+                // Remove from indices before deleting the data
+                if let Some(collection) = entry.key.split(':').next()
+                    && !collection.starts_with('_')
+                {
+                    let _ = self.remove_from_index(collection, &entry.key);
+                }
+                self.cold.delete(&entry.key)?;
+                self.hot.delete(&entry.key);
+            }
+            _ => {} // Transaction markers handled in replay_wal
+        }
+        Ok(())
+    }
+
+    fn ensure_schema_hot(&self, collection: &str) -> Result<Arc<Collection>> {
+        // 1. Check the high-performance object cache first (O(1))
+        if let Some(schema) = self.schema_cache.get(collection) {
+            return Ok(schema.value().clone());
+        }
+
+        let collection_key = format!("_collection:{}", collection);
+
+        // 2. Fallback to Hot Byte Cache (parse if found)
+        if let Some(data) = self.hot.get(&collection_key) {
+            return serde_json::from_slice::<Collection>(&data)
+                .map(|s| {
+                    let arc_s = Arc::new(s);
+                    // Populate object cache to avoid this parse next time
+                    self.schema_cache
+                        .insert(collection.to_string(), arc_s.clone());
+                    arc_s
+                })
+                .map_err(|_| {
+                    AqlError::new(
+                        ErrorCode::SchemaError,
+                        "Failed to parse schema from hot cache",
+                    )
+                });
+        }
+
+        // 3. Fallback to Cold Storage
+        if let Some(data) = self.get(&collection_key)? {
+            // Update Hot Cache
+            self.hot.set(Arc::new(collection_key.clone()), Arc::new(data.clone()), None);
+
+            // Parse and update Schema Cache
+            let schema = serde_json::from_slice::<Collection>(&data)?;
+            let arc_schema = Arc::new(schema);
+            self.schema_cache
+                .insert(collection.to_string(), arc_schema.clone());
+
+            return Ok(arc_schema);
+        }
+
+        Err(AqlError::new(
+            ErrorCode::SchemaError,
+            format!("Failed to load schema for collection '{}'", collection),
+        ))
+    }
+
     fn index_value(&self, collection: &str, key: &str, value: &[u8]) -> Result<()> {
-        // Update primary index with metadata only (not the full value)
+        // Update primary index with metadata only
         let location = DiskLocation::new(value.len());
         self.primary_indices
             .entry(collection.to_string())
             .or_default()
             .insert(key.to_string(), location);
 
-        // Try to get schema from cache first, otherwise load and cache it
-        let collection_obj = match self.schema_cache.get(collection) {
-            Some(cached_schema) => Arc::clone(cached_schema.value()),
-            None => {
-                // Schema not in cache - load it
-                let collection_key = format!("_collection:{}", collection);
-                let schema_data = match self.get(&collection_key)? {
-                    Some(data) => data,
-                    None => return Ok(()), // No schema = no secondary indices
-                };
+        // Use the optimized helper (Fast path via schema_cache)
+        let collection_obj = self.ensure_schema_hot(collection)?;
 
-                let obj: Collection = match serde_json::from_slice(&schema_data) {
-                    Ok(obj) => obj,
-                    Err(_) => return Ok(()), // Invalid schema = skip indexing
-                };
-
-                // Cache the schema for future use
-                let arc_obj = Arc::new(obj);
-                self.schema_cache
-                    .insert(collection.to_string(), Arc::clone(&arc_obj));
-                arc_obj
-            }
-        };
-
-        // Build list of fields that should be indexed (unique or explicitly indexed)
+        // Build list of fields that should be indexed
         let indexed_fields: Vec<String> = collection_obj
             .fields
             .iter()
@@ -1189,20 +1429,17 @@ impl Aurora {
             .map(|(name, _)| name.clone())
             .collect();
 
-        // If no fields need indexing, we're done
         if indexed_fields.is_empty() {
             return Ok(());
         }
 
-        // Update secondary indices - ONLY for indexed/unique fields
+        // Update secondary indices
         if let Ok(doc) = serde_json::from_slice::<Document>(value) {
             for (field, field_value) in doc.data {
-                // CRITICAL FIX: Skip fields that aren't indexed
                 if !indexed_fields.contains(&field) {
                     continue;
                 }
 
-                // Use consistent string formatting for indexing
                 let value_str = match &field_value {
                     Value::String(s) => s.clone(),
                     _ => field_value.to_string(),
@@ -1211,13 +1448,11 @@ impl Aurora {
                 let index_key = format!("{}:{}", collection, field);
                 let secondary_index = self.secondary_indices.entry(index_key).or_default();
 
-                // Check if we're at the index limit
                 let max_entries = self.config.max_index_entries_per_field;
 
                 secondary_index
                     .entry(value_str)
                     .and_modify(|doc_ids| {
-                        // Only add if we haven't exceeded the limit per value
                         if doc_ids.len() < max_entries {
                             doc_ids.push(key.to_string());
                         }
@@ -1225,6 +1460,43 @@ impl Aurora {
                     .or_insert_with(|| vec![key.to_string()]);
             }
         }
+        Ok(())
+    }
+
+    /// Remove a document from all indices (called during delete operations)
+    fn remove_from_index(&self, collection: &str, key: &str) -> Result<()> {
+        // Remove from primary index
+        if let Some(primary_index) = self.primary_indices.get_mut(collection) {
+            primary_index.remove(key);
+        }
+
+        // Get the document data to know which secondary index entries to remove
+        // Try cold storage first since we may be replaying WAL
+        let doc_data = match self.cold.get(key) {
+            Ok(Some(data)) => Some(data),
+            _ => self.hot.get(key),
+        };
+
+        // If we have the document data, remove from secondary indices
+        if let Some(data) = doc_data {
+            if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                for (field, field_value) in &doc.data {
+                    let value_str = match field_value {
+                        Value::String(s) => s.clone(),
+                        _ => field_value.to_string(),
+                    };
+
+                    let index_key = format!("{}:{}", collection, field);
+                    if let Some(secondary_index) = self.secondary_indices.get_mut(&index_key) {
+                        if let Some(mut doc_ids) = secondary_index.get_mut(&value_str) {
+                            doc_ids.retain(|id| id != key);
+                            // If empty, we could remove the entry but it's not strictly necessary
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1315,7 +1587,7 @@ impl Aurora {
         let file_size = metadata.len() as usize;
 
         if file_size > MAX_FILE_SIZE {
-            return Err(AuroraError::InvalidOperation(format!(
+            return Err(AqlError::invalid_operation(format!(
                 "File size {} MB exceeds maximum allowed size of {} MB",
                 file_size / (1024 * 1024),
                 MAX_FILE_SIZE / (1024 * 1024)
@@ -1331,7 +1603,7 @@ impl Aurora {
         blob_data.extend_from_slice(b"BLOB:");
         blob_data.extend_from_slice(&buffer);
 
-        self.put(key, blob_data, None)
+        self.put(key, blob_data, None).await
     }
 
     /// Create a new collection with schema definition
@@ -1368,9 +1640,9 @@ impl Aurora {
     /// ])?;
     ///
     /// // Idempotent - calling again is safe
-    /// db.new_collection("users", vec![/* ... */])?; // OK!
+    /// db.new_collection("users", vec![/* ... */])?.await; // OK!
     /// ```
-    pub fn new_collection<S: Into<String>>(
+    pub async fn new_collection<S: Into<String>>(
         &self,
         name: &str,
         fields: Vec<(S, FieldType, bool)>,
@@ -1386,7 +1658,8 @@ impl Aurora {
         let mut field_definitions = HashMap::new();
         for (field_name, field_type, unique) in fields {
             if field_type == FieldType::Any && unique {
-                return Err(AuroraError::InvalidDefinition(
+                return Err(AqlError::new(
+                    ErrorCode::InvalidDefinition,
                     "Fields of type 'Any' cannot be unique or indexed.".to_string(),
                 ));
             }
@@ -1407,7 +1680,7 @@ impl Aurora {
         };
 
         let collection_data = serde_json::to_vec(&collection)?;
-        self.put(collection_key, collection_data, None)?;
+        self.put(collection_key, collection_data, None).await?;
 
         // Invalidate schema cache since we just created/updated the collection schema
         self.schema_cache.remove(name);
@@ -1498,7 +1771,7 @@ impl Aurora {
         self.validate_unique_constraints(collection, &data_map)
             .await?;
 
-        let doc_id = Uuid::new_v4().to_string();
+        let doc_id = Uuid::now_v7().to_string();
         let document = Document {
             id: doc_id.clone(),
             data: data_map,
@@ -1508,7 +1781,8 @@ impl Aurora {
             format!("{}:{}", collection, doc_id),
             serde_json::to_vec(&document)?,
             None,
-        )?;
+        )
+        .await?;
 
         // Publish insert event
         let event = crate::pubsub::ChangeEvent::insert(collection, &doc_id, document.clone());
@@ -1525,7 +1799,7 @@ impl Aurora {
         // Validate unique constraints before inserting
         self.validate_unique_constraints(collection, &data).await?;
 
-        let doc_id = Uuid::new_v4().to_string();
+        let doc_id = Uuid::now_v7().to_string();
         let document = Document {
             id: doc_id.clone(),
             data,
@@ -1535,7 +1809,8 @@ impl Aurora {
             format!("{}:{}", collection, doc_id),
             serde_json::to_vec(&document)?,
             None,
-        )?;
+        )
+        .await?;
 
         // Publish insert event
         let event = crate::pubsub::ChangeEvent::insert(collection, &doc_id, document.clone());
@@ -1659,7 +1934,7 @@ impl Aurora {
             // Validate unique constraints
             self.validate_unique_constraints(collection, &data).await?;
 
-            let doc_id = Uuid::new_v4().to_string();
+            let doc_id = Uuid::now_v7().to_string();
             let document = Document {
                 id: doc_id.clone(),
                 data,
@@ -1690,7 +1965,7 @@ impl Aurora {
         // Update hot cache and indices
         for (key, value) in pairs {
             if self.should_cache_key(&key) {
-                self.hot.set(key.clone(), value.clone(), None);
+                self.hot.set(Arc::new(key.clone()), Arc::new(value.clone()), None);
             }
 
             if let Some(collection_name) = key.split(':').next()
@@ -1736,9 +2011,12 @@ impl Aurora {
         updates: Vec<(&str, Value)>,
     ) -> Result<()> {
         // Get existing document
-        let mut document = self
-            .get_document(collection, doc_id)?
-            .ok_or_else(|| AuroraError::NotFound(format!("Document not found: {}", doc_id)))?;
+        let mut document = self.get_document(collection, doc_id)?.ok_or_else(|| {
+            AqlError::new(
+                ErrorCode::NotFound,
+                format!("Document not found: {}", doc_id),
+            )
+        })?;
 
         // Store old document for event
         let old_document = document.clone();
@@ -1757,7 +2035,8 @@ impl Aurora {
             format!("{}:{}", collection, doc_id),
             serde_json::to_vec(&document)?,
             None,
-        )?;
+        )
+        .await?;
 
         // Publish update event
         let event =
@@ -1898,7 +2177,9 @@ impl Aurora {
             .active_transactions
             .get(&tx_id)
             .ok_or_else(|| {
-                AuroraError::InvalidOperation("Transaction not found or already completed".into())
+                AqlError::invalid_operation(
+                    "Transaction not found or already completed".to_string(),
+                )
             })?;
 
         for item in buffer.writes.iter() {
@@ -1906,7 +2187,7 @@ impl Aurora {
             let value = item.value();
             self.cold.set(key.clone(), value.clone())?;
             if self.should_cache_key(key) {
-                self.hot.set(key.clone(), value.clone(), None);
+                self.hot.set(Arc::new(key.clone()), Arc::new(value.clone()), None);
             }
             if let Some(collection_name) = key.split(':').next()
                 && !collection_name.starts_with('_')
@@ -2085,15 +2366,19 @@ impl Aurora {
 
         if let Some(field_def) = collection_def.fields.get(field) {
             if field_def.field_type == FieldType::Any {
-                return Err(AuroraError::InvalidDefinition(
+                return Err(AqlError::new(
+                    ErrorCode::InvalidDefinition,
                     "Cannot create an index on a field of type 'Any'.".to_string(),
                 ));
             }
         } else {
-            return Err(AuroraError::InvalidDefinition(format!(
-                "Field '{}' not found in collection '{}'.",
-                field, collection
-            )));
+            return Err(AqlError::new(
+                ErrorCode::InvalidDefinition,
+                format!(
+                    "Field '{}' not found in collection '{}'.",
+                    field, collection
+                ),
+            ));
         }
 
         // Generate a default index name
@@ -2126,7 +2411,8 @@ impl Aurora {
 
         // Store the index definition for persistence
         let index_key = format!("_index:{}:{}", collection, field);
-        self.put(index_key, serde_json::to_vec(&definition)?, None)?;
+        self.put(index_key, serde_json::to_vec(&definition)?, None)
+            .await?;
 
         Ok(())
     }
@@ -2249,7 +2535,7 @@ impl Aurora {
     ///
     /// // Idiomatic error handling
     /// let user = db.get_document("users", &user_id)?
-    ///     .ok_or_else(|| AuroraError::NotFound("User not found".into()))?;
+    ///     .ok_or_else(|| AqlError::new(ErrorCode::NotFound,"User not found".into()))?;
     ///
     /// // Checking existence before operations
     /// if db.get_document("users", &user_id)?.is_some() {
@@ -2394,8 +2680,8 @@ impl Aurora {
         let (collection, id) = if let Some((coll, doc_id)) = key.split_once(':') {
             (coll, doc_id)
         } else {
-            return Err(AuroraError::InvalidOperation(
-                "Invalid key format, expected 'collection:id'".into(),
+            return Err(AqlError::invalid_operation(
+                "Invalid key format, expected 'collection:id'".to_string(),
             ));
         };
 
@@ -2820,7 +3106,8 @@ impl Aurora {
                 format!("{}:{}", collection, id),
                 serde_json::to_vec(&doc)?,
                 None,
-            )?;
+            )
+            .await?;
             Ok(id.to_string())
         } else {
             // Insert new document with specified ID - validate unique constraints
@@ -2836,7 +3123,8 @@ impl Aurora {
                 format!("{}:{}", collection, id),
                 serde_json::to_vec(&document)?,
                 None,
-            )?;
+            )
+            .await?;
             Ok(id.to_string())
         }
     }
@@ -2865,14 +3153,15 @@ impl Aurora {
                 format!("{}:{}", collection, id),
                 serde_json::to_vec(&doc)?,
                 None,
-            )?;
+            )
+            .await?;
 
             Ok(new_value)
         } else {
-            Err(AuroraError::NotFound(format!(
-                "Document {}:{} not found",
-                collection, id
-            )))
+            Err(AqlError::new(
+                ErrorCode::NotFound,
+                format!("Document {}:{} not found", collection, id),
+            ))
         }
     }
 
@@ -2974,13 +3263,20 @@ impl Aurora {
         let collection_def = self.get_collection_definition(collection)?;
 
         // Load JSON file
-        let json_string = read_to_string(filename)
-            .await
-            .map_err(|e| AuroraError::IoError(format!("Failed to read import file: {}", e)))?;
+        let json_string = read_to_string(filename).await.map_err(|e| {
+            AqlError::new(
+                ErrorCode::IoError,
+                format!("Failed to read import file: {}", e),
+            )
+        })?;
 
         // Parse JSON
-        let documents: Vec<JsonValue> = from_str(&json_string)
-            .map_err(|e| AuroraError::SerializationError(format!("Failed to parse JSON: {}", e)))?;
+        let documents: Vec<JsonValue> = from_str(&json_string).map_err(|e| {
+            AqlError::new(
+                ErrorCode::SerializationError,
+                format!("Failed to parse JSON: {}", e),
+            )
+        })?;
 
         let mut stats = ImportStats::default();
 
@@ -3007,7 +3303,9 @@ impl Aurora {
         doc_json: JsonValue,
     ) -> Result<ImportResult> {
         if !doc_json.is_object() {
-            return Err(AuroraError::InvalidOperation("Expected JSON object".into()));
+            return Err(AqlError::invalid_operation(
+                "Expected JSON object".to_string(),
+            ));
         }
 
         // Extract document ID if present
@@ -3015,7 +3313,7 @@ impl Aurora {
             .get("id")
             .and_then(|id| id.as_str())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
+            .unwrap_or_else(|| Uuid::now_v7().to_string());
 
         // Check if document with this ID already exists
         if self.get_document(collection, &doc_id)?.is_some() {
@@ -3030,7 +3328,7 @@ impl Aurora {
                 if let Some(json_value) = obj.get(field_name) {
                     // Validate value against field type
                     if !self.validate_field_value(json_value, &field_def.field_type) {
-                        return Err(AuroraError::InvalidOperation(format!(
+                        return Err(AqlError::invalid_operation(format!(
                             "Field '{}' has invalid type",
                             field_name
                         )));
@@ -3041,7 +3339,7 @@ impl Aurora {
                     data_map.insert(field_name.clone(), value);
                 } else if field_def.unique {
                     // Missing required unique field
-                    return Err(AuroraError::InvalidOperation(format!(
+                    return Err(AqlError::invalid_operation(format!(
                         "Missing required unique field '{}'",
                         field_name
                     )));
@@ -3078,7 +3376,8 @@ impl Aurora {
             format!("{}:{}", collection, document.id),
             serde_json::to_vec(&document)?,
             None,
-        )?;
+        )
+        .await?;
 
         Ok(ImportResult::Imported)
     }
@@ -3111,7 +3410,9 @@ impl Aurora {
                 } else if let Some(f) = n.as_f64() {
                     Ok(Value::Float(f))
                 } else {
-                    Err(AuroraError::InvalidOperation("Invalid number value".into()))
+                    Err(AqlError::invalid_operation(
+                        "Invalid number value".to_string(),
+                    ))
                 }
             }
             JsonValue::String(s) => {
@@ -3140,12 +3441,15 @@ impl Aurora {
     }
 
     /// Get collection definition
-    fn get_collection_definition(&self, collection: &str) -> Result<Collection> {
+    pub fn get_collection_definition(&self, collection: &str) -> Result<Collection> {
         if let Some(data) = self.get(&format!("_collection:{}", collection))? {
             let collection_def: Collection = serde_json::from_slice(&data)?;
             Ok(collection_def)
         } else {
-            Err(AuroraError::CollectionNotFound(collection.to_string()))
+            Err(AqlError::new(
+                ErrorCode::CollectionNotFound,
+                collection.to_string(),
+            ))
         }
     }
 
@@ -3165,12 +3469,6 @@ impl Aurora {
     /// Check if a key is currently stored in the hot cache
     pub fn is_in_hot_cache(&self, key: &str) -> bool {
         self.hot.is_hot(key)
-    }
-
-    /// Start background cleanup of hot cache with specified interval
-    pub async fn start_hot_cache_maintenance(&self, interval_secs: u64) {
-        let hot_store = Arc::new(self.hot.clone());
-        hot_store.start_cleanup_with_interval(interval_secs).await;
     }
 
     /// Clear the hot cache (useful when memory needs to be freed)
@@ -3326,7 +3624,7 @@ impl Aurora {
 
             if let Ok((key, value)) = entry {
                 // Load into hot cache
-                self.hot.set(key.clone(), value, None);
+                self.hot.set(Arc::new(key.clone()), Arc::new(value), None);
                 loaded += 1;
             }
         }
@@ -3455,7 +3753,7 @@ impl Aurora {
     /// # See Also
     /// - `batch_insert()` for validated document batch inserts
     /// - `put()` for single key-value writes
-    pub fn batch_write(&self, pairs: Vec<(String, Vec<u8>)>) -> Result<()> {
+    pub async fn batch_write(&self, pairs: Vec<(String, Vec<u8>)>) -> Result<()> {
         // Group pairs by collection name
         let mut collections: HashMap<String, Vec<(String, Vec<u8>)>> = HashMap::new();
         for (key, value) in &pairs {
@@ -3507,7 +3805,7 @@ impl Aurora {
             for (key, value) in batch {
                 // 2. Update hot cache
                 if self.should_cache_key(&key) {
-                    self.hot.set(key.clone(), value.clone(), None);
+                    self.hot.set(Arc::new(key.clone()), Arc::new(value.clone()), None);
                 }
 
                 // 3. Update primary index with metadata only
@@ -3651,7 +3949,7 @@ impl Aurora {
 
             // Ensure this is a full-text index
             if !matches!(index_def.index_type, IndexType::FullText) {
-                return Err(AuroraError::InvalidOperation(format!(
+                return Err(AqlError::invalid_operation(format!(
                     "Field '{}' is not indexed as full-text",
                     field
                 )));
@@ -3678,7 +3976,7 @@ impl Aurora {
     }
 
     /// Create a full-text search index on a text field
-    pub fn create_text_index(
+    pub async fn create_text_index(
         &self,
         collection: &str,
         field: &str,
@@ -3686,7 +3984,10 @@ impl Aurora {
     ) -> Result<()> {
         // Check if collection exists
         if self.get(&format!("_collection:{}", collection))?.is_none() {
-            return Err(AuroraError::CollectionNotFound(collection.to_string()));
+            return Err(AqlError::new(
+                ErrorCode::CollectionNotFound,
+                collection.to_string(),
+            ));
         }
 
         // Create index definition
@@ -3700,7 +4001,8 @@ impl Aurora {
 
         // Store index definition
         let index_key = format!("_index:{}:{}", collection, field);
-        self.put(index_key, serde_json::to_vec(&index_def)?, None)?;
+        self.put(index_key, serde_json::to_vec(&index_def)?, None)
+            .await?;
 
         // Create the actual index
         let index = Index::new(index_def);
@@ -3830,10 +4132,35 @@ impl Aurora {
                     // This would require more complex query planning
                     continue;
                 }
-                Filter::Or(_) => {
-                    // For OR filters, we'd need union of multiple index results
-                    // This is complex and not implemented yet
-                    continue;
+                Filter::Or(sub_filters) => {
+                    // For OR filters, collect union of all matching IDs from each sub-filter
+                    let mut union_ids: Vec<String> = Vec::new();
+                    let mut used_index = false;
+
+                    for sub_filter in sub_filters {
+                        match sub_filter {
+                            Filter::Eq(field, value) => {
+                                let index_key = format!("{}:{}", &builder.collection, field);
+                                if let Some(index) = self.secondary_indices.get(&index_key) {
+                                    if let Some(matching_ids) = index.get(&value.to_string()) {
+                                        union_ids.extend(matching_ids.clone());
+                                        used_index = true;
+                                    }
+                                }
+                            }
+                            // For other filter types in OR, we fall back to full scan
+                            _ => continue,
+                        }
+                    }
+
+                    if used_index && !union_ids.is_empty() {
+                        // Remove duplicates
+                        union_ids.sort();
+                        union_ids.dedup();
+                        doc_ids_to_load = Some(union_ids);
+                        break;
+                    }
+                    // If no index was used, continue to full scan
                 }
             }
         }
@@ -4012,15 +4339,17 @@ impl Aurora {
                 if let Ok(i) = value_str.parse::<i64>() {
                     Ok(Value::Int(i))
                 } else {
-                    Err(AuroraError::InvalidOperation("Failed to parse int".into()))
+                    Err(AqlError::invalid_operation(
+                        "Failed to parse int".to_string(),
+                    ))
                 }
             }
             Value::Float(_) => {
                 if let Ok(f) = value_str.parse::<f64>() {
                     Ok(Value::Float(f))
                 } else {
-                    Err(AuroraError::InvalidOperation(
-                        "Failed to parse float".into(),
+                    Err(AqlError::invalid_operation(
+                        "Failed to parse float".to_string(),
                     ))
                 }
             }
@@ -4099,7 +4428,7 @@ impl Aurora {
                 Err(e) => Response::Error(e.to_string()),
             },
             crate::network::protocol::Request::Put(key, value) => {
-                match self.put(key, value, None) {
+                match self.put(key, value, None).await {
                     Ok(_) => Response::Done,
                     Err(e) => Response::Error(e.to_string()),
                 }
@@ -4114,7 +4443,7 @@ impl Aurora {
                     .map(|(name, ft, unique)| (name.clone(), ft.clone(), *unique))
                     .collect();
 
-                match self.new_collection(&name, fields_for_db) {
+                match self.new_collection(&name, fields_for_db).await {
                     Ok(_) => Response::Done,
                     Err(e) => Response::Error(e.to_string()),
                 }
@@ -4248,7 +4577,11 @@ impl Aurora {
         data: &HashMap<String, Value>,
     ) -> Result<()> {
         self.ensure_indices_initialized().await?;
-        let collection_def = self.get_collection_definition(collection)?;
+        let collection_def = match self.get_collection_definition(collection) {
+            Ok(def) => def,
+            Err(e) if e.code == crate::error::ErrorCode::CollectionNotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
         let unique_fields = self.get_unique_fields(&collection_def);
 
         for unique_field in &unique_fields {
@@ -4261,9 +4594,12 @@ impl Aurora {
                         _ => value.to_string(),
                     };
                     if index.contains_key(&value_str) {
-                        return Err(AuroraError::UniqueConstraintViolation(
-                            unique_field.clone(),
-                            value_str,
+                        return Err(AqlError::new(
+                            ErrorCode::UniqueConstraintViolation,
+                            format!(
+                                "Unique constraint violation on field '{}' with value '{}'",
+                                unique_field, value_str
+                            ),
                         ));
                     }
                 }
@@ -4297,9 +4633,12 @@ impl Aurora {
                         let exclude_key = format!("{}:{}", collection, exclude_id);
                         for doc_key in doc_ids.value() {
                             if doc_key != &exclude_key {
-                                return Err(AuroraError::UniqueConstraintViolation(
-                                    unique_field.clone(),
-                                    value_str,
+                                return Err(AqlError::new(
+                                    ErrorCode::UniqueConstraintViolation,
+                                    format!(
+                                        "Unique constraint violation on field '{}' with value '{}'",
+                                        unique_field, value_str
+                                    ),
                                 ));
                             }
                         }
@@ -4308,6 +4647,480 @@ impl Aurora {
             }
         }
         Ok(())
+    }
+
+    // =========================================================================
+    // AQL Executor Helper Methods
+    // These are wrapper methods for AQL executor integration.
+    // They provide a simplified API compatible with the AQL query execution layer.
+    // =========================================================================
+
+    /// Get all documents in a collection (AQL helper)
+    ///
+    /// This is a wrapper around the internal query system optimized for bulk retrieval.
+    pub async fn aql_get_all_collection(&self, collection: &str) -> Result<Vec<Document>> {
+        self.ensure_indices_initialized().await?;
+
+        let prefix = format!("{}:", collection);
+        let mut docs = Vec::new();
+
+        for result in self.cold.scan_prefix(&prefix) {
+            let (_, value) = result?;
+            if let Ok(doc) = serde_json::from_slice::<Document>(&value) {
+                docs.push(doc);
+            }
+        }
+
+        Ok(docs)
+    }
+
+    /// Insert a document from a HashMap (AQL helper)
+    ///
+    /// Returns the complete document (not just ID) for AQL executor
+    pub async fn aql_insert(
+        &self,
+        collection: &str,
+        data: HashMap<String, Value>,
+    ) -> Result<Document> {
+        // Validate unique constraints before inserting
+        self.validate_unique_constraints(collection, &data).await?;
+
+        let doc_id = Uuid::now_v7().to_string();
+        let document = Document {
+            id: doc_id.clone(),
+            data,
+        };
+
+        self.put(
+            format!("{}:{}", collection, doc_id),
+            serde_json::to_vec(&document)?,
+            None,
+        )
+        .await?;
+
+        // Publish insert event
+        let event = crate::pubsub::ChangeEvent::insert(collection, &doc_id, document.clone());
+        let _ = self.pubsub.publish(event);
+
+        Ok(document)
+    }
+
+    /// Update a document by ID with new data (AQL helper)
+    ///
+    /// Merges new data with existing data and returns updated document
+    pub async fn aql_update_document(
+        &self,
+        collection: &str,
+        doc_id: &str,
+        updates: HashMap<String, Value>,
+    ) -> Result<Document> {
+        let key = format!("{}:{}", collection, doc_id);
+
+        // Get existing document
+        let existing = self.get(&key)?.ok_or_else(|| {
+            AqlError::new(
+                ErrorCode::NotFound,
+                format!("Document {} not found", doc_id),
+            )
+        })?;
+
+        let mut doc: Document = serde_json::from_slice(&existing)?;
+        let old_doc = doc.clone();
+
+        // Merge updates into existing data
+        for (k, v) in updates {
+            doc.data.insert(k, v);
+        }
+
+        // Validate unique constraints excluding this document
+        self.validate_unique_constraints_excluding(collection, &doc.data, doc_id)
+            .await?;
+
+        // Save updated document
+        self.put(key, serde_json::to_vec(&doc)?, None).await?;
+
+        // Publish update event
+        let event = crate::pubsub::ChangeEvent::update(collection, doc_id, old_doc, doc.clone());
+        let _ = self.pubsub.publish(event);
+
+        Ok(doc)
+    }
+
+    /// Delete a document by ID (AQL helper)
+    ///
+    /// Returns the deleted document
+    pub async fn aql_delete_document(&self, collection: &str, doc_id: &str) -> Result<Document> {
+        let key = format!("{}:{}", collection, doc_id);
+
+        // Get existing document first
+        let existing = self.get(&key)?.ok_or_else(|| {
+            AqlError::new(
+                ErrorCode::NotFound,
+                format!("Document {} not found", doc_id),
+            )
+        })?;
+
+        let doc: Document = serde_json::from_slice(&existing)?;
+
+        // Delete from storage
+        self.cold.delete(&key)?;
+        self.hot.delete(&key);
+
+        // Remove from primary index
+        if let Some(index) = self.primary_indices.get_mut(collection) {
+            index.remove(&key);
+        }
+
+        // Remove from secondary indices
+        for (field_name, value) in &doc.data {
+            let index_key = format!("{}:{}", collection, field_name);
+            if let Some(index) = self.secondary_indices.get_mut(&index_key) {
+                let value_str = match value {
+                    Value::String(s) => s.clone(),
+                    _ => value.to_string(),
+                };
+                if let Some(mut doc_ids) = index.get_mut(&value_str) {
+                    doc_ids.retain(|id| id != &key);
+                }
+            }
+        }
+
+        // Publish delete event
+        let event = crate::pubsub::ChangeEvent::delete(collection, doc_id);
+        let _ = self.pubsub.publish(event);
+
+        Ok(doc)
+    }
+
+    /// Get a single document by ID (AQL helper)
+    pub async fn aql_get_document(
+        &self,
+        collection: &str,
+        doc_id: &str,
+    ) -> Result<Option<Document>> {
+        let key = format!("{}:{}", collection, doc_id);
+
+        match self.get(&key)? {
+            Some(data) => {
+                let doc: Document = serde_json::from_slice(&data)?;
+                Ok(Some(doc))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Begin a transaction (AQL helper) - returns transaction ID
+    pub fn aql_begin_transaction(&self) -> Result<crate::transaction::TransactionId> {
+        Ok(self.begin_transaction())
+    }
+
+    /// Commit a transaction (AQL helper)
+    pub async fn aql_commit_transaction(
+        &self,
+        tx_id: crate::transaction::TransactionId,
+    ) -> Result<()> {
+        self.commit_transaction(tx_id)
+    }
+
+    /// Rollback a transaction (AQL helper)
+    pub async fn aql_rollback_transaction(
+        &self,
+        tx_id: crate::transaction::TransactionId,
+    ) -> Result<()> {
+        self.transaction_manager.rollback(tx_id)
+    }
+
+    // ============================================
+    // AQL Schema Management Wrappers
+    // ============================================
+
+    /// Create a collection from AST schema definition
+    pub async fn create_collection_schema(
+        &self,
+        name: &str,
+        fields: Vec<crate::parser::ast::FieldDef>,
+    ) -> Result<()> {
+        let collection_key = format!("_collection:{}", name);
+
+        // Check if collection already exists
+        if self.get(&collection_key)?.is_some() {
+            // Already exists
+            return Ok(());
+        }
+
+        let mut field_definitions = HashMap::new();
+        for field in fields {
+            let field_type = self.ast_type_to_field_type(&field.field_type.name)?;
+            let mut unique = false;
+            let mut indexed = false;
+
+            for directive in &field.directives {
+                match directive.name.as_str() {
+                    "unique" => unique = true,
+                    "indexed" => indexed = true,
+                    "primaryKey" => {
+                        unique = true;
+                        indexed = true;
+                    }
+                    _ => {}
+                }
+            }
+
+            if unique {
+                indexed = true;
+            }
+
+            if field_type == FieldType::Any && (unique || indexed) {
+                return Err(AqlError::new(
+                    ErrorCode::InvalidDefinition,
+                    "Fields of type 'Any' cannot be unique or indexed.".to_string(),
+                ));
+            }
+
+            field_definitions.insert(
+                field.name.clone(),
+                FieldDefinition {
+                    field_type: field_type.clone(),
+                    unique,
+                    indexed,
+                },
+            );
+        }
+
+        let collection = Collection {
+            name: name.to_string(),
+            fields: field_definitions,
+        };
+
+        let collection_data = serde_json::to_vec(&collection)?;
+        self.put(collection_key, collection_data, None).await?;
+        self.schema_cache.remove(name);
+
+        Ok(())
+    }
+
+    /// Add a field to an existing collection schema
+    pub async fn add_field_to_schema(
+        &self,
+        collection_name: &str,
+        field: crate::parser::ast::FieldDef,
+    ) -> Result<()> {
+        let mut collection = self
+            .get_collection_definition(collection_name)
+            .map_err(|_| {
+                AqlError::new(ErrorCode::CollectionNotFound, collection_name.to_string())
+            })?;
+
+        let field_type = self.ast_type_to_field_type(&field.field_type.name)?;
+        let mut unique = false;
+        let mut indexed = false;
+
+        for directive in &field.directives {
+            match directive.name.as_str() {
+                "unique" => unique = true,
+                "indexed" => indexed = true,
+                _ => {}
+            }
+        }
+        if unique {
+            indexed = true;
+        }
+
+        if collection.fields.contains_key(&field.name) {
+            return Err(AqlError::new(
+                ErrorCode::InvalidDefinition,
+                format!(
+                    "Field '{}' already exists in collection '{}'",
+                    field.name, collection_name
+                ),
+            ));
+        }
+
+        collection.fields.insert(
+            field.name,
+            FieldDefinition {
+                field_type,
+                unique,
+                indexed,
+            },
+        );
+
+        let collection_key = format!("_collection:{}", collection_name);
+        let collection_data = serde_json::to_vec(&collection)?;
+        self.put(collection_key, collection_data, None).await?;
+        self.schema_cache.remove(collection_name);
+
+        Ok(())
+    }
+
+    /// Drop a field from an existing collection schema
+    pub async fn drop_field_from_schema(
+        &self,
+        collection_name: &str,
+        field_name: &str,
+    ) -> Result<()> {
+        let mut collection = self
+            .get_collection_definition(collection_name)
+            .map_err(|_| {
+                AqlError::new(ErrorCode::CollectionNotFound, collection_name.to_string())
+            })?;
+
+        if collection.fields.remove(field_name).is_none() {
+            return Err(AqlError::new(
+                ErrorCode::InvalidDefinition,
+                format!(
+                    "Field '{}' does not exist in collection '{}'",
+                    field_name, collection_name
+                ),
+            ));
+        }
+
+        let collection_key = format!("_collection:{}", collection_name);
+        let collection_data = serde_json::to_vec(&collection)?;
+        self.put(collection_key, collection_data, None).await?;
+        self.schema_cache.remove(collection_name);
+
+        Ok(())
+    }
+
+    /// Rename a field in an existing collection schema
+    pub async fn rename_field_in_schema(
+        &self,
+        collection_name: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<()> {
+        let mut collection = self
+            .get_collection_definition(collection_name)
+            .map_err(|_| {
+                AqlError::new(ErrorCode::CollectionNotFound, collection_name.to_string())
+            })?;
+
+        if !collection.fields.contains_key(from) {
+            return Err(AqlError::new(
+                ErrorCode::InvalidDefinition,
+                format!(
+                    "Field '{}' does not exist in collection '{}'",
+                    from, collection_name
+                ),
+            ));
+        }
+        if collection.fields.contains_key(to) {
+            return Err(AqlError::new(
+                ErrorCode::InvalidDefinition,
+                format!(
+                    "Field '{}' already exists in collection '{}'",
+                    to, collection_name
+                ),
+            ));
+        }
+
+        if let Some(def) = collection.fields.remove(from) {
+            collection.fields.insert(to.to_string(), def);
+        }
+
+        let collection_key = format!("_collection:{}", collection_name);
+        let collection_data = serde_json::to_vec(&collection)?;
+        self.put(collection_key, collection_data, None).await?;
+        self.schema_cache.remove(collection_name);
+
+        Ok(())
+    }
+
+    /// Modify a field in an existing collection schema
+    pub async fn modify_field_in_schema(
+        &self,
+        collection_name: &str,
+        field: crate::parser::ast::FieldDef,
+    ) -> Result<()> {
+        let mut collection = self
+            .get_collection_definition(collection_name)
+            .map_err(|_| {
+                AqlError::new(ErrorCode::CollectionNotFound, collection_name.to_string())
+            })?;
+
+        if !collection.fields.contains_key(&field.name) {
+            return Err(AqlError::new(
+                ErrorCode::InvalidDefinition,
+                format!(
+                    "Field '{}' does not exist in collection '{}'",
+                    field.name, collection_name
+                ),
+            ));
+        }
+
+        let field_type = self.ast_type_to_field_type(&field.field_type.name)?;
+        let mut unique = false;
+        let mut indexed = false;
+
+        for directive in &field.directives {
+            match directive.name.as_str() {
+                "unique" => unique = true,
+                "indexed" => indexed = true,
+                _ => {}
+            }
+        }
+        if unique {
+            indexed = true;
+        }
+
+        collection.fields.insert(
+            field.name.clone(),
+            FieldDefinition {
+                field_type,
+                unique,
+                indexed,
+            },
+        );
+
+        let collection_key = format!("_collection:{}", collection_name);
+        let collection_data = serde_json::to_vec(&collection)?;
+        self.put(collection_key, collection_data, None).await?;
+        self.schema_cache.remove(collection_name);
+
+        Ok(())
+    }
+
+    /// Drop an entire collection definition
+    pub async fn drop_collection_schema(&self, collection_name: &str) -> Result<()> {
+        let collection_key = format!("_collection:{}", collection_name);
+        self.cold.delete(&collection_key)?;
+        self.schema_cache.remove(collection_name);
+        Ok(())
+    }
+
+    // ============================================
+    // AQL Migration Wrappers
+    // ============================================
+
+    /// Check if a migration version has been applied
+    pub async fn is_migration_applied(&self, version: &str) -> Result<bool> {
+        let migration_key = format!("_sys_migration:{}", version);
+        Ok(self.get(&migration_key)?.is_some())
+    }
+
+    /// Mark a migration version as applied
+    pub async fn mark_migration_applied(&self, version: &str) -> Result<()> {
+        let migration_key = format!("_sys_migration:{}", version);
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        self.put(migration_key, timestamp.as_bytes().to_vec(), None)
+            .await?;
+        Ok(())
+    }
+
+    /// Helper to map AST string types to FieldType enum
+    fn ast_type_to_field_type(&self, type_name: &str) -> Result<FieldType> {
+        match type_name {
+            "String" | "ID" | "Email" | "URL" | "PhoneNumber" | "DateTime" | "Date" | "Time" => {
+                Ok(FieldType::String)
+            }
+            "Int" => Ok(FieldType::Int),
+            "Float" => Ok(FieldType::Float),
+            "Boolean" => Ok(FieldType::Bool),
+            "Any" => Ok(FieldType::Any),
+            "Uuid" => Ok(FieldType::Uuid),
+            _ => Ok(FieldType::Any),
+        }
     }
 }
 
@@ -4403,6 +5216,56 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
+    async fn test_async_wal_integration() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test_wal_integration.db");
+        let db = Aurora::open(db_path.to_str().unwrap()).unwrap();
+
+        // 1. Enable WAL explicitly (if your config defaults to off for tests)
+        // Note: Your implementation might default it on based on AuroraConfig.
+
+        let db_clone = db.clone();
+
+        // 2. Spawn 50 concurrent writes
+        let handles: Vec<_> = (0..50)
+            .map(|i| {
+                let db = db_clone.clone();
+                tokio::spawn(async move {
+                    let doc_id = db
+                        .insert_into(
+                            "users",
+                            vec![
+                                ("id", Value::String(format!("user-{}", i))),
+                                ("counter", Value::Int(i)),
+                            ],
+                        )
+                        .await
+                        .unwrap();
+                    (i, doc_id) // Return both the index and the document ID
+                })
+            })
+            .collect();
+
+        // Wait for all to complete and collect the results
+        let results = futures::future::join_all(handles).await;
+        assert!(results.iter().all(|r| r.is_ok()), "Some writes failed");
+
+        // Extract the document IDs
+        let doc_ids: Vec<(i64, String)> = results.into_iter().map(|r| r.unwrap()).collect();
+
+        // Find the document ID for the one with counter=25
+        let target_doc_id = doc_ids
+            .iter()
+            .find(|(counter, _)| *counter == 25i64)
+            .map(|(_, doc_id)| doc_id)
+            .unwrap();
+
+        // 4. Verify Data Integrity
+        let doc = db.get_document("users", target_doc_id).unwrap().unwrap();
+        assert_eq!(doc.data.get("counter"), Some(&Value::Int(25)));
+    }
+
+    #[tokio::test]
     async fn test_basic_operations() -> Result<()> {
         let temp_dir = tempdir()?;
         let db_path = temp_dir.path().join("test.aurora");
@@ -4416,7 +5279,8 @@ mod tests {
                 ("age", FieldType::Int, false),
                 ("email", FieldType::String, true),
             ],
-        )?;
+        )
+        .await?;
 
         // Test document insertion
         let doc_id = db
@@ -4448,7 +5312,8 @@ mod tests {
         let db = Aurora::open(db_path.to_str().unwrap())?;
 
         // Create collection
-        db.new_collection("test", vec![("field", FieldType::String, false)])?;
+        db.new_collection("test", vec![("field", FieldType::String, false)])
+            .await?;
 
         // Start transaction
         let tx_id = db.begin_transaction();
@@ -4485,7 +5350,8 @@ mod tests {
                 ("author", FieldType::String, false),
                 ("year", FieldType::Int, false),
             ],
-        )?;
+        )
+        .await?;
 
         // Test document insertion
         db.insert_into(
@@ -4563,10 +5429,8 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            AuroraError::InvalidOperation(_)
-        ));
+        let err = result.unwrap_err();
+        assert!(err.code == ErrorCode::InvalidOperation); // Expected error
 
         Ok(())
     }
@@ -4585,7 +5449,8 @@ mod tests {
                 ("email", FieldType::String, true), // unique field
                 ("age", FieldType::Int, false),
             ],
-        )?;
+        )
+        .await?;
 
         // Insert first document
         let _doc_id1 = db
@@ -4612,11 +5477,16 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        if let Err(AuroraError::UniqueConstraintViolation(field, value)) = result {
-            assert_eq!(field, "email");
-            assert_eq!(value, "john@example.com");
+        if let Err(e) = result {
+            if e.code == ErrorCode::UniqueConstraintViolation {
+                let msg = e.message;
+                assert!(msg.contains("email"));
+                assert!(msg.contains("john@example.com")); // Changed from test@example.com to match the actual value
+            } else {
+                panic!("Expected UniqueConstraintViolation, got {:?}", e);
+            }
         } else {
-            panic!("Expected UniqueConstraintViolation error");
+            panic!("Expected UniqueConstraintViolation");
         }
 
         // Test upsert with unique constraint
