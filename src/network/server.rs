@@ -1,5 +1,5 @@
 use crate::db::Aurora;
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, Result};
 use crate::network::protocol::Request;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -50,11 +50,11 @@ impl BincodeServer {
             stream.read_exact(&mut buffer).await?;
 
             let request: Request =
-                bincode::deserialize(&buffer).map_err(AuroraError::Bincode)?;
+                bincode::deserialize(&buffer).map_err(AqlError::from)?;
 
             let response = db.process_network_request(request).await;
 
-            let response_bytes = bincode::serialize(&response).map_err(AuroraError::Bincode)?;
+            let response_bytes = bincode::serialize(&response).map_err(AqlError::from)?;
             let len_bytes = (response_bytes.len() as u32).to_le_bytes();
 
             stream.write_all(&len_bytes).await?;

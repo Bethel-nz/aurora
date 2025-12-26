@@ -1,4 +1,4 @@
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, Result};
 use crate::types::{Document, Value};
 use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
@@ -80,7 +80,7 @@ fn value_to_json(value: &Value) -> JsonValue {
 /// that our `insert_map` function expects.
 pub fn json_to_insert_data(json: JsonValue) -> Result<HashMap<String, Value>> {
     let map = json.as_object().ok_or_else(|| {
-        AuroraError::InvalidOperation("Request body must be a JSON object".into())
+        AqlError::invalid_operation("Request body must be a JSON object".to_string())
     })?;
 
     let mut result = HashMap::new();
@@ -104,7 +104,7 @@ pub fn json_to_value(json_value: &JsonValue) -> Result<Value> {
             } else if let Some(f) = n.as_f64() {
                 Ok(Value::Float(f))
             } else {
-                Err(AuroraError::InvalidOperation("Invalid number value".into()))
+                Err(AqlError::invalid_operation("Invalid number value".to_string()))
             }
         }
         JsonValue::String(s) => {
