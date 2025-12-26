@@ -1,8 +1,10 @@
 /// Aurora Baseline Performance Benchmark
 /// Tests memory usage and performance at different scales
 /// Run before implementing DiskLocation optimization
-
-use aurora_db::{Aurora, types::{AuroraConfig, FieldType, Value}};
+use aurora_db::{
+    Aurora,
+    types::{AuroraConfig, FieldType, Value},
+};
 use std::fs::File;
 use std::io::Write as IoWrite;
 use std::sync::Arc;
@@ -14,7 +16,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     output.push_str("=".repeat(80).as_str());
     output.push_str("\nAURORA BASELINE PERFORMANCE BENCHMARK\n");
     output.push_str("Architecture: Primary Index with full Vec<u8> values\n");
-    output.push_str(&format!("Timestamp: {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
+    output.push_str(&format!(
+        "Timestamp: {}\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    ));
     output.push_str("=".repeat(80).as_str());
     output.push_str("\n\n");
 
@@ -36,8 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Write results to file
-    let filename = format!("aurora_baseline_{}.txt",
-        chrono::Local::now().format("%Y%m%d_%H%M%S"));
+    let filename = format!(
+        "aurora_baseline_{}.txt",
+        chrono::Local::now().format("%Y%m%d_%H%M%S")
+    );
     let mut file = File::create(&filename)?;
     file.write_all(output.as_bytes())?;
 
@@ -66,12 +73,16 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
     let db = Arc::new(Aurora::with_config(config)?);
 
     // Create collection
-    db.new_collection("bench", vec![
-        ("id", FieldType::String, false),
-        ("data", FieldType::String, false),
-        ("index", FieldType::Int, false),
-        ("timestamp", FieldType::String, false),
-    ])?;
+    db.new_collection(
+        "bench",
+        vec![
+            ("id", FieldType::String, false),
+            ("data", FieldType::String, false),
+            ("index", FieldType::Int, false),
+            ("timestamp", FieldType::String, false),
+        ],
+    )
+    .await?;
 
     // Get initial memory
     let pid = std::process::id();
@@ -84,12 +95,25 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
     let write_start = Instant::now();
 
     for i in 0..num_docs {
-        db.insert_into("bench", vec![
-            ("id", Value::String(format!("doc_{:08}", i))),
-            ("data", Value::String(format!("Document {} with some sample text content to simulate realistic data size", i))),
-            ("index", Value::Int(i as i64)),
-            ("timestamp", Value::String(chrono::Local::now().to_rfc3339())),
-        ]).await?;
+        db.insert_into(
+            "bench",
+            vec![
+                ("id", Value::String(format!("doc_{:08}", i))),
+                (
+                    "data",
+                    Value::String(format!(
+                        "Document {} with some sample text content to simulate realistic data size",
+                        i
+                    )),
+                ),
+                ("index", Value::Int(i as i64)),
+                (
+                    "timestamp",
+                    Value::String(chrono::Local::now().to_rfc3339()),
+                ),
+            ],
+        )
+        .await?;
 
         // Progress indicator for large scales
         if num_docs >= 10_000 && i > 0 && i % (num_docs / 10) == 0 {
@@ -113,12 +137,22 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
         0.0
     };
 
-    output.push_str(&format!("After writes RSS: {} MB (growth: {} MB)\n",
-        after_write_rss, write_memory_growth));
-    output.push_str(&format!("Write time: {:.3}s\n", write_duration.as_secs_f64()));
-    output.push_str(&format!("Write throughput: {:.0} docs/sec\n",
-        num_docs as f64 / write_duration.as_secs_f64()));
-    output.push_str(&format!("Avg memory per doc: {:.0} bytes\n", avg_doc_size_bytes));
+    output.push_str(&format!(
+        "After writes RSS: {} MB (growth: {} MB)\n",
+        after_write_rss, write_memory_growth
+    ));
+    output.push_str(&format!(
+        "Write time: {:.3}s\n",
+        write_duration.as_secs_f64()
+    ));
+    output.push_str(&format!(
+        "Write throughput: {:.0} docs/sec\n",
+        num_docs as f64 / write_duration.as_secs_f64()
+    ));
+    output.push_str(&format!(
+        "Avg memory per doc: {:.0} bytes\n",
+        avg_doc_size_bytes
+    ));
 
     // READ TEST - Hot Cache (warm-up phase)
     // First, populate hot cache with a subset of documents
@@ -142,8 +176,12 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
     let hot_read_duration = hot_read_start.elapsed();
     let hot_read_throughput = hot_read_count as f64 / hot_read_duration.as_secs_f64();
 
-    output.push_str(&format!("Hot reads: {} in {:.3}s ({:.0} reads/sec)\n",
-        format_number(hot_read_count), hot_read_duration.as_secs_f64(), hot_read_throughput));
+    output.push_str(&format!(
+        "Hot reads: {} in {:.3}s ({:.0} reads/sec)\n",
+        format_number(hot_read_count),
+        hot_read_duration.as_secs_f64(),
+        hot_read_throughput
+    ));
 
     // READ TEST - Cold Cache (uncached reads)
     // Access documents that are NOT in the hot cache
@@ -160,8 +198,12 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
     let cold_read_duration = cold_read_start.elapsed();
     let cold_read_throughput = cold_read_count as f64 / cold_read_duration.as_secs_f64();
 
-    output.push_str(&format!("Cold reads: {} in {:.3}s ({:.0} reads/sec)\n",
-        format_number(cold_read_count), cold_read_duration.as_secs_f64(), cold_read_throughput));
+    output.push_str(&format!(
+        "Cold reads: {} in {:.3}s ({:.0} reads/sec)\n",
+        format_number(cold_read_count),
+        cold_read_duration.as_secs_f64(),
+        cold_read_throughput
+    ));
 
     // READ TEST - Mixed (realistic workload)
     let mixed_read_count = num_docs.min(10_000);
@@ -182,20 +224,28 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
     let mixed_read_duration = mixed_read_start.elapsed();
     let mixed_read_throughput = mixed_read_count as f64 / mixed_read_duration.as_secs_f64();
 
-    output.push_str(&format!("Mixed reads (70/30 hot/cold): {} in {:.3}s ({:.0} reads/sec)\n",
-        format_number(mixed_read_count), mixed_read_duration.as_secs_f64(), mixed_read_throughput));
+    output.push_str(&format!(
+        "Mixed reads (70/30 hot/cold): {} in {:.3}s ({:.0} reads/sec)\n",
+        format_number(mixed_read_count),
+        mixed_read_duration.as_secs_f64(),
+        mixed_read_throughput
+    ));
 
     // QUERY TEST
     let query_start = Instant::now();
-    let results = db.query("bench")
+    let results = db
+        .query("bench")
         .filter(|f| f.gt("index", Value::Int(num_docs as i64 / 2)))
         .limit(100)
         .collect()
         .await?;
     let query_duration = query_start.elapsed();
 
-    output.push_str(&format!("Query test: {} results in {:.3}s\n",
-        results.len(), query_duration.as_secs_f64()));
+    output.push_str(&format!(
+        "Query test: {} results in {:.3}s\n",
+        results.len(),
+        query_duration.as_secs_f64()
+    ));
 
     // Get database size on disk
     let db_size = get_dir_size_mb(temp_dir.path());
@@ -210,10 +260,12 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
 
     // Cache stats
     let cache_stats = db.get_cache_stats();
-    output.push_str(&format!("Cache: {} items, {:.2} MB, {:.1}% hit rate\n",
+    output.push_str(&format!(
+        "Cache: {} items, {:.2} MB, {:.1}% hit rate\n",
         cache_stats.item_count,
         cache_stats.memory_usage as f64 / (1024.0 * 1024.0),
-        cache_stats.hit_ratio * 100.0));
+        cache_stats.hit_ratio * 100.0
+    ));
 
     output.push_str(&"-".repeat(80));
     output.push_str("\n");
@@ -237,23 +289,84 @@ fn get_process_rss_mb(pid: u32) -> i64 {
                 }
             }
         }
+        0
     }
-    0
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::mem::MaybeUninit;
+        
+        // Use Windows API to get process memory info
+        #[repr(C)]
+        #[allow(non_snake_case)]
+        struct PROCESS_MEMORY_COUNTERS {
+            cb: u32,
+            PageFaultCount: u32,
+            PeakWorkingSetSize: usize,
+            WorkingSetSize: usize,
+            QuotaPeakPagedPoolUsage: usize,
+            QuotaPagedPoolUsage: usize,
+            QuotaPeakNonPagedPoolUsage: usize,
+            QuotaNonPagedPoolUsage: usize,
+            PagefileUsage: usize,
+            PeakPagefileUsage: usize,
+        }
+        
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> *mut std::ffi::c_void;
+        }
+        
+        #[link(name = "psapi")]
+        unsafe extern "system" {
+            fn GetProcessMemoryInfo(
+                process: *mut std::ffi::c_void,
+                ppsmemCounters: *mut PROCESS_MEMORY_COUNTERS,
+                cb: u32,
+            ) -> i32;
+        }
+        
+        unsafe {
+            let _ = pid; // We use GetCurrentProcess() instead
+            let mut pmc = MaybeUninit::<PROCESS_MEMORY_COUNTERS>::zeroed();
+            let pmc_ptr = pmc.as_mut_ptr();
+            (*pmc_ptr).cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+            
+            let handle = GetCurrentProcess();
+            if GetProcessMemoryInfo(handle, pmc_ptr, (*pmc_ptr).cb) != 0 {
+                let pmc = pmc.assume_init();
+                return (pmc.WorkingSetSize / (1024 * 1024)) as i64;
+            }
+        }
+        0
+    }
+    
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        let _ = pid;
+        0
+    }
 }
 
 fn get_dir_size_mb(path: &std::path::Path) -> i64 {
-    let output = std::process::Command::new("du")
-        .arg("-sm")
-        .arg(path)
-        .output();
-
-    if let Ok(output) = output {
-        let output_str = String::from_utf8_lossy(&output.stdout);
-        if let Some(size_str) = output_str.split_whitespace().next() {
-            return size_str.parse().unwrap_or(0);
+    fn dir_size(path: &std::path::Path) -> u64 {
+        let mut total = 0;
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Ok(meta) = entry.metadata() {
+                        total += meta.len();
+                    }
+                } else if path.is_dir() {
+                    total += dir_size(&path);
+                }
+            }
         }
+        total
     }
-    0
+    
+    (dir_size(path) / (1024 * 1024)) as i64
 }
 
 fn format_number(n: usize) -> String {
