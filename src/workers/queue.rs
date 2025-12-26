@@ -1,5 +1,5 @@
 use super::job::{Job, JobStatus};
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, Result, ErrorCode};
 use crate::storage::ColdStore;
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -57,7 +57,7 @@ impl JobQueue {
 
         // Persist to storage
         let serialized =
-            bincode::serialize(&job).map_err(|e| AuroraError::SerializationError(e.to_string()))?;
+            bincode::serialize(&job).map_err(|e| AqlError::new(ErrorCode::SerializationError, e.to_string()))?;
         self.storage.set(key, serialized)?;
 
         // Add to in-memory index
@@ -116,7 +116,7 @@ impl JobQueue {
 
         // Persist to storage
         let serialized =
-            bincode::serialize(&job).map_err(|e| AuroraError::SerializationError(e.to_string()))?;
+            bincode::serialize(&job).map_err(|e| AqlError::new(ErrorCode::SerializationError, e.to_string()))?;
         self.storage.set(key, serialized)?;
 
         // Update in-memory index

@@ -1,4 +1,4 @@
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -57,7 +57,7 @@ impl WriteAheadLog {
     pub fn append(&mut self, operation: Operation, key: &str, value: Option<&[u8]>) -> Result<()> {
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|e| AuroraError::Protocol(e.to_string()))?
+            .map_err(|e| AqlError::new(ErrorCode::ProtocolError, e.to_string()))?
             .as_secs();
 
         let entry = LogEntry {
@@ -67,13 +67,14 @@ impl WriteAheadLog {
             value: value.map(|v| v.to_vec()),
         };
 
-        let serialized =
-            bincode::serialize(&entry).map_err(|e| AuroraError::Protocol(e.to_string()))?;
+        let serialized = bincode::serialize(&entry)
+            .map_err(|e| AqlError::new(ErrorCode::ProtocolError, e.to_string()))?;
         let len = serialized.len() as u32;
 
         self.file.write_all(&len.to_le_bytes())?;
         self.file.write_all(&serialized)?;
         self.file.flush()?;
+        self.file.get_mut().sync_all()?;
 
         Ok(())
     }
@@ -92,7 +93,7 @@ impl WriteAheadLog {
                     let mut buffer = vec![0u8; len];
                     reader.read_exact(&mut buffer)?;
                     let entry: LogEntry = bincode::deserialize(&buffer)
-                        .map_err(|e| AuroraError::Protocol(e.to_string()))?;
+                        .map_err(|e| AqlError::new(ErrorCode::ProtocolError, e.to_string()))?;
                     entries.push(entry);
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
