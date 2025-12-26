@@ -24,7 +24,7 @@ async fn test_1_million_records_memory() {
     db.new_collection("million_test", vec![
         ("data", FieldType::String, false),
         ("index", FieldType::Int, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     // Get initial process info
     let pid = std::process::id();
@@ -111,7 +111,7 @@ async fn test_1_million_records_memory() {
 }
 
 // Helper function to get process RSS in MB
-fn get_process_rss_mb(pid: u32) -> i64 {
+fn get_process_rss_mb(_pid: u32) -> i64 {
     #[cfg(target_os = "linux")]
     {
         if let Ok(status) = std::fs::read_to_string(format!("/proc/{}/status", pid)) {

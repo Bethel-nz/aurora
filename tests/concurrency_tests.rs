@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinSet;
 
-fn create_test_db(path: std::path::PathBuf) -> Result<Aurora, aurora_db::AuroraError> {
+fn create_test_db(path: std::path::PathBuf) -> Result<Aurora, aurora_db::AqlError> {
     let mut config = AuroraConfig::default();
     config.db_path = path;
     config.enable_wal = true;
@@ -33,7 +33,7 @@ async fn test_concurrent_same_key_writes() {
     db.new_collection("counter", vec![
         ("key", FieldType::String, false),
         ("value", FieldType::Int, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     let num_writers = 100;
     let writes_per_worker = 10;
@@ -95,7 +95,7 @@ async fn test_concurrent_reads_and_writes() {
     db.new_collection("rw_test", vec![
         ("id", FieldType::String, false),
         ("data", FieldType::String, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     // Pre-populate with some data
     for i in 0..50 {
@@ -184,7 +184,7 @@ async fn test_read_after_write_consistency() {
     db.new_collection("consistency_test", vec![
         ("key", FieldType::String, false),
         ("value", FieldType::Int, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     let num_workers = 50;
     let ops_per_worker = 20;
@@ -265,7 +265,7 @@ async fn test_high_contention_scenario() {
     db.new_collection("hot_keys", vec![
         ("key_id", FieldType::String, false),
         ("counter", FieldType::Int, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     let num_workers = 100;
     let num_hot_keys = 5; // Small number of keys = high contention
@@ -321,7 +321,7 @@ async fn test_high_contention_scenario() {
         let key = format!("hot_key_{}", i);
         let count = all_docs.iter()
             .filter(|doc| {
-                matches!(doc.data.get("key_id"), Some(Value::String(k)) if k == &key)
+                matches!(doc.data.get("key_id"), Some(Value::String(k)) if k == key.as_str())
             })
             .count();
         println!("    {}: {} writes", key, count);
@@ -343,7 +343,7 @@ async fn test_concurrent_query_operations() {
         ("name", FieldType::String, false),
         ("price", FieldType::Int, false),
         ("category", FieldType::String, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     // Create index for faster queries
     db.create_index("products", "price").await.unwrap();
@@ -443,7 +443,7 @@ async fn test_mixed_workload_stress() {
     db.new_collection("mixed", vec![
         ("id", FieldType::String, false),
         ("value", FieldType::Int, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     let num_workers = 50;
     let ops_per_worker = 100;

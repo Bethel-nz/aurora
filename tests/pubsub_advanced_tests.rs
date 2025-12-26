@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
-fn create_test_db(path: std::path::PathBuf) -> Result<Aurora, aurora_db::AuroraError> {
+fn create_test_db(path: std::path::PathBuf) -> Result<Aurora, aurora_db::AqlError> {
     let mut config = AuroraConfig::default();
     config.db_path = path;
     config.enable_wal = false; // Not needed for PubSub tests
@@ -34,7 +34,7 @@ async fn test_high_fanout_single_event() {
     db.new_collection("events", vec![
         ("type", FieldType::String, false),
         ("data", FieldType::String, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     let num_subscribers = 100;
     let num_events = 10;
@@ -132,7 +132,7 @@ async fn test_slow_consumer_backpressure() {
 
     db.new_collection("backpressure", vec![
         ("id", FieldType::String, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     // Create fast and slow consumers
     let mut fast_listener = db.listen("backpressure");
@@ -226,7 +226,7 @@ async fn test_subscriber_churn() {
 
     db.new_collection("churn_test", vec![
         ("counter", FieldType::Int, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     let events_published = Arc::new(AtomicUsize::new(0));
     let total_received = Arc::new(AtomicUsize::new(0));
@@ -234,7 +234,7 @@ async fn test_subscriber_churn() {
     println!("Testing rapid subscribe/unsubscribe while publishing events");
 
     // Publisher task
-    let db_pub = Arc::clone(&db);
+    let db_pub: Arc<Aurora> = Arc::clone(&db);
     let events_count = Arc::clone(&events_published);
     let publisher = tokio::spawn(async move {
         for i in 0..100 {
@@ -249,7 +249,7 @@ async fn test_subscriber_churn() {
     // Subscriber churn task
     let mut churn_tasks = vec![];
     for _ in 0..20 {
-        let db_sub = Arc::clone(&db);
+        let db_sub: Arc<Aurora> = Arc::clone(&db);
         let received = Arc::clone(&total_received);
 
         churn_tasks.push(tokio::spawn(async move {
@@ -318,7 +318,7 @@ async fn test_event_ordering() {
 
     db.new_collection("ordered", vec![
         ("seq", FieldType::Int, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     let mut listener = db.listen("ordered");
 
@@ -395,7 +395,7 @@ async fn test_massive_fanout_under_load() {
 
     db.new_collection("massive", vec![
         ("id", FieldType::String, false),
-    ]).unwrap();
+    ]).await.unwrap();
 
     let num_subscribers = 200;
     let num_events = 50;
@@ -491,9 +491,9 @@ async fn test_multiple_collections_pubsub() {
     let db = Arc::new(create_test_db(db_path).unwrap());
 
     // Create multiple collections
-    db.new_collection("users", vec![("name", FieldType::String, false)]).unwrap();
-    db.new_collection("orders", vec![("order_id", FieldType::String, false)]).unwrap();
-    db.new_collection("products", vec![("product_id", FieldType::String, false)]).unwrap();
+    db.new_collection("users", vec![("name", FieldType::String, false)]).await.unwrap();
+    db.new_collection("orders", vec![("order_id", FieldType::String, false)]).await.unwrap();
+    db.new_collection("products", vec![("product_id", FieldType::String, false)]).await.unwrap();
 
     // Create listeners for each collection
     let mut user_listener = db.listen("users");

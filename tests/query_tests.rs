@@ -11,10 +11,12 @@ async fn test_any_type_and_nested_query() {
 
     // 1. Test schema validation for Any type
     // Should not allow unique (and by extension, indexed) Any fields
-    let res = db.new_collection(
-        "test_collection",
-        vec![("meta", FieldType::Any, true)], // true for unique
-    );
+    let res = db
+        .new_collection(
+            "test_collection",
+            vec![("meta", FieldType::Any, true)], // true for unique
+        )
+        .await;
     assert!(res.is_err(), "Should not allow unique 'Any' fields");
 
     // Create a valid collection
@@ -25,6 +27,7 @@ async fn test_any_type_and_nested_query() {
             ("meta", FieldType::Any, false),
         ],
     )
+    .await
     .unwrap();
 
     // Should not allow creating an index on an Any field
@@ -54,7 +57,10 @@ async fn test_any_type_and_nested_query() {
         .await
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].data.get("name").unwrap().as_str(), Some("My Document"));
+    assert_eq!(
+        results[0].data.get("name").unwrap().as_str(),
+        Some("My Document")
+    );
 
     // Test nested gt
     let results = db
@@ -73,7 +79,7 @@ async fn test_any_type_and_nested_query() {
         .await
         .unwrap();
     assert_eq!(results.len(), 0);
-    
+
     // Test query on non-Any field to ensure that still works
     let results = db
         .query("test_collection")
@@ -98,6 +104,7 @@ async fn test_any_field_caching() {
             ("data", FieldType::Any, false),
         ],
     )
+    .await
     .unwrap();
 
     let doc_id_any = db
@@ -132,6 +139,7 @@ async fn test_any_field_caching() {
         "normal_collection",
         vec![("name", FieldType::String, false)],
     )
+    .await
     .unwrap();
 
     let doc_id_normal = db
@@ -156,7 +164,9 @@ async fn test_any_field_caching() {
         "Document should not be in cache after clearing"
     );
 
-    let _ = db.get_document("normal_collection", &doc_id_normal).unwrap();
+    let _ = db
+        .get_document("normal_collection", &doc_id_normal)
+        .unwrap();
 
     assert!(
         db.is_in_hot_cache(&key_normal),
