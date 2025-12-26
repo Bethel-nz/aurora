@@ -25,7 +25,7 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
             ("completed", FieldType::Bool, false),
             ("priority", FieldType::Int, false),
         ],
-    )?;
+    ).await?;
 
     println!("✓ Created 'tasks' collection\n");
 
