@@ -5,9 +5,27 @@
 *.wal
 *.csv
 
-# Ignore benchmark output files
-# aurora_baseline_*.txt
+# Benchmark output / result files
+aurora_baseline_v2_*.txt
+reactive_benchmark_*.txt
+*_benchmark_report.txt
+pubsub_fanout_report.txt
+memory_benchmark_report.txt
+broken_test.txt
 aurora_query_stats.log
+AURORA_FULL_VERIFICATION.log
+
+# Cargo check logs
+cargo_check*.log
+
+# Temporary scripts and notes
+fix_*.py
+all.md
+work_done_so_far.md
+
+# macOS
+.DS_Store
+**/.DS_Store
 
 # Ignore documentation TODO (internal planning)
 DOCUMENTATION_TODO.md
