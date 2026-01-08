@@ -99,8 +99,13 @@ pub enum DataInfo {
 
 #[derive(Debug)]
 enum WalOperation {
-    Put { key: Arc<String>, value: Arc<Vec<u8>> },
-    Delete { key: String },
+    Put {
+        key: Arc<String>,
+        value: Arc<Vec<u8>>,
+    },
+    Delete {
+        key: String,
+    },
 }
 
 impl DataInfo {
@@ -629,7 +634,8 @@ impl Aurora {
 
         if let Some(v) = &value {
             if self.should_cache_key(key) {
-                self.hot.set(Arc::new(key.to_string()), Arc::new(v.clone()), None);
+                self.hot
+                    .set(Arc::new(key.to_string()), Arc::new(v.clone()), None);
             }
         }
 
@@ -1256,7 +1262,8 @@ impl Aurora {
         // --- 3. Hot Cache Write (Pass Arc directly) ---
         if self.should_cache_key(&key_arc) {
             // You must update hot.set signature to accept Arcs (see hot.rs below)
-            self.hot.set(Arc::clone(&key_arc), Arc::clone(&value_arc), ttl);
+            self.hot
+                .set(Arc::clone(&key_arc), Arc::clone(&value_arc), ttl);
         }
 
         // --- 4. Indexing ---
@@ -1338,7 +1345,8 @@ impl Aurora {
 
                     // Update hot cache
                     if self.should_cache_key(&entry.key) {
-                        self.hot.set(Arc::new(entry.key.clone()), Arc::new(value.clone()), None);
+                        self.hot
+                            .set(Arc::new(entry.key.clone()), Arc::new(value.clone()), None);
                     }
 
                     // Rebuild indices
@@ -1393,7 +1401,11 @@ impl Aurora {
         // 3. Fallback to Cold Storage
         if let Some(data) = self.get(&collection_key)? {
             // Update Hot Cache
-            self.hot.set(Arc::new(collection_key.clone()), Arc::new(data.clone()), None);
+            self.hot.set(
+                Arc::new(collection_key.clone()),
+                Arc::new(data.clone()),
+                None,
+            );
 
             // Parse and update Schema Cache
             let schema = serde_json::from_slice::<Collection>(&data)?;
@@ -1965,7 +1977,8 @@ impl Aurora {
         // Update hot cache and indices
         for (key, value) in pairs {
             if self.should_cache_key(&key) {
-                self.hot.set(Arc::new(key.clone()), Arc::new(value.clone()), None);
+                self.hot
+                    .set(Arc::new(key.clone()), Arc::new(value.clone()), None);
             }
 
             if let Some(collection_name) = key.split(':').next()
@@ -2187,7 +2200,8 @@ impl Aurora {
             let value = item.value();
             self.cold.set(key.clone(), value.clone())?;
             if self.should_cache_key(key) {
-                self.hot.set(Arc::new(key.clone()), Arc::new(value.clone()), None);
+                self.hot
+                    .set(Arc::new(key.clone()), Arc::new(value.clone()), None);
             }
             if let Some(collection_name) = key.split(':').next()
                 && !collection_name.starts_with('_')
@@ -3805,7 +3819,8 @@ impl Aurora {
             for (key, value) in batch {
                 // 2. Update hot cache
                 if self.should_cache_key(&key) {
-                    self.hot.set(Arc::new(key.clone()), Arc::new(value.clone()), None);
+                    self.hot
+                        .set(Arc::new(key.clone()), Arc::new(value.clone()), None);
                 }
 
                 // 3. Update primary index with metadata only
@@ -4761,6 +4776,13 @@ impl Aurora {
         })?;
 
         let doc: Document = serde_json::from_slice(&existing)?;
+
+        // Append to WAL for durability
+        if let Some(wal) = &self.wal {
+            wal.write()
+                .map_err(|e| AqlError::new(ErrorCode::InternalError, e.to_string()))?
+                .append(crate::wal::Operation::Delete, &key, None)?;
+        }
 
         // Delete from storage
         self.cold.delete(&key)?;

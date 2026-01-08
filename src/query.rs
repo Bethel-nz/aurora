@@ -177,7 +177,10 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn in_values<T: Into<Value> + Clone>(&self, field: &str, values: &[T]) -> bool {
         let values: Vec<Value> = values.iter().map(|v| v.clone().into()).collect();
-        self.doc.data.get(field).is_some_and(|v| values.contains(v))
+        self.doc
+            .data
+            .get(field)
+            .is_some_and(|v| values.contains(v))
     }
 
     /// Check if a field is between two values (inclusive)
@@ -437,8 +440,7 @@ impl<'a> QueryBuilder<'a> {
             // Early termination path - scan only until we have enough results
             let target = self.limit.unwrap() + self.offset.unwrap_or(0);
             let filter = |doc: &Document| self.filters.iter().all(|f| f(doc));
-            self.db
-                .scan_and_filter(&self.collection, filter, Some(target))?
+            self.db.scan_and_filter(&self.collection, filter, Some(target))?
         } else {
             // Standard path - need all matching docs (for sorting or no limit)
             let mut docs = self.db.get_all_collection(&self.collection).await?;
@@ -851,10 +853,10 @@ impl<'a> SearchBuilder<'a> {
     pub async fn collect(self) -> Result<Vec<Document>> {
         let field = self
             .field
-            .ok_or_else(|| AqlError::invalid_operation("Search field not specified".to_string()))?;
+            .ok_or_else(|| AqlError::invalid_operation("Search field not specified"))?;
         let query = self
             .query
-            .ok_or_else(|| AqlError::invalid_operation("Search query not specified".to_string()))?;
+            .ok_or_else(|| AqlError::invalid_operation("Search query not specified"))?;
 
         self.db.search_text(&self.collection, &field, &query).await
     }
