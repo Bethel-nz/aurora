@@ -1,0 +1,652 @@
+aurora on  master [!?] is 📦 v0.5.0 via 🐍 v3.14.2 via 🦀 v1.92.0 took 4s
+❯ cargo test --release --test core_stress_bench -- --nocapture --test-threads 1
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 20.69s
+     Running tests/core_stress_bench.rs (target/release/deps/core_stress_bench-b5c270c95eb02009)
+
+running 3 tests
+test test_computed_fields_cpu_load ...
+=== BENCHMARK: Computed Fields CPU Load ===
+Ingesting 100,000 documents...
+Executing AQL with complex projections on 100k docs...
+  AQL Execution time: 445.527959ms
+  Throughput:         224453 docs/sec
+  Starvation check progress: 0/100
+ok
+test test_needle_in_haystack_scaling ...
+=== BENCHMARK: Needle in a Haystack (Lookup Scaling) ===
+
+Scale: 10,000 documents
+  Ingestion time: 311.218709ms
+  Indexed Lookup:  73.042µs
+  Full Table Scan: 33.771416ms
+
+Scale: 100,000 documents
+  Ingestion time: 3.138345209s
+  Indexed Lookup:  25.625µs
+  Full Table Scan: 394.730083ms
+
+Scale: 1,000,000 documents
+  Ingestion time: 32.5448175s
+  Indexed Lookup:  23.709µs
+  Full Table Scan: 4.952004125s
+ok
+test test_worker_queue_throughput ...
+=== BENCHMARK: Worker Queue Throughput ===
+Enqueuing 10000 jobs...
+  Enqueue time: 195.392625ms
+  Throughput:   51179 jobs/sec
+Starting 4 workers to clear queue...
+  Execution time: 413.764125ms
+  Throughput:     24168 jobs/sec
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 49.77s
+
+
+aurora on  master [!?] is 📦 v0.5.0 via 🐍 v3.14.2 via 🦀 v1.92.0 took 1m11s
+❯ cargo test --release --test aql_e2e_comprehensive -- --nocapture --test-threads 1
+cargo test --release --test fluent_vs_aql_parity -- --nocapture --test-threads 1
+cargo test --release --test aggregation_tests -- --nocapture --test-threads 1
+cargo test --release --test groupby_tests -- --nocapture --test-threads 1
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 7.80s
+     Running tests/aql_e2e_comprehensive.rs (target/release/deps/aql_e2e_comprehensive-4197d5745623b149)
+
+running 5 tests
+test test_e2e_advanced_filters ... ok
+test test_e2e_aggregation_and_grouping ... ok
+test test_e2e_crud_operations ... ok
+test test_e2e_schema_management ... ok
+test test_e2e_subscriptions ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
+
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 7.48s
+     Running tests/fluent_vs_aql_parity.rs (target/release/deps/fluent_vs_aql_parity-01f45d3ec2855c6c)
+
+running 1 test
+test test_fluent_vs_aql_parity ...
+=== Testing Parity: Fluent API vs AQL ===
+Checking Simple Filter Parity (age > 25)...
+SUCCESS: Simple Filter parity verified.
+Checking Complex Logic Parity (age < 25 OR age > 30)...
+SUCCESS: Complex Logic parity verified.
+Checking Update Parity...
+SUCCESS: Update parity verified.
+=== ALL PARITY TESTS PASSED ===
+
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 4.71s
+     Running tests/aggregation_tests.rs (target/release/deps/aggregation_tests-24d3ac073de94d5e)
+
+running 4 tests
+test test_aggregation_count ... ok
+test test_aggregation_empty_result ... ok
+test test_aggregation_min_max_filtered ... ok
+test test_aggregation_sum_avg ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 4.84s
+     Running tests/groupby_tests.rs (target/release/deps/groupby_tests-7c5b2b80073c2ed7)
+
+running 3 tests
+test test_groupby_aggregation ... ok
+test test_groupby_nodes ... ok
+test test_groupby_simple_count ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+
+aurora on  master [!?] is 📦 v0.5.0 via 🐍 v3.14.2 via 🦀 v1.92.0 took 34s
+❯ cargo test --release --test subscription_tests -- --nocapture --test-threads 1
+cargo test --release --test pubsub_advanced_tests -- --nocapture --test-threads 1
+cargo test --release --test pubsub_fanout_test -- --nocapture --test-threads 1
+cargo test --release --test reactive_extreme_test -- --nocapture --test-threads 1
+cargo test --release --test reactive_performance_test -- --nocapture --test-threads 1
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 4.36s
+     Running tests/subscription_tests.rs (target/release/deps/subscription_tests-f3c0c4115a1d0fd4)
+
+running 3 tests
+test test_subscription_filter ... ok
+test test_subscription_flow ... ok
+test test_subscription_string_filter ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.24s
+
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 3.84s
+     Running tests/pubsub_advanced_tests.rs (target/release/deps/pubsub_advanced_tests-9a142a1a06bfcc00)
+
+running 6 tests
+test test_event_ordering ...
+=== Event Ordering Test ===
+Publishing 50 events in sequence...
+
+Results:
+  Published: 50 events
+  Received: 50 events
+  Out of order events: 0
+SUCCESS: Event ordering preserved
+ok
+test test_high_fanout_single_event ...
+=== High Fan-Out Test: Single Event to Many Subscribers ===
+Creating 100 subscribers for 10 events
+Published 10 events in 1.209125ms
+
+Results:
+  Expected total: 1000
+  Actual received: 1000
+  Subscribers receiving all events: 100/100
+  Delivery rate: 100.0%
+SUCCESS: High fan-out test completed
+ok
+test test_massive_fanout_under_load ...
+=== Massive Fan-Out Under Load Test ===
+Creating 200 subscribers...
+Publishing 50 events to 200 subscribers...
+Published in 2.254833ms
+
+Results:
+  Expected total: 10000
+  Actual received: 10000
+  Min per subscriber: 50
+  Max per subscriber: 50
+  Average per subscriber: 50.0
+  Delivery rate: 100.0%
+SUCCESS: Massive fan-out test completed
+ok
+test test_multiple_collections_pubsub ...
+=== Multiple Collections PubSub Test ===
+Publishing events to multiple collections...
+
+Results:
+  Users events: 20/20
+  Orders events: 20/20
+  Products events: 20/20
+SUCCESS: Multiple collections PubSub working correctly
+ok
+test test_slow_consumer_backpressure ...
+=== Slow Consumer Backpressure Test ===
+Publishing 100 events rapidly...
+Published in 5.826291ms
+
+Results:
+  Events published: 100
+  Fast consumer received: 100
+  Slow consumer received: 56
+  Slow consumer received 56.0% of messages
+SUCCESS: Backpressure behavior observed
+ok
+test test_subscriber_churn ...
+=== Subscriber Churn Test ===
+Testing rapid subscribe/unsubscribe while publishing events
+
+Results:
+  Events published: 100
+  Total messages received across all subscribers: 960
+  Listener count after churn: 0
+SUCCESS: Subscriber churn handled correctly
+ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.99s
+
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 4.15s
+     Running tests/pubsub_fanout_test.rs (target/release/deps/pubsub_fanout_test-cb209b4026b07be8)
+
+running 1 test
+test test_pubsub_real_world_fanout ...
+=== AURORA PUBSUB REAL-WORLD FAN-OUT TEST ===
+Spawning 100 subscribers...
+Sending 1000 messages to 100 users...
+
+=== RESULTS ===
+Subscribers:         100
+Messages Sent:       1000
+Total Deliveries:    100000
+Total Time:          50.28ms
+Delivery Throughput: 1988978 msgs/sec (Fan-out)
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 6.21s
+     Running tests/reactive_extreme_test.rs (target/release/deps/reactive_extreme_test-24a31fc0943f8520)
+
+running 1 test
+test test_reactive_extreme_benchmark ... ================================================================================
+AURORA REACTIVE PERFORMANCE BENCHMARK
+Scenario: High-Frequency Data Ingestion + Live Query Watcher
+Timestamp: 2026-03-21 15:36:40
+================================================================================
+
+
+
+================================================================================
+Testing Reactive Scale: 1 updates
+================================================================================
+Scale: 1 updates
+Total matches processed: 1
+Processing time: 309.04µs
+Reactive throughput: 3236 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Testing Reactive Scale: 10 updates
+================================================================================
+Scale: 10 updates
+Total matches processed: 10
+Processing time: 340.79µs
+Reactive throughput: 29343 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Testing Reactive Scale: 100 updates
+================================================================================
+Scale: 100 updates
+Total matches processed: 100
+Processing time: 4.85ms
+Reactive throughput: 20613 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Testing Reactive Scale: 1,000 updates
+================================================================================
+Scale: 1,000 updates
+Total matches processed: 1000
+Processing time: 22.60ms
+Reactive throughput: 44247 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Testing Reactive Scale: 10,000 updates
+================================================================================
+Scale: 10,000 updates
+Total matches processed: 10000
+Processing time: 96.37ms
+Reactive throughput: 103765 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Testing Reactive Scale: 100,000 updates
+================================================================================
+WARNING: Watcher for 'live_data' lagged by 24 events. Applying 100ms backoff...
+WARNING: Watcher for 'live_data' lagged by 9 events. Applying 100ms backoff...
+Scale: 100,000 updates
+Total matches processed: 100000
+Processing time: 3.65s
+Reactive throughput: 27405 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Results saved to: reactive_benchmark_20260321_153647.txt and reactive_benchmark_20260321_153647.csv
+================================================================================
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.89s
+
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 5.21s
+     Running tests/reactive_performance_test.rs (target/release/deps/reactive_performance_test-cd2d37fa3b5446e8)
+
+running 1 test
+test test_reactive_latency_and_throughput ...
+=== AURORA REACTIVE PERFORMANCE TEST ===
+Watcher established. Starting high-frequency writes...
+
+==================================================
+AURORA REACTIVE PERFORMANCE REPORT
+Timestamp: 2026-03-21 15:36:54
+==================================================
+
+Total Reactive Events: 5000
+Overall Test Time:     63.54ms
+Write Throughput:      88951 events/sec
+Reactive Throughput:   78684 matches/sec
+Avg Latency:           12.71µs (End-to-End)
+
+Architectural Advantage: Push-based delta matching
+
+Report saved to: reactive_benchmark_report.txt
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+
+aurora on  master [!?] is 📦 v0.5.0 via 🐍 v3.14.2 via 🦀 v1.92.0 took 56s
+❯
+
+aurora on  master [!?] is 📦 v0.5.0 via 🐍 v3.14.2 via 🦀 v1.92.0 took 56s
+❯ cargo test --release --test variable_validation_test -- --nocapture --test-threads 1
+cargo test --release --test fragment_validation_test -- --nocapture --test-threads 1
+cargo test --release --test repro_transaction_bug -- --nocapture --test-threads 1
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 4.61s
+     Running tests/variable_validation_test.rs (target/release/deps/variable_validation_test-03e66757c5a5738b)
+
+running 3 tests
+test test_boolean_variable_type_validation ... ok
+test test_required_variable_in_mutation ... ok
+test test_required_variable_validation ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 0.83s
+     Running tests/fragment_validation_test.rs (target/release/deps/fragment_validation_test-b1a32312ef7a612c)
+
+running 5 tests
+test test_fragment_type_mismatch ... ok
+test test_fragment_with_invalid_fields ... ok
+test test_nested_fragment_spreads ... ok
+test test_undefined_fragment ... ok
+test test_valid_fragment_spread ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+aurora on  master [!?] is 📦 v0.5.0 via 🐍 v3.14.2 via 🦀 v1.92.0 took 16s
+❯ cargo test --release --test repro_transaction_bug -- --nocapture --test-threads 1 2>&1
+    Finished `release` profile [optimized] target(s) in 0.42s
+     Running tests/repro_transaction_bug.rs (target/release/deps/repro_transaction_bug-ed8aac664b315220)
+
+running 3 tests
+test test_aql_transaction_rollback_works ... Executing AQL transaction...
+Rolling back AQL transaction...
+SUCCESS: AQL Transaction rolled back correctly.
+ok
+test test_transaction_commit_works ... SUCCESS: Transaction commit works.
+ok
+test test_transaction_rollback_works ... Starting transaction...
+Inserting document during transaction scope...
+Rolling back transaction...
+SUCCESS: Document rolled back correctly.
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+aurora on  master [!?] is 📦 v0.5.0 via 🐍 v3.14.2 via 🦀 v1.92.0
+❯ cargo bench --bench baseline_benchmark
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `bench` profile [optimized] target(s) in 7.71s
+     Running benches/baseline_benchmark.rs (target/release/deps/baseline_benchmark-ee2e218dda16003a)
+Gnuplot not found, using plotters backend
+baseline_wal_enabled/write_native/1
+                        time:   [37.228 µs 38.520 µs 39.564 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low severe
+baseline_wal_enabled/write_aql/1
+                        time:   [56.015 µs 59.352 µs 62.440 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) low mild
+Prewarmed bench with 1000 documents
+baseline_wal_enabled/read_hot_native/1
+                        time:   [458.99 ns 460.14 ns 461.84 ns]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high severe
+baseline_wal_enabled/query_native/1
+                        time:   [603.01 µs 606.42 µs 608.72 µs]
+baseline_wal_enabled/query_aql/1
+                        time:   [590.13 µs 593.03 µs 594.66 µs]
+baseline_wal_enabled/write_native/10
+                        time:   [36.112 µs 38.955 µs 41.311 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low severe
+baseline_wal_enabled/write_aql/10
+                        time:   [56.216 µs 58.479 µs 61.512 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Prewarmed bench with 1000 documents
+baseline_wal_enabled/read_hot_native/10
+                        time:   [506.95 ns 508.10 ns 509.30 ns]
+baseline_wal_enabled/query_native/10
+                        time:   [602.35 µs 607.54 µs 620.36 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+baseline_wal_enabled/query_aql/10
+                        time:   [587.50 µs 590.22 µs 592.50 µs]
+baseline_wal_enabled/write_native/100
+                        time:   [36.952 µs 38.240 µs 39.319 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low severe
+  1 (10.00%) high mild
+baseline_wal_enabled/write_aql/100
+                        time:   [55.764 µs 58.942 µs 62.297 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Prewarmed bench with 1000 documents
+baseline_wal_enabled/read_hot_native/100
+                        time:   [455.55 ns 455.93 ns 456.54 ns]
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high severe
+baseline_wal_enabled/query_native/100
+                        time:   [603.52 µs 642.14 µs 703.44 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+baseline_wal_enabled/query_aql/100
+                        time:   [597.13 µs 600.04 µs 604.99 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+baseline_wal_enabled/write_native/1000
+                        time:   [36.000 µs 38.649 µs 40.983 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low severe
+baseline_wal_enabled/write_aql/1000
+                        time:   [56.275 µs 58.254 µs 60.803 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+Prewarmed bench with 1000 documents
+baseline_wal_enabled/read_hot_native/1000
+                        time:   [461.33 ns 473.92 ns 492.13 ns]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+baseline_wal_enabled/query_native/1000
+                        time:   [611.10 µs 627.30 µs 670.35 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+baseline_wal_enabled/query_aql/1000
+                        time:   [593.18 µs 602.04 µs 610.05 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+baseline_wal_enabled/write_native/10000
+                        time:   [36.149 µs 38.929 µs 41.476 µs]
+baseline_wal_enabled/write_aql/10000
+                        time:   [56.026 µs 58.164 µs 61.081 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high severe
+Prewarmed bench with 1000 documents
+baseline_wal_enabled/read_hot_native/10000
+                        time:   [483.64 ns 485.42 ns 488.61 ns]
+baseline_wal_enabled/query_native/10000
+                        time:   [607.37 µs 608.64 µs 609.77 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+baseline_wal_enabled/query_aql/10000
+                        time:   [588.29 µs 589.90 µs 591.96 µs]
+baseline_wal_enabled/write_native/100000
+                        time:   [35.526 µs 38.715 µs 41.499 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+baseline_wal_enabled/write_aql/100000
+                        time:   [54.310 µs 58.476 µs 62.575 µs]
+Prewarmed bench with 1000 documents
+baseline_wal_enabled/read_hot_native/100000
+                        time:   [589.84 ns 616.09 ns 662.80 ns]
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) low mild
+baseline_wal_enabled/query_native/100000
+                        time:   [7.7106 ms 7.8970 ms 8.0422 ms]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+baseline_wal_enabled/query_aql/100000
+                        time:   [7.7972 ms 7.8312 ms 7.8688 ms]
+baseline_wal_enabled/write_native/1000000
+                        time:   [41.077 µs 44.998 µs 51.870 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+baseline_wal_enabled/write_aql/1000000
+                        time:   [58.809 µs 61.501 µs 66.692 µs]
+Prewarmed bench with 1000 documents
+baseline_wal_enabled/read_hot_native/1000000
+                        time:   [1.0634 µs 1.1883 µs 1.2874 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high mild
+baseline_wal_enabled/query_native/1000000
+                        time:   [1.7676 ms 2.3268 ms 2.8998 ms]
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high severe
+baseline_wal_enabled/query_aql/1000000
+                        time:   [1.6202 ms 1.6428 ms 1.6719 ms]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+
+baseline_wal_disabled/write_native/1
+                        time:   [36.087 µs 37.929 µs 39.720 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low severe
+baseline_wal_disabled/write_aql/1
+                        time:   [55.452 µs 57.908 µs 59.891 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low severe
+  1 (10.00%) high mild
+Prewarmed bench with 1000 documents
+baseline_wal_disabled/read_hot_native/1
+                        time:   [453.80 ns 457.17 ns 464.63 ns]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+baseline_wal_disabled/query_native/1
+                        time:   [630.61 µs 656.12 µs 715.53 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+baseline_wal_disabled/query_aql/1
+                        time:   [605.36 µs 616.74 µs 643.04 µs]
+baseline_wal_disabled/write_native/10
+                        time:   [36.176 µs 37.215 µs 38.497 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low severe
+baseline_wal_disabled/write_aql/10
+                        time:   [56.376 µs 62.724 µs 71.409 µs]
+Found 3 outliers among 10 measurements (30.00%)
+  1 (10.00%) low severe
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+Prewarmed bench with 1000 documents
+baseline_wal_disabled/read_hot_native/10
+                        time:   [463.11 ns 464.16 ns 465.33 ns]
+baseline_wal_disabled/query_native/10
+                        time:   [619.11 µs 657.14 µs 686.13 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+baseline_wal_disabled/query_aql/10
+                        time:   [620.64 µs 629.91 µs 638.58 µs]
+baseline_wal_disabled/write_native/100
+                        time:   [36.085 µs 38.275 µs 40.457 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+baseline_wal_disabled/write_aql/100
+                        time:   [57.729 µs 59.776 µs 61.522 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low severe
+  1 (10.00%) high mild
+Prewarmed bench with 1000 documents
+baseline_wal_disabled/read_hot_native/100
+                        time:   [474.59 ns 484.31 ns 503.12 ns]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+baseline_wal_disabled/query_native/100
+                        time:   [648.70 µs 747.84 µs 860.90 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+baseline_wal_disabled/query_aql/100
+                        time:   [603.64 µs 633.33 µs 708.09 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+baseline_wal_disabled/write_native/1000
+                        time:   [36.274 µs 38.180 µs 39.930 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low severe
+baseline_wal_disabled/write_aql/1000
+                        time:   [56.161 µs 58.591 µs 61.336 µs]
+Found 3 outliers among 10 measurements (30.00%)
+  2 (20.00%) low severe
+  1 (10.00%) high mild
+Prewarmed bench with 1000 documents
+baseline_wal_disabled/read_hot_native/1000
+                        time:   [458.36 ns 461.05 ns 464.92 ns]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+baseline_wal_disabled/query_native/1000
+                        time:   [610.87 µs 613.91 µs 615.56 µs]
+baseline_wal_disabled/query_aql/1000
+                        time:   [603.62 µs 610.60 µs 620.31 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+baseline_wal_disabled/write_native/10000
+                        time:   [35.904 µs 38.313 µs 40.904 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+baseline_wal_disabled/write_aql/10000
+                        time:   [54.873 µs 58.812 µs 63.618 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high mild
+Prewarmed bench with 1000 documents
+baseline_wal_disabled/read_hot_native/10000
+                        time:   [474.73 ns 475.71 ns 477.17 ns]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+baseline_wal_disabled/query_native/10000
+                        time:   [638.74 µs 648.58 µs 670.32 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+baseline_wal_disabled/query_aql/10000
+                        time:   [627.09 µs 651.88 µs 703.49 µs]
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high severe
+baseline_wal_disabled/write_native/100000
+                        time:   [35.498 µs 38.911 µs 41.813 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+baseline_wal_disabled/write_aql/100000
+                        time:   [56.610 µs 59.679 µs 62.080 µs]
+Prewarmed bench with 1000 documents
+baseline_wal_disabled/read_hot_native/100000
+                        time:   [697.99 ns 729.06 ns 775.12 ns]
+baseline_wal_disabled/query_native/100000
+                        time:   [6.8111 ms 6.9075 ms 7.0235 ms]
+baseline_wal_disabled/query_aql/100000
+                        time:   [6.8607 ms 7.1286 ms 7.6218 ms]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+baseline_wal_disabled/write_native/1000000
+                        time:   [35.869 µs 37.897 µs 40.411 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+baseline_wal_disabled/write_aql/1000000
+                        time:   [54.303 µs 62.674 µs 72.764 µs]
+Prewarmed bench with 1000 documents
+baseline_wal_disabled/read_hot_native/1000000
+                        time:   [1.2172 µs 1.3057 µs 1.4863 µs]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+baseline_wal_disabled/query_native/1000000
+                        time:   [1.9625 ms 2.1706 ms 2.4307 ms]
+baseline_wal_disabled/query_aql/1000000
+                        time:   [1.6062 ms 1.7548 ms 2.0663 ms]

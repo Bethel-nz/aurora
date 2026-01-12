@@ -206,6 +206,9 @@ pub enum DurabilityMode {
     None,
     WAL,
     Strict,
+    /// Synchronous mode: every write blocks until it reaches durable storage.
+    /// No buffering, no WAL — safest but slowest.
+    Synchronous,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
