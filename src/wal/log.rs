@@ -5,15 +5,24 @@ use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LogEntry {
-    pub timestamp: u64,
+    pub timestamp: u128, // Using microseconds for high-frequency precision
     pub operation: Operation,
     pub key: String,
     pub value: Option<Vec<u8>>,
 }
 
-#[derive(Serialize, Deserialize)]
+/// Borrowed version of LogEntry for zero-copy serialization
+#[derive(Serialize)]
+struct LogEntryRef<'a> {
+    pub timestamp: u128,
+    pub operation: &'a Operation,
+    pub key: &'a str,
+    pub value: Option<&'a [u8]>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Operation {
     Put,
     Delete,
@@ -58,13 +67,13 @@ impl WriteAheadLog {
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|e| AqlError::new(ErrorCode::ProtocolError, e.to_string()))?
-            .as_secs();
+            .as_micros(); // Use microseconds for high-frequency precision
 
-        let entry = LogEntry {
+        let entry = LogEntryRef {
             timestamp,
-            operation,
-            key: key.to_string(),
-            value: value.map(|v| v.to_vec()),
+            operation: &operation,
+            key,
+            value,
         };
 
         let serialized = bincode::serialize(&entry)
@@ -73,9 +82,17 @@ impl WriteAheadLog {
 
         self.file.write_all(&len.to_le_bytes())?;
         self.file.write_all(&serialized)?;
+        
+        // Ensure data is flushed to the file so it can be recovered even if not synced to disk
+        self.file.flush()?;
+
+        Ok(())
+    }
+
+    /// Explicitly flush and sync the WAL to disk
+    pub fn sync(&mut self) -> Result<()> {
         self.file.flush()?;
         self.file.get_mut().sync_all()?;
-
         Ok(())
     }
 
