@@ -296,8 +296,14 @@ async fn execute_collection_query(
                 if let Some(node_field) =
                     edges_field.selection_set.iter().find(|f| f.name == "node")
                 {
-                    // Apply projection to node
-                    let node_doc = apply_projection(doc, &node_field.selection_set);
+                    // Apply projection to node with lookup support
+                    let node_doc = apply_projection_with_lookups(
+                        db,
+                        doc,
+                        &node_field.selection_set,
+                        variables,
+                    )
+                    .await?;
                     edge_data.insert("node".to_string(), Value::Object(node_doc.data));
                 }
             }
@@ -350,10 +356,13 @@ async fn execute_collection_query(
             let agg_doc = execute_aggregation(&paginated_docs, &field.selection_set)?;
             vec![agg_doc]
         } else if options.apply_projections && !field.selection_set.is_empty() {
-            paginated_docs
-                .into_iter()
-                .map(|doc| apply_projection(doc, &field.selection_set))
-                .collect()
+            let mut projected = Vec::new();
+            for doc in paginated_docs {
+                projected.push(
+                    apply_projection_with_lookups(db, doc, &field.selection_set, variables).await?,
+                );
+            }
+            projected
         } else {
             paginated_docs
         }
@@ -1901,6 +1910,25 @@ fn decode_cursor(cursor: &str) -> Result<String> {
         .map_err(|_| AqlError::new(ErrorCode::QueryError, "Invalid cursor UTF-8".to_string()))
 }
 
+fn get_doc_value_at_path<'a>(doc: &'a Document, path: &str) -> Option<&'a Value> {
+    if !path.contains('.') {
+        return doc.data.get(path);
+    }
+
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut current = doc.data.get(parts[0])?;
+
+    for &part in &parts[1..] {
+        if let Value::Object(map) = current {
+            current = map.get(part)?;
+        } else {
+            return None;
+        }
+    }
+
+    Some(current)
+}
+
 /// Check if a document matches a filter
 pub fn matches_filter(
     doc: &Document,
@@ -1908,24 +1936,16 @@ pub fn matches_filter(
     variables: &HashMap<String, ast::Value>,
 ) -> bool {
     match filter {
-        AqlFilter::Eq(field, value) => doc
-            .data
-            .get(field)
+        AqlFilter::Eq(field, value) => get_doc_value_at_path(doc, field)
             .map(|v| values_equal(v, value, variables))
             .unwrap_or(false),
-        AqlFilter::Ne(field, value) => doc
-            .data
-            .get(field)
+        AqlFilter::Ne(field, value) => get_doc_value_at_path(doc, field)
             .map(|v| !values_equal(v, value, variables))
             .unwrap_or(true),
-        AqlFilter::Gt(field, value) => doc
-            .data
-            .get(field)
+        AqlFilter::Gt(field, value) => get_doc_value_at_path(doc, field)
             .map(|v| value_compare(v, value, variables) == Some(std::cmp::Ordering::Greater))
             .unwrap_or(false),
-        AqlFilter::Gte(field, value) => doc
-            .data
-            .get(field)
+        AqlFilter::Gte(field, value) => get_doc_value_at_path(doc, field)
             .map(|v| {
                 matches!(
                     value_compare(v, value, variables),
@@ -1933,14 +1953,10 @@ pub fn matches_filter(
                 )
             })
             .unwrap_or(false),
-        AqlFilter::Lt(field, value) => doc
-            .data
-            .get(field)
+        AqlFilter::Lt(field, value) => get_doc_value_at_path(doc, field)
             .map(|v| value_compare(v, value, variables) == Some(std::cmp::Ordering::Less))
             .unwrap_or(false),
-        AqlFilter::Lte(field, value) => doc
-            .data
-            .get(field)
+        AqlFilter::Lte(field, value) => get_doc_value_at_path(doc, field)
             .map(|v| {
                 matches!(
                     value_compare(v, value, variables),
@@ -1950,8 +1966,7 @@ pub fn matches_filter(
             .unwrap_or(false),
         AqlFilter::In(field, value) => {
             if let ast::Value::Array(arr) = value {
-                doc.data
-                    .get(field)
+                get_doc_value_at_path(doc, field)
                     .map(|v| arr.iter().any(|item| values_equal(v, item, variables)))
                     .unwrap_or(false)
             } else {
@@ -1960,8 +1975,7 @@ pub fn matches_filter(
         }
         AqlFilter::NotIn(field, value) => {
             if let ast::Value::Array(arr) = value {
-                doc.data
-                    .get(field)
+                get_doc_value_at_path(doc, field)
                     .map(|v| !arr.iter().any(|item| values_equal(v, item, variables)))
                     .unwrap_or(true)
             } else {
@@ -1970,7 +1984,7 @@ pub fn matches_filter(
         }
         AqlFilter::Contains(field, value) => {
             if let (Some(Value::String(doc_val)), ast::Value::String(search)) =
-                (doc.data.get(field), value)
+                (get_doc_value_at_path(doc, field), value)
             {
                 doc_val.contains(search)
             } else {
@@ -1979,7 +1993,7 @@ pub fn matches_filter(
         }
         AqlFilter::StartsWith(field, value) => {
             if let (Some(Value::String(doc_val)), ast::Value::String(prefix)) =
-                (doc.data.get(field), value)
+                (get_doc_value_at_path(doc, field), value)
             {
                 doc_val.starts_with(prefix)
             } else {
@@ -1988,7 +2002,7 @@ pub fn matches_filter(
         }
         AqlFilter::EndsWith(field, value) => {
             if let (Some(Value::String(doc_val)), ast::Value::String(suffix)) =
-                (doc.data.get(field), value)
+                (get_doc_value_at_path(doc, field), value)
             {
                 doc_val.ends_with(suffix)
             } else {
@@ -1998,26 +2012,22 @@ pub fn matches_filter(
         AqlFilter::Matches(field, value) => {
             // Simplified regex matching - contains for now
             if let (Some(Value::String(doc_val)), ast::Value::String(pattern)) =
-                (doc.data.get(field), value)
+                (get_doc_value_at_path(doc, field), value)
             {
                 doc_val.contains(pattern)
             } else {
                 false
             }
         }
-        AqlFilter::IsNull(field) => doc
-            .data
-            .get(field)
+        AqlFilter::IsNull(field) => get_doc_value_at_path(doc, field)
             .map(|v| matches!(v, Value::Null))
             .unwrap_or(true),
-        AqlFilter::IsNotNull(field) => doc
-            .data
-            .get(field)
+        AqlFilter::IsNotNull(field) => get_doc_value_at_path(doc, field)
             .map(|v| !matches!(v, Value::Null))
             .unwrap_or(false),
         AqlFilter::And(filters) => filters.iter().all(|f| matches_filter(doc, f, variables)),
         AqlFilter::Or(filters) => filters.iter().any(|f| matches_filter(doc, f, variables)),
-        AqlFilter::Not(inner) => !matches_filter(doc, inner, variables),
+        AqlFilter::Not(filter) => !matches_filter(doc, filter, variables),
     }
 }
 
