@@ -3,6 +3,20 @@
 //! This module provides a powerful, fluent query interface for filtering, sorting,
 //! and retrieving documents from Aurora collections.
 //!
+//! ## Architectural Note: "The Query as a Stream"
+//!
+//! Unlike traditional databases that parse SQL strings into an execution plan,
+//! Aurora's query engine is built around the **Fluent Builder Pattern** and **Iterators**.
+//!
+//! 1.  **Type-Safe Construction**: Queries are built using Rust method chaining, ensuring
+//!     validity at compile time (or runtime construction without parsing overhead).
+//! 2.  **Zero-Allocation Filtering**: The `Queryable` trait and `DocumentFilter` type allow
+//!     us to stack closures. These filters run directly on the data stream without
+//!     intermediate allocations.
+//! 3.  **Reactive Core**: The `watch()` method transforms a static query into a
+//!     live stream of `QueryUpdate` events. This is the heart of the "Embedded Platform"
+//!     concept—allowing the application to react to data changes instantly.
+//!
 //! ## Examples
 //!
 //! ```rust
@@ -66,6 +80,9 @@ pub struct QueryBuilder<'a> {
     limit: Option<usize>,
     offset: Option<usize>,
     fields: Option<Vec<String>>,
+    /// Optional debounce duration for reactive queries (watch)
+    /// When set, updates are batched and emitted at most once per interval
+    debounce_duration: Option<std::time::Duration>,
 }
 
 /// Builder for constructing document filter expressions.
@@ -177,10 +194,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// ```
     pub fn in_values<T: Into<Value> + Clone>(&self, field: &str, values: &[T]) -> bool {
         let values: Vec<Value> = values.iter().map(|v| v.clone().into()).collect();
-        self.doc
-            .data
-            .get(field)
-            .is_some_and(|v| values.contains(v))
+        self.doc.data.get(field).is_some_and(|v| values.contains(v))
     }
 
     /// Check if a field is between two values (inclusive)
@@ -340,6 +354,7 @@ impl<'a> QueryBuilder<'a> {
             limit: None,
             offset: None,
             fields: None,
+            debounce_duration: None,
         }
     }
 
@@ -419,6 +434,28 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
+    /// Set debounce/throttle interval for reactive queries (watch)
+    ///
+    /// When watching a query, updates will be batched and emitted at most once
+    /// per interval. This prevents overwhelming the UI with high-frequency updates.
+    /// Events are deduplicated by document ID, keeping only the latest state.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// // Rate-limit to max 10 updates per second
+    /// let mut watcher = db.query("logs")
+    ///     .filter(|f| f.eq("level", "ERROR"))
+    ///     .debounce(Duration::from_millis(100))
+    ///     .watch()
+    ///     .await?;
+    /// ```
+    pub fn debounce(mut self, duration: std::time::Duration) -> Self {
+        self.debounce_duration = Some(duration);
+        self
+    }
+
     /// Execute the query and collect the results
     ///
     /// # Returns
@@ -440,7 +477,8 @@ impl<'a> QueryBuilder<'a> {
             // Early termination path - scan only until we have enough results
             let target = self.limit.unwrap() + self.offset.unwrap_or(0);
             let filter = |doc: &Document| self.filters.iter().all(|f| f(doc));
-            self.db.scan_and_filter(&self.collection, filter, Some(target))?
+            self.db
+                .scan_and_filter(&self.collection, filter, Some(target))?
         } else {
             // Standard path - need all matching docs (for sorting or no limit)
             let mut docs = self.db.get_all_collection(&self.collection).await?;

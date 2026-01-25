@@ -98,6 +98,7 @@ pub enum DataInfo {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum WalOperation {
     Put {
         key: Arc<String>,
@@ -163,6 +164,8 @@ pub struct Aurora {
     pub workers: Option<Arc<crate::workers::WorkerSystem>>,
     //  Asynchronous WAL Writer Channel
     wal_writer: Option<tokio::sync::mpsc::UnboundedSender<WalOperation>>,
+    // Computed fields manager
+    pub computed: Arc<RwLock<crate::computed::ComputedFields>>,
 }
 
 impl fmt::Debug for Aurora {
@@ -201,6 +204,7 @@ impl Clone for Aurora {
             workers: self.workers.clone(),
 
             wal_writer: self.wal_writer.clone(),
+            computed: Arc::clone(&self.computed),
         }
     }
 }
@@ -257,6 +261,45 @@ impl Aurora {
     pub async fn execute<I: ToExecParams>(&self, input: I) -> Result<ExecutionResult> {
         let (aql, options) = input.into_params()?;
         parser::executor::execute(self, &aql, options).await
+    }
+
+    /// Stream real-time changes using AQL subscription syntax
+    ///
+    /// This is a convenience method that extracts the `ChangeListener` from
+    /// an AQL subscription query, providing a cleaner API than using `execute()` directly.
+    ///
+    /// # Example
+    /// ```
+    /// // Stream changes from active products
+    /// let mut listener = db.stream(r#"
+    ///     subscription {
+    ///         products(where: { active: { eq: true } }) {
+    ///             id
+    ///             name
+    ///         }
+    ///     }
+    /// "#).await?;
+    ///
+    /// // Receive real-time events
+    /// while let Ok(event) = listener.recv().await {
+    ///     println!("Change: {:?} on {}", event.change_type, event.id);
+    /// }
+    /// ```
+    pub async fn stream(&self, aql: &str) -> Result<crate::pubsub::ChangeListener> {
+        let result = self.execute(aql).await?;
+
+        match result {
+            ExecutionResult::Subscription(sub) => sub.stream.ok_or_else(|| {
+                crate::error::AqlError::new(
+                    crate::error::ErrorCode::QueryError,
+                    "Subscription did not return a stream".to_string(),
+                )
+            }),
+            _ => Err(crate::error::AqlError::new(
+                crate::error::ErrorCode::QueryError,
+                "Expected a subscription query, got a different operation type".to_string(),
+            )),
+        }
     }
 
     /// Explain AQL query execution plan
@@ -558,6 +601,7 @@ impl Aurora {
             compaction_shutdown,
             workers,
             wal_writer, // Initialize the new channel sender
+            computed: Arc::new(RwLock::new(crate::computed::ComputedFields::new())),
         };
 
         if !wal_entries.is_empty() {
@@ -626,6 +670,11 @@ impl Aurora {
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         // Check hot cache first
         if let Some(value) = self.hot.get(key) {
+            // Check if this is a blob reference (pointer to cold storage)
+            if value.starts_with(b"BLOBREF:") {
+                // It's a blob ref - fetch actual data from cold storage
+                return self.cold.get(key);
+            }
             return Ok(Some(value));
         }
 
@@ -776,6 +825,18 @@ impl Aurora {
             }
         }
         Vec::new()
+    }
+
+    /// Register a computed field definition
+    pub async fn register_computed_field(
+        &self,
+        collection: &str,
+        field: &str,
+        expression: crate::computed::ComputedExpression,
+    ) -> Result<()> {
+        let mut computed = self.computed.write().unwrap();
+        computed.register(collection, field, expression);
+        Ok(())
     }
 
     // ============================================
@@ -1241,6 +1302,9 @@ impl Aurora {
         let key_arc = Arc::new(key);
         let value_arc = Arc::new(value);
 
+        // Check if this is a blob (blobs bypass write buffer and hot cache)
+        let is_blob = value_arc.starts_with(b"BLOB:");
+
         // --- 1. WAL Write (Non-blocking send of Arcs) ---
         if let Some(ref sender) = self.wal_writer
             && self.config.durability_mode != DurabilityMode::None
@@ -1251,26 +1315,37 @@ impl Aurora {
             });
         }
 
-        // --- 2. Cold Store Write (Pass Arcs to buffer) ---
-        if let Some(ref write_buffer) = self.write_buffer {
+        // --- 2. Cold Store Write ---
+        if is_blob {
+            // Blobs write directly to cold storage (skip buffer to avoid memory pressure)
+            self.cold.set(key_arc.to_string(), value_arc.to_vec())?;
+        } else if let Some(ref write_buffer) = self.write_buffer {
             write_buffer.write(Arc::clone(&key_arc), Arc::clone(&value_arc))?;
         } else {
-            // Fallback: Unwrap Arc to pass to cold store
             self.cold.set(key_arc.to_string(), value_arc.to_vec())?;
         }
 
-        // --- 3. Hot Cache Write (Pass Arc directly) ---
+        // --- 3. Hot Cache Write ---
         if self.should_cache_key(&key_arc) {
-            // You must update hot.set signature to accept Arcs (see hot.rs below)
-            self.hot
-                .set(Arc::clone(&key_arc), Arc::clone(&value_arc), ttl);
+            if is_blob {
+                // For blobs: cache only a lightweight reference (not the actual data)
+                // Format: "BLOBREF:<size>" - just 16-24 bytes instead of potentially MB
+                let blob_ref = format!("BLOBREF:{}", value_arc.len());
+                self.hot
+                    .set(Arc::clone(&key_arc), Arc::new(blob_ref.into_bytes()), ttl);
+            } else {
+                self.hot
+                    .set(Arc::clone(&key_arc), Arc::clone(&value_arc), ttl);
+            }
         }
 
-        // --- 4. Indexing ---
-        if let Some(collection_name) = key_arc.split(':').next()
-            && !collection_name.starts_with('_')
-        {
-            self.index_value(collection_name, &key_arc, &value_arc)?;
+        // --- 4. Indexing (skip for blobs and system keys) ---
+        if !is_blob {
+            if let Some(collection_name) = key_arc.split(':').next()
+                && !collection_name.starts_with('_')
+            {
+                self.index_value(collection_name, &key_arc, &value_arc)?;
+            }
         }
 
         Ok(())
@@ -1536,7 +1611,12 @@ impl Aurora {
 
                 let key = entry.key();
                 if let Some(data) = self.get(key)? {
-                    if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                    if let Ok(mut doc) = serde_json::from_slice::<Document>(&data) {
+                        // Apply computed fields
+                        if let Ok(computed) = self.computed.read() {
+                            let _ = computed.apply(collection, &mut doc);
+                        }
+
                         if filter(&doc) {
                             documents.push(doc);
                         }
@@ -1566,11 +1646,13 @@ impl Aurora {
             for entry in index.iter() {
                 let key = entry.key();
 
-                // Fetch each document using get() which checks:
-                // 1. Hot cache first (instant)
-                // 2. Cold storage if not cached (disk I/O only for uncached items)
+                // Fetch document via hot cache -> cold storage fallback
                 if let Some(data) = self.get(key)? {
-                    if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                    if let Ok(mut doc) = serde_json::from_slice::<Document>(&data) {
+                        // Apply computed fields
+                        if let Ok(computed) = self.computed.read() {
+                            let _ = computed.apply(collection, &mut doc);
+                        }
                         documents.push(doc);
                     }
                 }
@@ -1580,7 +1662,11 @@ impl Aurora {
             let prefix = format!("{}:", collection);
             for result in self.cold.scan_prefix(&prefix) {
                 if let Ok((_key, value)) = result {
-                    if let Ok(doc) = serde_json::from_slice::<Document>(&value) {
+                    if let Ok(mut doc) = serde_json::from_slice::<Document>(&value) {
+                        // Apply computed fields
+                        if let Ok(computed) = self.computed.read() {
+                            let _ = computed.apply(collection, &mut doc);
+                        }
                         documents.push(doc);
                     }
                 }
@@ -4860,7 +4946,7 @@ impl Aurora {
     pub async fn create_collection_schema(
         &self,
         name: &str,
-        fields: Vec<crate::parser::ast::FieldDef>,
+        fields: HashMap<String, crate::types::FieldDefinition>,
     ) -> Result<()> {
         let collection_key = format!("_collection:{}", name);
 
@@ -4870,48 +4956,9 @@ impl Aurora {
             return Ok(());
         }
 
-        let mut field_definitions = HashMap::new();
-        for field in fields {
-            let field_type = self.ast_type_to_field_type(&field.field_type.name)?;
-            let mut unique = false;
-            let mut indexed = false;
-
-            for directive in &field.directives {
-                match directive.name.as_str() {
-                    "unique" => unique = true,
-                    "indexed" => indexed = true,
-                    "primaryKey" => {
-                        unique = true;
-                        indexed = true;
-                    }
-                    _ => {}
-                }
-            }
-
-            if unique {
-                indexed = true;
-            }
-
-            if field_type == FieldType::Any && (unique || indexed) {
-                return Err(AqlError::new(
-                    ErrorCode::InvalidDefinition,
-                    "Fields of type 'Any' cannot be unique or indexed.".to_string(),
-                ));
-            }
-
-            field_definitions.insert(
-                field.name.clone(),
-                FieldDefinition {
-                    field_type: field_type.clone(),
-                    unique,
-                    indexed,
-                },
-            );
-        }
-
         let collection = Collection {
             name: name.to_string(),
-            fields: field_definitions,
+            fields,
         };
 
         let collection_data = serde_json::to_vec(&collection)?;
@@ -4925,7 +4972,8 @@ impl Aurora {
     pub async fn add_field_to_schema(
         &self,
         collection_name: &str,
-        field: crate::parser::ast::FieldDef,
+        name: String,
+        definition: crate::types::FieldDefinition,
     ) -> Result<()> {
         let mut collection = self
             .get_collection_definition(collection_name)
@@ -4933,39 +4981,17 @@ impl Aurora {
                 AqlError::new(ErrorCode::CollectionNotFound, collection_name.to_string())
             })?;
 
-        let field_type = self.ast_type_to_field_type(&field.field_type.name)?;
-        let mut unique = false;
-        let mut indexed = false;
-
-        for directive in &field.directives {
-            match directive.name.as_str() {
-                "unique" => unique = true,
-                "indexed" => indexed = true,
-                _ => {}
-            }
-        }
-        if unique {
-            indexed = true;
-        }
-
-        if collection.fields.contains_key(&field.name) {
+        if collection.fields.contains_key(&name) {
             return Err(AqlError::new(
                 ErrorCode::InvalidDefinition,
                 format!(
                     "Field '{}' already exists in collection '{}'",
-                    field.name, collection_name
+                    name, collection_name
                 ),
             ));
         }
 
-        collection.fields.insert(
-            field.name,
-            FieldDefinition {
-                field_type,
-                unique,
-                indexed,
-            },
-        );
+        collection.fields.insert(name, definition);
 
         let collection_key = format!("_collection:{}", collection_name);
         let collection_data = serde_json::to_vec(&collection)?;
@@ -4979,7 +5005,7 @@ impl Aurora {
     pub async fn drop_field_from_schema(
         &self,
         collection_name: &str,
-        field_name: &str,
+        field_name: String,
     ) -> Result<()> {
         let mut collection = self
             .get_collection_definition(collection_name)
@@ -4987,7 +5013,7 @@ impl Aurora {
                 AqlError::new(ErrorCode::CollectionNotFound, collection_name.to_string())
             })?;
 
-        if collection.fields.remove(field_name).is_none() {
+        if !collection.fields.contains_key(&field_name) {
             return Err(AqlError::new(
                 ErrorCode::InvalidDefinition,
                 format!(
@@ -4996,6 +5022,8 @@ impl Aurora {
                 ),
             ));
         }
+
+        collection.fields.remove(&field_name);
 
         let collection_key = format!("_collection:{}", collection_name);
         let collection_data = serde_json::to_vec(&collection)?;
@@ -5009,8 +5037,8 @@ impl Aurora {
     pub async fn rename_field_in_schema(
         &self,
         collection_name: &str,
-        from: &str,
-        to: &str,
+        from: String,
+        to: String,
     ) -> Result<()> {
         let mut collection = self
             .get_collection_definition(collection_name)
@@ -5018,27 +5046,22 @@ impl Aurora {
                 AqlError::new(ErrorCode::CollectionNotFound, collection_name.to_string())
             })?;
 
-        if !collection.fields.contains_key(from) {
+        if let Some(def) = collection.fields.remove(&from) {
+            if collection.fields.contains_key(&to) {
+                return Err(AqlError::new(
+                    ErrorCode::InvalidDefinition,
+                    format!(
+                        "Target field name '{}' already exists in collection '{}'",
+                        to, collection_name
+                    ),
+                ));
+            }
+            collection.fields.insert(to, def);
+        } else {
             return Err(AqlError::new(
                 ErrorCode::InvalidDefinition,
-                format!(
-                    "Field '{}' does not exist in collection '{}'",
-                    from, collection_name
-                ),
+                format!("Field '{}' not found", from),
             ));
-        }
-        if collection.fields.contains_key(to) {
-            return Err(AqlError::new(
-                ErrorCode::InvalidDefinition,
-                format!(
-                    "Field '{}' already exists in collection '{}'",
-                    to, collection_name
-                ),
-            ));
-        }
-
-        if let Some(def) = collection.fields.remove(from) {
-            collection.fields.insert(to.to_string(), def);
         }
 
         let collection_key = format!("_collection:{}", collection_name);
@@ -5053,7 +5076,8 @@ impl Aurora {
     pub async fn modify_field_in_schema(
         &self,
         collection_name: &str,
-        field: crate::parser::ast::FieldDef,
+        name: String,
+        definition: crate::types::FieldDefinition,
     ) -> Result<()> {
         let mut collection = self
             .get_collection_definition(collection_name)
@@ -5061,39 +5085,17 @@ impl Aurora {
                 AqlError::new(ErrorCode::CollectionNotFound, collection_name.to_string())
             })?;
 
-        if !collection.fields.contains_key(&field.name) {
+        if !collection.fields.contains_key(&name) {
             return Err(AqlError::new(
                 ErrorCode::InvalidDefinition,
                 format!(
                     "Field '{}' does not exist in collection '{}'",
-                    field.name, collection_name
+                    name, collection_name
                 ),
             ));
         }
 
-        let field_type = self.ast_type_to_field_type(&field.field_type.name)?;
-        let mut unique = false;
-        let mut indexed = false;
-
-        for directive in &field.directives {
-            match directive.name.as_str() {
-                "unique" => unique = true,
-                "indexed" => indexed = true,
-                _ => {}
-            }
-        }
-        if unique {
-            indexed = true;
-        }
-
-        collection.fields.insert(
-            field.name.clone(),
-            FieldDefinition {
-                field_type,
-                unique,
-                indexed,
-            },
-        );
+        collection.fields.insert(name, definition);
 
         let collection_key = format!("_collection:{}", collection_name);
         let collection_data = serde_json::to_vec(&collection)?;
@@ -5128,21 +5130,6 @@ impl Aurora {
         self.put(migration_key, timestamp.as_bytes().to_vec(), None)
             .await?;
         Ok(())
-    }
-
-    /// Helper to map AST string types to FieldType enum
-    fn ast_type_to_field_type(&self, type_name: &str) -> Result<FieldType> {
-        match type_name {
-            "String" | "ID" | "Email" | "URL" | "PhoneNumber" | "DateTime" | "Date" | "Time" => {
-                Ok(FieldType::String)
-            }
-            "Int" => Ok(FieldType::Int),
-            "Float" => Ok(FieldType::Float),
-            "Boolean" => Ok(FieldType::Bool),
-            "Any" => Ok(FieldType::Any),
-            "Uuid" => Ok(FieldType::Uuid),
-            _ => Ok(FieldType::Any),
-        }
     }
 }
 
@@ -5245,6 +5232,17 @@ mod tests {
 
         // 1. Enable WAL explicitly (if your config defaults to off for tests)
         // Note: Your implementation might default it on based on AuroraConfig.
+
+        // Create collection schema first
+        db.new_collection(
+            "users",
+            vec![
+                ("id", FieldType::String, false),
+                ("counter", FieldType::Int, false),
+            ],
+        )
+        .await
+        .unwrap();
 
         let db_clone = db.clone();
 

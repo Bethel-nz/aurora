@@ -3,8 +3,25 @@
 // Supports dynamic field calculation based on other field values
 // Examples: full_name from first_name + last_name, age from birthdate, etc.
 //
+// ## Architectural Note: "Retrieval-Time Evaluation"
+//
+// We chose **Retrieval-Time Evaluation** over "Store-Time Calculation" for specific reasons:
+// 1.  **Storage Efficiency**: We don't store redundant data.
+// 2.  **Flexibility**: You can change the formula for "full_name" and it instantly
+//     applies to all old documents without a migration/backfill.
+// 3.  **Simplicity**: No complex dependency graph to track when fields change.
+//
+// Trade-off: Querying with filters on computed fields requires a full scan (filter after compute),
+// which is acceptable for the embedded/local use case but would scale poorly in a distributed DB.
+//
+// ## Scripting Engine
+// We use `Rhai` for the scripting engine because it is:
+// - **Safe**: No separate process, no memory access outside the scope.
+// - **Fast**: Optimized for repeated execution.
+// - **Rust-Native**: seamless integration with our `Value` types.
+//
 // IMPORTANT: Computed fields are evaluated at RETRIEVAL TIME ONLY.
-// They do NOT affect mutations or pub/sub events.
+// They do NOT affect mutations or pub/sub events (unless explicitly enriched).
 
 use crate::error::Result;
 use crate::types::{Document, Value};
@@ -43,12 +60,13 @@ impl ComputedExpression {
                 let mut result = String::new();
                 for field in fields {
                     if let Some(value) = doc.data.get(field)
-                        && let Some(s) = value.as_str() {
-                            if !result.is_empty() {
-                                result.push(' ');
-                            }
-                            result.push_str(s);
+                        && let Some(s) = value.as_str()
+                    {
+                        if !result.is_empty() {
+                            result.push(' ');
                         }
+                        result.push_str(s);
+                    }
                 }
                 Some(Value::String(result))
             }
@@ -57,9 +75,10 @@ impl ComputedExpression {
                 let mut sum = 0i64;
                 for field in fields {
                     if let Some(value) = doc.data.get(field)
-                        && let Some(i) = value.as_i64() {
-                            sum += i;
-                        }
+                        && let Some(i) = value.as_i64()
+                    {
+                        sum += i;
+                    }
                 }
                 Some(Value::Int(sum))
             }
@@ -68,9 +87,10 @@ impl ComputedExpression {
                 let mut product = 1i64;
                 for field in fields {
                     if let Some(value) = doc.data.get(field)
-                        && let Some(i) = value.as_i64() {
-                            product *= i;
-                        }
+                        && let Some(i) = value.as_i64()
+                    {
+                        product *= i;
+                    }
                 }
                 Some(Value::Int(product))
             }
@@ -111,14 +131,16 @@ impl ComputedExpression {
 /// Replaces ${field_name} with the field's string value
 fn interpolate_template(template: &str, doc: &Document) -> String {
     let mut result = template.to_string();
-    
+
     // Find all ${...} patterns and replace them
     while let Some(start) = result.find("${") {
         if let Some(end) = result[start..].find('}') {
             let end = start + end;
             let field_name = &result[start + 2..end];
-            
-            let replacement = doc.data.get(field_name)
+
+            let replacement = doc
+                .data
+                .get(field_name)
                 .and_then(|v| match v {
                     Value::String(s) => Some(s.clone()),
                     Value::Int(i) => Some(i.to_string()),
@@ -127,13 +149,13 @@ fn interpolate_template(template: &str, doc: &Document) -> String {
                     _ => None,
                 })
                 .unwrap_or_default();
-            
+
             result = format!("{}{}{}", &result[..start], replacement, &result[end + 1..]);
         } else {
             break;
         }
     }
-    
+
     result
 }
 
@@ -178,9 +200,7 @@ fn dynamic_to_value(dyn_val: Dynamic) -> Option<Value> {
         return Some(Value::String(s));
     }
     if let Some(arr) = dyn_val.clone().try_cast::<Vec<Dynamic>>() {
-        let converted: Vec<Value> = arr.into_iter()
-            .filter_map(dynamic_to_value)
-            .collect();
+        let converted: Vec<Value> = arr.into_iter().filter_map(dynamic_to_value).collect();
         return Some(Value::Array(converted));
     }
     if let Some(map) = dyn_val.try_cast::<rhai::Map>() {
@@ -199,16 +219,16 @@ fn dynamic_to_value(dyn_val: Dynamic) -> Option<Value> {
 fn evaluate_rhai_script(script: &str, doc: &Document) -> Option<Value> {
     let engine = Engine::new();
     let mut scope = Scope::new();
-    
+
     // Create a map for the document fields
     let mut doc_map = rhai::Map::new();
     for (key, value) in &doc.data {
         doc_map.insert(key.clone().into(), value_to_dynamic(value));
     }
-    
+
     // Add doc to scope
     scope.push("doc", doc_map);
-    
+
     // Evaluate the script
     match engine.eval_with_scope::<Dynamic>(&mut scope, script) {
         Ok(result) => dynamic_to_value(result),
@@ -225,13 +245,13 @@ impl ComputedEngine {
     /// Create a new computed engine with built-in functions
     pub fn new() -> Self {
         let mut engine = Engine::new();
-        
+
         // Register built-in string functions
         engine.register_fn("uppercase", |s: &str| s.to_uppercase());
         engine.register_fn("lowercase", |s: &str| s.to_lowercase());
         engine.register_fn("trim", |s: &str| s.trim().to_string());
         engine.register_fn("len", |s: &str| s.len() as i64);
-        
+
         // Register math functions
         engine.register_fn("abs", |x: i64| x.abs());
         engine.register_fn("abs", |x: f64| x.abs());
@@ -240,24 +260,24 @@ impl ComputedEngine {
         engine.register_fn("ceil", |x: f64| x.ceil());
         engine.register_fn("min", |a: i64, b: i64| a.min(b));
         engine.register_fn("max", |a: i64, b: i64| a.max(b));
-        
+
         Self {
             engine: Arc::new(engine),
         }
     }
-    
+
     /// Evaluate a Rhai script with document context
     pub fn evaluate(&self, script: &str, doc: &Document) -> Option<Value> {
         let mut scope = Scope::new();
-        
+
         // Create a map for the document fields
         let mut doc_map = rhai::Map::new();
         for (key, value) in &doc.data {
             doc_map.insert(key.clone().into(), value_to_dynamic(value));
         }
-        
+
         scope.push("doc", doc_map);
-        
+
         match self.engine.eval_with_scope::<Dynamic>(&mut scope, script) {
             Ok(result) => dynamic_to_value(result),
             Err(_) => None,
@@ -316,7 +336,7 @@ impl ComputedFields {
     pub fn get_fields(&self, collection: &str) -> Option<&HashMap<String, ComputedExpression>> {
         self.fields.get(collection)
     }
-    
+
     /// Evaluate a script expression with document context
     pub fn evaluate_script(&self, script: &str, doc: &Document) -> Option<Value> {
         self.engine.evaluate(script, doc)
@@ -399,14 +419,21 @@ mod tests {
 
     #[test]
     fn test_template_expression() {
-        let expr = ComputedExpression::Template("Hello, ${name}! You are ${age} years old.".to_string());
+        let expr =
+            ComputedExpression::Template("Hello, ${name}! You are ${age} years old.".to_string());
 
         let mut doc = Document::new();
-        doc.data.insert("name".to_string(), Value::String("Alice".to_string()));
+        doc.data
+            .insert("name".to_string(), Value::String("Alice".to_string()));
         doc.data.insert("age".to_string(), Value::Int(30));
 
         let result = expr.evaluate(&doc);
-        assert_eq!(result, Some(Value::String("Hello, Alice! You are 30 years old.".to_string())));
+        assert_eq!(
+            result,
+            Some(Value::String(
+                "Hello, Alice! You are 30 years old.".to_string()
+            ))
+        );
     }
 
     #[test]
@@ -426,8 +453,10 @@ mod tests {
         let expr = ComputedExpression::Script(r#"doc.first + " " + doc.last"#.to_string());
 
         let mut doc = Document::new();
-        doc.data.insert("first".to_string(), Value::String("John".to_string()));
-        doc.data.insert("last".to_string(), Value::String("Doe".to_string()));
+        doc.data
+            .insert("first".to_string(), Value::String("John".to_string()));
+        doc.data
+            .insert("last".to_string(), Value::String("Doe".to_string()));
 
         let result = expr.evaluate(&doc);
         assert_eq!(result, Some(Value::String("John Doe".to_string())));
@@ -436,7 +465,7 @@ mod tests {
     #[test]
     fn test_rhai_conditional() {
         let expr = ComputedExpression::Script(
-            r#"if doc.age >= 18 { "adult" } else { "minor" }"#.to_string()
+            r#"if doc.age >= 18 { "adult" } else { "minor" }"#.to_string(),
         );
 
         let mut doc = Document::new();
@@ -455,7 +484,7 @@ mod tests {
         let expr = ComputedExpression::Script("doc.missing_field".to_string());
 
         let doc = Document::new();
-        
+
         // Script accessing missing field returns Null (Rhai returns unit for missing keys)
         let result = expr.evaluate(&doc);
         assert_eq!(result, Some(Value::Null));
@@ -464,9 +493,10 @@ mod tests {
     #[test]
     fn test_computed_engine_builtin_functions() {
         let engine = ComputedEngine::new();
-        
+
         let mut doc = Document::new();
-        doc.data.insert("name".to_string(), Value::String("hello world".to_string()));
+        doc.data
+            .insert("name".to_string(), Value::String("hello world".to_string()));
         doc.data.insert("value".to_string(), Value::Float(3.7));
 
         // Test uppercase
