@@ -157,6 +157,9 @@ async fn test_any_field_caching() {
         "Document without 'Any' field should be in hot cache after insert"
     );
 
+    // Flush write buffer to cold storage before testing the cold->hot cache path
+    db.flush().unwrap();
+
     // To be extra sure, clear cache, get, and check again
     db.clear_hot_cache();
     assert!(
