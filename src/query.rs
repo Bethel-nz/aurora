@@ -1190,16 +1190,35 @@ pub enum Filter {
     Or(Vec<Filter>),
 }
 
+fn get_field_value<'a>(doc: &'a Document, path: &str) -> Option<&'a Value> {
+    if !path.contains('.') {
+        return doc.data.get(path);
+    }
+
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut current = doc.data.get(parts[0])?;
+
+    for &part in &parts[1..] {
+        if let Value::Object(map) = current {
+            current = map.get(part)?;
+        } else {
+            return None;
+        }
+    }
+
+    Some(current)
+}
+
 impl Filter {
     /// Check if a document matches this filter
     pub fn matches(&self, doc: &Document) -> bool {
         match self {
-            Filter::Eq(field, value) => doc.data.get(field) == Some(value),
-            Filter::Gt(field, value) => doc.data.get(field).is_some_and(|v| v > value),
-            Filter::Gte(field, value) => doc.data.get(field).is_some_and(|v| v >= value),
-            Filter::Lt(field, value) => doc.data.get(field).is_some_and(|v| v < value),
-            Filter::Lte(field, value) => doc.data.get(field).is_some_and(|v| v <= value),
-            Filter::Contains(field, substr) => doc.data.get(field).is_some_and(|v| {
+            Filter::Eq(field, value) => get_field_value(doc, field) == Some(value),
+            Filter::Gt(field, value) => get_field_value(doc, field).is_some_and(|v| v > value),
+            Filter::Gte(field, value) => get_field_value(doc, field).is_some_and(|v| v >= value),
+            Filter::Lt(field, value) => get_field_value(doc, field).is_some_and(|v| v < value),
+            Filter::Lte(field, value) => get_field_value(doc, field).is_some_and(|v| v <= value),
+            Filter::Contains(field, substr) => get_field_value(doc, field).is_some_and(|v| {
                 if let Value::String(s) = v {
                     s.contains(substr)
                 } else if let Value::Array(arr) = v {
