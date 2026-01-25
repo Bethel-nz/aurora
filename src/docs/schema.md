@@ -1,111 +1,136 @@
 # Aurora DB Schema Management
 
-This guide covers how to define and manage collection schemas in Aurora DB.
+This guide covers how to define and manage collection schemas in Aurora DB using the Aurora Query Language (AQL).
 
 ## Collections Overview
 
-Collections in Aurora DB are similar to tables in relational databases but with more flexibility. Each collection consists of documents that share a common schema structure.
+Collections in Aurora DB are similar to tables in relational databases but with the flexibility of document stores. Each collection has a defined schema that enforces data integrity while allowing for rich types.
 
 ## Creating Collections
 
-To create a new collection, use the `new_collection` method:
+To create a new collection, use the `define collection` statement:
 
-```rust
-db.new_collection("users", vec![
-    ("name", FieldType::String, false),
-    ("email", FieldType::String, true),  // unique field
-    ("age", FieldType::Int, false),
-    ("active", FieldType::Bool, false),
-])?;
+```graphql
+mutation {
+    schema {
+        define collection users {
+            id: Uuid! @primary
+            name: String!
+            email: Email! @unique
+            age: Int
+            active: Boolean = true
+            preferences: JSON
+            metadata: Any
+        }
+    }
+}
 ```
 
-The method takes:
-
-1. Collection name
-2. Vector of field definitions, each containing:
-   - Field name
-   - Field type
-   - Uniqueness flag (true = unique constraint)
+The syntax includes:
+1. Collection name (`users`)
+2. Field definitions (`name: type`)
+3. Type modifiers (`!` for required fields)
+4. Default values (`= true`)
+5. Directives (`@primary`, `@unique`)
 
 ## Field Types
 
-Aurora DB supports the following field types:
+Aurora DB supports a rich set of field types:
 
-| Type      | Description                   | Example            |
-| --------- | ----------------------------- | ------------------ |
-| `String`  | Text data                     | `"John Doe"`       |
-| `Int`     | 64-bit integer                | `42`               |
-| `Float`   | 64-bit floating point         | `3.14159`          |
-| `Boolean` | True/false value              | `true`             |
-| `Uuid`    | Universally unique identifier | `Uuid::new_v4()`   |
-| `Array`   | List of values                | `["tag1", "tag2"]` |
-| `Object`  | Nested document               | `{"x": 1, "y": 2}` |
-| `Null`    | Absence of value              | `null`             |
+| Type          | Description                   | Example            |
+| ------------- | ----------------------------- | ------------------ |
+| `String`      | UTF-8 text data               | `"John Doe"`       |
+| `Int`         | 64-bit integer                | `42`               |
+| `Float`       | 64-bit floating point         | `3.14159`          |
+| `Boolean`     | True/false value              | `true`             |
+| `ID`          | Internal identifier           | `"user:123"`       |
+| `Uuid`        | UUID v4 or v7                 | `550e8400...`      |
+| `DateTime`    | ISO 8601 date-time            | `"2023-01-01T..."` |
+| `Date`        | Calendar date                 | `"2023-01-01"`     |
+| `Time`        | Time of day                   | `"12:00:00"`       |
+| `JSON`        | Structured JSON object        | `{"x": 1}`         |
+| `Email`       | Validated email address       | `"user@ex.com"`    |
+| `URL`         | Validated URL                 | `"https://..."`    |
+| `PhoneNumber` | Validated phone number        | `"+15550123"`      |
+| `Any`         | Dynamic/Schemaless field      | *Anything*         |
+| `[Type]`      | Array of values               | `["tag1", "tag2"]` |
 
-## Primary Keys and Unique Constraints
-
-Each collection can have one or more unique fields. When a field is marked as unique, Aurora DB enforces uniqueness across all documents in the collection.
-
-```rust
-// Create a collection with a unique email field
-db.new_collection("users", vec![
-    ("id", FieldType::Uuid, true),      // Primary key
-    ("email", FieldType::String, true), // Unique constraint
-    ("name", FieldType::String, false),
-])?;
-```
+### The `Any` Type
+The `Any` type allows you to store mixed-type data or unstructured content within a specific field, effectively bypassing schema validation for that field only.
 
 ## Modifying Schemas
 
+You can modify existing collections using the `alter collection` statement.
+
 ### Adding Fields
 
-To add a new field to an existing collection:
-
-```rust
-db.add_field_to_collection("users", "last_login", FieldType::String, false)?;
+```graphql
+mutation {
+    schema {
+        alter collection users {
+            add last_login: DateTime
+            add tags: [String]
+        }
+    }
+}
 ```
 
 ### Removing Fields
 
-To remove a field from a collection:
-
-```rust
-db.remove_field_from_collection("users", "temporary_field")?;
+```graphql
+mutation {
+    schema {
+        alter collection users {
+            drop temporary_field
+        }
+    }
+}
 ```
 
-## Schema Validation
+### Renaming Fields
 
-Aurora DB validates documents against the collection schema when inserting or updating:
-
-```rust
-// This will succeed
-db.insert_into("users", vec![
-    ("name", Value::String("John Doe".to_string())),
-    ("email", Value::String("john@example.com".to_string())),
-    ("age", Value::Int(30)),
-])?;
-
-// This will fail with a type mismatch error
-db.insert_into("users", vec![
-    ("name", Value::Int(123)),  // Error: expected String
-    ("email", Value::String("john@example.com".to_string())),
-])?;
-
-// This will fail with a missing required field
-db.insert_into("users", vec![
-    ("name", Value::String("John Doe".to_string())),
-    // Missing required email field
-])?;
+```graphql
+mutation {
+    schema {
+        alter collection users {
+            rename full_name to name
+        }
+    }
+}
 ```
 
-## Best Practices
+## Schema Directives
 
-1. **Define schemas explicitly**: Even though Aurora is schema-flexible, defining clear schemas improves data consistency.
+Directives allow you to add special behavior to fields:
 
-2. **Use appropriate types**: Choose the most specific type for your data to enable proper indexing and querying.
+*   `@primary`: Marks the field as the primary key.
+*   `@unique`: Enforces a unique constraint across the collection.
+*   `@indexed`: Creates an index for faster querying.
+*   `@validate(min: 0, max: 100)`: Adds custom validation rules.
 
-3. **Consider indexing needs**: Fields that will be frequently queried should be considered for indexing.
+Example with validation:
 
-4. **Limit unique constraints**: Use unique constraints only when necessary as they add overhead to write operations.
+```graphql
+define collection products {
+    sku: String! @primary
+    price: Float! @validate(min: 0.0)
+    stock: Int @validate(min: 0)
+}
+```
 
-5. **Design for querying**: Structure your schemas based on how you'll query the data, not just how you'll store it.
+## Migrations
+
+For complex schema changes that involve data transformation, use the `migrate` block:
+
+```graphql
+migration {
+    "v1.0.1": {
+        alter collection users {
+            add status: String
+        }
+        migrate data in users {
+            set status = "active" where { active: { eq: true } }
+        }
+    }
+}
+```

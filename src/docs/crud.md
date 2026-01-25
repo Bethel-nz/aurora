@@ -1,243 +1,178 @@
 # Aurora CRUD Operations Guide
 
-This guide covers the basic Create, Read, Update, and Delete operations with Aurora.
+This guide covers the basic Create, Read, Update, and Delete operations using the Aurora Query Language (AQL).
 
-## Creating Collections and Documents
+## Creating Documents
 
-### Define a Collection
+Use the `insertInto` mutation to add single documents.
 
-Collections are like tables in SQL databases, but with a more flexible schema:
-
-```rust
-// Create a users collection
-db.new_collection("users", vec![
-    ("name", FieldType::String, false),
-    ("email", FieldType::String, true),  // unique field
-    ("age", FieldType::Int, false),
-    ("active", FieldType::Bool, false),
-])?;
+```graphql
+mutation {
+    insertInto(
+        collection: "users",
+        data: {
+            name: "John Doe",
+            email: "john@example.com",
+            age: 32,
+            active: true
+        }
+    ) {
+        id # Return the ID of the created document
+    }
+}
 ```
 
-### Insert Documents
+### Batch Inserts
 
-```rust
-// Insert a document with specific fields
-let user_id = db.insert_into("users", vec![
-    ("name", "John Doe"),
-    ("email", "john@example.com"),
-    ("age", 32),
-    ("active", true),
-])?;
+For better performance, use `insertMany` to add multiple documents at once.
 
-// You can also use native Rust types
-let complex_doc_id = db.insert_into("products", vec![
-    ("name", Value::String("Widget Pro".to_string())),
-    ("price", Value::Float(29.99)),
-    ("tags", Value::Array(vec![
-        Value::String("new".to_string()),
-        Value::String("featured".to_string()),
-    ])),
-    ("metadata", Value::Object({
-        let mut map = HashMap::new();
-        map.insert("weight".to_string(), Value::Float(1.5));
-        map.insert("color".to_string(), Value::String("blue".to_string()));
-        map
-    })),
-])?;
+```graphql
+mutation {
+    insertMany(
+        collection: "products",
+        data: [
+            { name: "Widget A", price: 10.0 },
+            { name: "Widget B", price: 20.0 }
+        ]
+    ) {
+        count # Return number of inserted documents
+        ids   # Return list of generated IDs
+    }
+}
 ```
 
 ## Reading Documents
 
+Retrieving documents is done via the `query` operation.
+
 ### Get Document by ID
 
-```rust
-// Retrieve a specific document
-if let Some(user) = db.get_document("users", &user_id)? {
-    println!("Found user: {:?}", user);
-} else {
-    println!("User not found");
+```graphql
+query {
+    users(where: { id: { eq: "550e8400-e29b-41d4-a716-446655440000" } }) {
+        id
+        name
+        email
+    }
 }
 ```
 
-### Query Documents
+### Flexible Querying
 
-Aurora's querying system is powerful and flexible:
-
-```rust
-// Simple query for all users
-let all_users = db.query("users")
-    .collect()
-    .await?;
-
-// Filter for active users over 21
-let active_adult_users = db.query("users")
-    .filter(|f| f.eq("active", true) && f.gt("age", 21))
-    .collect()
-    .await?;
-
-// Sort by name
-let sorted_users = db.query("users")
-    .order_by("name", true)  // true = ascending
-    .collect()
-    .await?;
-
-// Pagination
-let page_2 = db.query("users")
-    .limit(10)
-    .offset(10)  // Skip first 10 results
-    .collect()
-    .await?;
-
-// Get just specific fields
-let names_only = db.query("users")
-    .select(&["name", "email"])
-    .collect()
-    .await?;
-
-// Get just the first match
-let first_match = db.query("users")
-    .filter(|f| f.eq("email", "john@example.com"))
-    .first_one()
-    .await?;
-
-// Count results
-let active_count = db.query("users")
-    .filter(|f| f.eq("active", true))
-    .count()
-    .await?;
-```
-
-### Search Documents
-
-For text search capabilities:
-
-```rust
-// Search for articles containing "quantum computing"
-let articles = db.search("articles")
-    .field("content")
-    .matching("quantum computing")
-    .collect()
-    .await?;
-
-// With fuzzy matching for typo tolerance
-let search_results = db.search("products")
-    .field("description")
-    .matching("wireless headpones")  // typo in headphones
-    .fuzzy(true)
-    .collect()
-    .await?;
+```graphql
+query {
+    users(
+        where: { active: { eq: true } },
+        orderBy: { field: "age", direction: DESC },
+        limit: 5
+    ) {
+        name
+        age
+    }
+}
 ```
 
 ## Updating Documents
 
-### Update a Document by ID
+Use the `update` mutation to modify existing documents.
 
-```rust
-// First get the document
-if let Some(mut user) = db.get_document("users", &user_id)? {
-    // Modify fields
-    user.data.insert("age".to_string(), Value::Int(33));
-    user.data.insert("last_login".to_string(), Value::String("2023-10-20".to_string()));
+### Update by Filter
 
-    // Save changes
-    db.put(
-        format!("users:{}", user.id),
-        serde_json::to_vec(&user)?,
-        None
-    )?;
+```graphql
+mutation {
+    update(
+        collection: "products",
+        where: { stock: { lt: 5 } },
+        data: {
+            status: "low_stock",
+            needs_reorder: true
+        }
+    ) {
+        affected # Returns the number of updated documents
+    }
 }
 ```
 
-### Update Documents by Query
+### Atomic Field Modifiers
 
-```rust
-// Update all matching documents
-let updated_count = db.query("products")
-    .filter(|f| f.lt("stock", 5))
-    .update([
-        ("status", Value::String("low_stock".to_string())),
-        ("needs_reorder", Value::Bool(true)),
-    ].into_iter().collect())
-    .await?;
+You can use special operators to modify values atomically (e.g., incrementing counters).
 
-println!("Updated {} products", updated_count);
+```graphql
+mutation {
+    update(
+        collection: "posts",
+        where: { id: { eq: "123" } },
+        data: {
+            views: { increment: 1 },
+            tags: { push: "trending" }
+        }
+    )
+}
 ```
 
 ## Deleting Documents
 
-### Delete a Document by ID
+Use the `deleteFrom` mutation to remove documents.
 
-```rust
-// Delete a specific document
-db.delete("users", &user_id)?;
-```
-
-### Delete Documents by Query
-
-```rust
-// Delete old logs
-let deleted_count = db.delete_by_query("logs", |f|
-    f.lt("timestamp", "2023-01-01")
-).await?;
-
-println!("Deleted {} old logs", deleted_count);
-```
-
-## Working with Transactions
-
-Aurora supports ACID transactions:
-
-```rust
-// Begin a transaction
-db.begin_transaction()?;
-
-try {
-    // Update account balance
-    let account = db.get_document("accounts", &account_id)?.unwrap();
-    let current_balance = match account.data.get("balance") {
-        Some(Value::Float(bal)) => *bal,
-        _ => 0.0,
-    };
-
-    // Create updated account with new balance
-    let mut updated_account = account.clone();
-    updated_account.data.insert("balance".to_string(), Value::Float(current_balance - 50.0));
-
-    // Save the updated account
-    db.put(
-        format!("accounts:{}", account_id),
-        serde_json::to_vec(&updated_account)?,
-        None
-    )?;
-
-    // Record the transaction
-    db.insert_into("transactions", vec![
-        ("account_id", account_id),
-        ("amount", Value::Float(-50.0)),
-        ("timestamp", Value::String(chrono::Utc::now().to_rfc3339())),
-    ])?;
-
-    // Commit the transaction
-    db.commit_transaction()?;
-} catch (error) {
-    // If any operation fails, roll back the transaction
-    db.rollback_transaction()?;
-    return Err(error);
+```graphql
+mutation {
+    deleteFrom(
+        collection: "users",
+        where: { id: { eq: "some-uuid" } }
+    ) {
+        affected
+    }
 }
 ```
 
-## Import and Export
+## Upsert (Update or Insert)
 
-Aurora provides easy backup and restoration:
+The `upsert` operation tries to find a document matching the filter. If found, it updates it; otherwise, it inserts a new one.
 
-```rust
-// Export a collection to JSON
-db.export_as_json("users", "./backups/users.json")?;
-
-// Import documents from JSON
-let stats = db.import_from_json("users", "./backups/users.json").await?;
-println!("Import completed: {} imported, {} skipped, {} failed",
-    stats.imported, stats.skipped, stats.failed);
+```graphql
+mutation {
+    upsert(
+        collection: "stats",
+        where: { date: { eq: "2023-10-27" } },
+        data: {
+            date: "2023-10-27",
+            daily_visits: 100
+        }
+    )
+}
 ```
 
-This guide covers the basic operations with Aurora. Refer to the API documentation for more advanced features and options.
+## Transactions
+
+Aurora supports ACID transactions using the `transaction` block. All operations inside the block succeed or fail together.
+
+```graphql
+mutation {
+    transaction {
+        # Deduct balance
+        debit: update(
+            collection: "accounts",
+            where: { id: { eq: "acc-1" } },
+            data: { balance: { decrement: 50.0 } }
+        )
+
+        # Credit balance
+        credit: update(
+            collection: "accounts",
+            where: { id: { eq: "acc-2" } },
+            data: { balance: { increment: 50.0 } }
+        )
+
+        # Record transaction log
+        log: insertInto(
+            collection: "transfers",
+            data: {
+                from: "acc-1",
+                to: "acc-2",
+                amount: 50.0,
+                timestamp: "2023-10-27T10:00:00Z"
+            }
+        )
+    }
+}
+```
