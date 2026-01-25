@@ -16,6 +16,9 @@ pub enum Operation {
     Subscription(Subscription),
     Schema(Schema),
     Migration(Migration),
+    FragmentDefinition(FragmentDef),
+    Introspection(IntrospectionQuery),
+    Handler(HandlerDef),
 }
 
 /// Query operation
@@ -107,6 +110,31 @@ pub struct DataTransform {
     pub field: String,
     pub expression: String, // Rhai expression
     pub filter: Option<Filter>,
+}
+
+/// Handler definition for event-driven automation
+#[derive(Debug, Clone)]
+pub struct HandlerDef {
+    pub name: String,
+    pub trigger: HandlerTrigger,
+    pub action: MutationOperation,
+}
+
+/// Event trigger for handlers
+#[derive(Debug, Clone, PartialEq)]
+pub enum HandlerTrigger {
+    /// Fires when a background job completes
+    JobCompleted,
+    /// Fires when a background job fails
+    JobFailed,
+    /// Fires when a document is inserted (optionally into specific collection)
+    Insert { collection: Option<String> },
+    /// Fires when a document is updated (optionally in specific collection)
+    Update { collection: Option<String> },
+    /// Fires when a document is deleted (optionally from specific collection)
+    Delete { collection: Option<String> },
+    /// Custom event name
+    Custom(String),
 }
 
 /// Field definition in schema
@@ -246,4 +274,263 @@ pub enum Value {
     Object(HashMap<String, Value>),
     Variable(String),
     Enum(String),
+}
+
+/// Fragment definition (top-level)
+#[derive(Debug, Clone)]
+pub struct FragmentDef {
+    pub name: String,
+    pub type_condition: String,
+    pub selection_set: Vec<Selection>,
+}
+
+/// Introspection query (__schema)
+#[derive(Debug, Clone)]
+pub struct IntrospectionQuery {
+    pub arguments: Vec<Argument>,
+    pub fields: Vec<String>,
+}
+
+/// Selection within a selection set
+#[derive(Debug, Clone)]
+pub enum Selection {
+    Field(Field),
+    FragmentSpread(String),
+    InlineFragment(InlineFragment),
+    ComputedField(ComputedField),
+    SpecialSelection(SpecialSelection),
+}
+
+/// Inline fragment (... on Type { ... })
+#[derive(Debug, Clone)]
+pub struct InlineFragment {
+    pub type_condition: String,
+    pub selection_set: Vec<Selection>,
+}
+
+/// Computed field with expression
+#[derive(Debug, Clone)]
+pub struct ComputedField {
+    pub alias: String,
+    pub expression: ComputedExpression,
+}
+
+/// Computed expression types
+#[derive(Debug, Clone)]
+pub enum ComputedExpression {
+    TemplateString(String),
+    FunctionCall {
+        name: String,
+        args: Vec<Expression>,
+    },
+    PipeExpression {
+        base: Box<Expression>,
+        operations: Vec<PipeOp>,
+    },
+    SqlExpression(String),
+    AggregateFunction {
+        name: String,
+        field: String,
+    },
+}
+
+/// Pipe operation (for pipe expressions)
+#[derive(Debug, Clone)]
+pub struct PipeOp {
+    pub function: String,
+    pub args: Vec<Expression>,
+}
+
+/// Expression (for computed fields and filters)
+#[derive(Debug, Clone)]
+pub enum Expression {
+    Literal(Value),
+    FieldAccess(Vec<String>),
+    Variable(String),
+    FunctionCall {
+        name: String,
+        args: Vec<Expression>,
+    },
+    Binary {
+        op: BinaryOp,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Unary {
+        op: UnaryOp,
+        expr: Box<Expression>,
+    },
+    Ternary {
+        condition: Box<Expression>,
+        then_expr: Box<Expression>,
+        else_expr: Box<Expression>,
+    },
+}
+
+/// Binary operators
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Ne,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    And,
+    Or,
+}
+
+/// Unary operators
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Not,
+    Neg,
+}
+
+/// Special selection types
+#[derive(Debug, Clone)]
+pub enum SpecialSelection {
+    Aggregate(AggregateSelection),
+    GroupBy(GroupBySelection),
+    Lookup(LookupSelection),
+    PageInfo(PageInfoSelection),
+    Edges(EdgesSelection),
+    Downsample(DownsampleSelection),
+    WindowFunction(WindowFunctionSelection),
+}
+
+/// Aggregate selection
+#[derive(Debug, Clone)]
+pub struct AggregateSelection {
+    pub fields: Vec<AggregateField>,
+}
+
+/// Aggregate field (count, sum, avg, etc.)
+#[derive(Debug, Clone)]
+pub struct AggregateField {
+    pub function: String,
+    pub field: Option<String>,
+}
+
+/// Group by selection
+#[derive(Debug, Clone)]
+pub struct GroupBySelection {
+    pub field: Option<String>,
+    pub fields: Option<Vec<String>>,
+    pub interval: Option<String>,
+    pub result_fields: Vec<String>,
+}
+
+/// Lookup selection (manual join)
+#[derive(Debug, Clone)]
+pub struct LookupSelection {
+    pub collection: String,
+    pub local_field: String,
+    pub foreign_field: String,
+    pub filter: Option<Filter>,
+    pub selection_set: Vec<Selection>,
+}
+
+/// Page info selection
+#[derive(Debug, Clone)]
+pub struct PageInfoSelection {
+    pub fields: Vec<String>,
+}
+
+/// Edges selection (cursor pagination)
+#[derive(Debug, Clone)]
+pub struct EdgesSelection {
+    pub fields: Vec<EdgeField>,
+}
+
+/// Edge field types
+#[derive(Debug, Clone)]
+pub enum EdgeField {
+    Cursor,
+    Node(Vec<Selection>),
+}
+
+/// Downsample selection (time-series)
+#[derive(Debug, Clone)]
+pub struct DownsampleSelection {
+    pub interval: String,
+    pub aggregation: String,
+    pub selection_set: Vec<Selection>,
+}
+
+/// Window function selection (time-series)
+#[derive(Debug, Clone)]
+pub struct WindowFunctionSelection {
+    pub alias: String,
+    pub field: String,
+    pub function: String,
+    pub window_size: i64,
+}
+
+// ============================================================================
+// SPECIAL ARGUMENT TYPES
+// ============================================================================
+
+/// Where clause
+#[derive(Debug, Clone)]
+pub struct WhereClause {
+    pub filter: Filter,
+}
+
+/// Order by clause
+#[derive(Debug, Clone)]
+pub struct OrderByClause {
+    pub orderings: Vec<Ordering>,
+}
+
+/// Single ordering
+#[derive(Debug, Clone)]
+pub struct Ordering {
+    pub field: String,
+    pub direction: SortDirection,
+}
+
+/// Sort direction
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
+/// Search arguments
+#[derive(Debug, Clone)]
+pub struct SearchArgs {
+    pub query: String,
+    pub fields: Vec<String>,
+    pub fuzzy: bool,
+    pub min_score: Option<f64>,
+}
+
+/// Validation arguments
+#[derive(Debug, Clone)]
+pub struct ValidateArgs {
+    pub rules: Vec<ValidationRule>,
+}
+
+/// Validation rule for a field
+#[derive(Debug, Clone)]
+pub struct ValidationRule {
+    pub field: String,
+    pub constraints: Vec<ValidationConstraint>,
+}
+
+/// Validation constraint types
+#[derive(Debug, Clone)]
+pub enum ValidationConstraint {
+    Format(String),
+    Min(f64),
+    Max(f64),
+    MinLength(i64),
+    MaxLength(i64),
+    Pattern(String),
 }

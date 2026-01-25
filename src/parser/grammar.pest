@@ -10,14 +10,16 @@ COMMENT = _{ "#" ~ (!"\n" ~ ANY)* ~ "\n"? }
 
 // ENTRY POINT
 
-document = { SOI ~ operation+ ~ EOI }
+document = { SOI ~ (operation | fragment_definition)+ ~ EOI }
 
 operation = {
     query_operation |
     mutation_operation |
     subscription_operation |
     schema_operation |
-    migration_operation
+    migration_operation |
+    introspection_query |
+    handler_operation
 }
 
 // QUERY OPERATIONS
@@ -32,7 +34,27 @@ selection_set = {
 
 field = {
     fragment_spread |
+    inline_fragment |
+    // Try special patterns BEFORE generic identifier patterns
+    aggregate_with_alias |
+    computed_field |
+    window_function |
+    special_field_selection |
     alias_name? ~ identifier ~ arguments? ~ directives? ~ sub_selection?
+}
+
+// Aggregate with optional alias - tried BEFORE generic field pattern
+aggregate_with_alias = {
+    alias_name? ~ "aggregate" ~ "{" ~ aggregate_field_list ~ "}"
+}
+
+// Special field selections for advanced queries (without aggregate)
+special_field_selection = {
+    alias_name? ~ (group_by_selection |
+    lookup_selection |
+    page_info_selection |
+    edges_selection |
+    downsample_selection)
 }
 
 alias_name = {
@@ -167,18 +189,42 @@ subscription_field = {
     alias_name? ~ identifier ~ arguments? ~ directives? ~ sub_selection
 }
 
-// ARGUMENTS
+// HANDLER OPERATIONS (Event-driven automation)
+
+handler_operation = {
+    "define" ~ "handler" ~ string ~ "{" ~ handler_body ~ "}"
+}
+
+handler_body = {
+    handler_trigger ~ "," ~ handler_action
+}
+
+handler_trigger = {
+    "on" ~ ":" ~ string
+}
+
+handler_action = {
+    "action" ~ ":" ~ "{" ~ mutation_call ~ "}"
+}
 
 arguments = {
     "(" ~ argument_list ~ ")"
 }
 
 argument_list = {
-    argument ~ ("," ~ argument)*
+    (argument | special_argument) ~ ("," ~ (argument | special_argument))*
 }
 
 argument = {
     identifier ~ ":" ~ value
+}
+
+// Special structured arguments
+special_argument = {
+    where_clause |
+    order_by_clause |
+    search_args |
+    validate_args
 }
 
 // Special argument structures
@@ -532,12 +578,19 @@ aggregate_selection = {
 }
 
 aggregate_field_list = {
-    aggregate_field ~ ("," ~ aggregate_field)*
+    aggregate_field ~ (","? ~ aggregate_field)*
 }
 
 aggregate_field = {
-    "count" |
-    aggregate_function
+    aggregate_field_alias? ~ aggregate_field_value
+}
+
+aggregate_field_alias = {
+    identifier ~ ":"
+}
+
+aggregate_field_value = {
+    "count" | aggregate_function
 }
 
 // Group By
@@ -591,7 +644,7 @@ edges_selection = {
 }
 
 edge_fields = {
-    edge_field ~ ("," ~ edge_field)*
+    edge_field+
 }
 
 edge_field = {
@@ -876,15 +929,16 @@ literal = {
 // SPECIAL TOKENS
 
 // Special field names
-special_field = {
-    "nodes" | "edges" | "pageInfo" | "aggregate" | "groupBy" |
+special_field = @{
+    ("nodes" | "edges" | "pageInfo" | "aggregate" | "groupBy" |
     "affected" | "deletedIds" | "operation" | "jobId" | "jobIds" |
-    "totalCount" | "score" | "__schema" | "__versions" | "__all__"
+    "totalCount" | "score" | "__schema" | "__versions" | "__all__") ~
+    !(ASCII_ALPHANUMERIC | "_")
 }
 
 // Reserved keywords
-keyword = {
-    "query" | "mutation" | "subscription" | "fragment" | "on" |
+keyword = @{
+    ("query" | "mutation" | "subscription" | "fragment" | "on" |
     "transaction" | "schema" | "collection" | "type" | "enum" | "scalar" |
     "insertInto" | "insertMany" | "update" | "upsert" | "deleteFrom" |
     "enqueueJob" | "enqueueJobs" | "import" | "export" |
@@ -897,5 +951,11 @@ keyword = {
     "startsWith" | "endsWith" | "matches" |
     "isNull" | "isNotNull" | "near" | "within" |
     "true" | "false" | "null" |
-    "ASC" | "DESC"
+    "ASC" | "DESC") ~
+    !(ASCII_ALPHANUMERIC | "_")
+}
+
+// Identifier that avoids keywords (for validation)
+identifier_not_keyword = @{
+    !keyword ~ identifier
 }

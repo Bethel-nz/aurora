@@ -6,8 +6,8 @@
 //! - Filter operator validation
 //! - Collection and field existence checks
 
+use super::ast::{self, Document, Field, Filter, Mutation, Query, Subscription, Value};
 use crate::types::{Collection, FieldType};
-use super::ast::{self, Document, Query, Mutation, Subscription, Field, Filter, Value};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -76,7 +76,7 @@ pub type ValidationResult = Result<(), Vec<ValidationError>>;
 pub trait SchemaProvider {
     /// Get a collection definition by name
     fn get_collection(&self, name: &str) -> Option<&Collection>;
-    
+
     /// Check if a collection exists
     fn collection_exists(&self, name: &str) -> bool {
         self.get_collection(name).is_some()
@@ -179,6 +179,9 @@ pub fn validate_document<S: SchemaProvider>(
             ast::Operation::Subscription(sub) => validate_subscription(sub, &mut ctx),
             ast::Operation::Schema(_) => {} // Schema definitions don't need validation
             ast::Operation::Migration(_) => {}
+            ast::Operation::FragmentDefinition(_) => {} // Fragment definitions validated when used
+            ast::Operation::Introspection(_) => {}      // Introspection is always valid
+            ast::Operation::Handler(_) => {}            // Handler definitions validated separately
         }
         ctx.pop_path();
     }
@@ -227,7 +230,10 @@ fn validate_mutation<S: SchemaProvider>(mutation: &Mutation, ctx: &mut Validatio
 }
 
 /// Validate a subscription operation
-fn validate_subscription<S: SchemaProvider>(sub: &Subscription, ctx: &mut ValidationContext<'_, S>) {
+fn validate_subscription<S: SchemaProvider>(
+    sub: &Subscription,
+    ctx: &mut ValidationContext<'_, S>,
+) {
     if let Some(name) = &sub.name {
         ctx.push_path(name);
     }
@@ -252,7 +258,7 @@ fn validate_variable_definitions<S: SchemaProvider>(
 ) {
     for def in definitions {
         let var_name = &def.name;
-        
+
         // Check if required variable is provided
         if def.var_type.is_required && def.default_value.is_none() {
             if !ctx.variables.contains_key(var_name) {
@@ -276,7 +282,7 @@ fn validate_field<S: SchemaProvider>(field: &Field, ctx: &mut ValidationContext<
     } else {
         // This is a collection query
         let collection_name = &field.name;
-        
+
         if !ctx.schema.collection_exists(collection_name) {
             ctx.add_error(
                 ErrorCode::UnknownCollection,
@@ -314,7 +320,7 @@ fn validate_selection_set<S: SchemaProvider>(
 
     for field in fields {
         let display_name = field.alias.as_ref().unwrap_or(&field.name);
-        
+
         // Check for duplicate aliases
         if aliases_seen.contains_key(display_name) {
             ctx.add_error(
@@ -330,7 +336,10 @@ fn validate_selection_set<S: SchemaProvider>(
             if !collection.fields.contains_key(field_name) {
                 ctx.add_error(
                     ErrorCode::UnknownField,
-                    format!("Field '{}' does not exist in collection '{}'", field_name, collection.name),
+                    format!(
+                        "Field '{}' does not exist in collection '{}'",
+                        field_name, collection.name
+                    ),
                 );
             }
         }
@@ -343,10 +352,10 @@ fn validate_mutation_operation<S: SchemaProvider>(
     ctx: &mut ValidationContext<'_, S>,
 ) {
     match &op.operation {
-        ast::MutationOp::Insert { collection, .. } |
-        ast::MutationOp::Update { collection, .. } |
-        ast::MutationOp::Upsert { collection, .. } |
-        ast::MutationOp::Delete { collection, .. } => {
+        ast::MutationOp::Insert { collection, .. }
+        | ast::MutationOp::Update { collection, .. }
+        | ast::MutationOp::Upsert { collection, .. }
+        | ast::MutationOp::Delete { collection, .. } => {
             if !ctx.schema.collection_exists(collection) {
                 ctx.add_error(
                     ErrorCode::UnknownCollection,
@@ -382,16 +391,15 @@ fn validate_filter<S: SchemaProvider>(
     ctx: &mut ValidationContext<'_, S>,
 ) {
     match filter {
-        Filter::Eq(field, value) |
-        Filter::Ne(field, value) |
-        Filter::Gt(field, value) |
-        Filter::Gte(field, value) |
-        Filter::Lt(field, value) |
-        Filter::Lte(field, value) => {
+        Filter::Eq(field, value)
+        | Filter::Ne(field, value)
+        | Filter::Gt(field, value)
+        | Filter::Gte(field, value)
+        | Filter::Lt(field, value)
+        | Filter::Lte(field, value) => {
             validate_filter_field(field, value, collection, ctx);
         }
-        Filter::In(field, value) |
-        Filter::NotIn(field, value) => {
+        Filter::In(field, value) | Filter::NotIn(field, value) => {
             // In/NotIn expects an array value
             if !matches!(value, Value::Array(_)) {
                 ctx.add_error(
@@ -401,10 +409,10 @@ fn validate_filter<S: SchemaProvider>(
             }
             validate_filter_field_exists(field, collection, ctx);
         }
-        Filter::Contains(field, _) |
-        Filter::StartsWith(field, _) |
-        Filter::EndsWith(field, _) |
-        Filter::Matches(field, _) => {
+        Filter::Contains(field, _)
+        | Filter::StartsWith(field, _)
+        | Filter::EndsWith(field, _)
+        | Filter::Matches(field, _) => {
             // String operations - check field is a string type
             if let Some(field_def) = collection.fields.get(field) {
                 if field_def.field_type != FieldType::String {
@@ -417,12 +425,10 @@ fn validate_filter<S: SchemaProvider>(
                 validate_filter_field_exists(field, collection, ctx);
             }
         }
-        Filter::IsNull(field) |
-        Filter::IsNotNull(field) => {
+        Filter::IsNull(field) | Filter::IsNotNull(field) => {
             validate_filter_field_exists(field, collection, ctx);
         }
-        Filter::And(filters) |
-        Filter::Or(filters) => {
+        Filter::And(filters) | Filter::Or(filters) => {
             for f in filters {
                 validate_filter(f, collection, ctx);
             }
@@ -442,7 +448,10 @@ fn validate_filter_field_exists<S: SchemaProvider>(
     if field != "id" && !collection.fields.contains_key(field) {
         ctx.add_error(
             ErrorCode::UnknownField,
-            format!("Filter field '{}' does not exist in collection '{}'", field, collection.name),
+            format!(
+                "Filter field '{}' does not exist in collection '{}'",
+                field, collection.name
+            ),
         );
     }
 }
@@ -465,14 +474,19 @@ fn validate_filter_field<S: SchemaProvider>(
                 ErrorCode::TypeMismatch,
                 format!(
                     "Type mismatch: field '{}' expects {:?}, got {:?}",
-                    field, field_def.field_type, value_type_name(value)
+                    field,
+                    field_def.field_type,
+                    value_type_name(value)
                 ),
             );
         }
     } else {
         ctx.add_error(
             ErrorCode::UnknownField,
-            format!("Filter field '{}' does not exist in collection '{}'", field, collection.name),
+            format!(
+                "Filter field '{}' does not exist in collection '{}'",
+                field, collection.name
+            ),
         );
     }
 }
@@ -480,7 +494,7 @@ fn validate_filter_field<S: SchemaProvider>(
 /// Check if a value is compatible with a field type
 fn is_type_compatible(field_type: &FieldType, value: &Value) -> bool {
     match (field_type, value) {
-        (_, Value::Null) => true, // Null is compatible with any type
+        (_, Value::Null) => true,        // Null is compatible with any type
         (_, Value::Variable(_)) => true, // Variables are resolved later
         (FieldType::String, Value::String(_)) => true,
         (FieldType::Int, Value::Int(_)) => true,
@@ -511,10 +525,79 @@ fn value_type_name(value: &Value) -> &'static str {
 }
 
 /// Extract a Filter from an AST Value (for parsing where arguments)
-fn extract_filter_from_value(_value: &Value) -> Option<Filter> {
-    // This is a placeholder - actual filter extraction would parse the where object
-    // For now, filters are constructed during parsing in mod.rs
-    None
+fn extract_filter_from_value(value: &Value) -> Option<Filter> {
+    match value {
+        Value::Object(map) => {
+            let mut filters = Vec::new();
+
+            for (key, val) in map {
+                match key.as_str() {
+                    "and" => {
+                        if let Value::Array(arr) = val {
+                            let sub_filters: Vec<Filter> =
+                                arr.iter().filter_map(extract_filter_from_value).collect();
+                            if !sub_filters.is_empty() {
+                                filters.push(Filter::And(sub_filters));
+                            }
+                        }
+                    }
+                    "or" => {
+                        if let Value::Array(arr) = val {
+                            let sub_filters: Vec<Filter> =
+                                arr.iter().filter_map(extract_filter_from_value).collect();
+                            if !sub_filters.is_empty() {
+                                filters.push(Filter::Or(sub_filters));
+                            }
+                        }
+                    }
+                    "not" => {
+                        if let Some(inner) = extract_filter_from_value(val) {
+                            filters.push(Filter::Not(Box::new(inner)));
+                        }
+                    }
+                    field => {
+                        // Field-level filter: { field: { eq: value } }
+                        if let Value::Object(ops) = val {
+                            for (op, op_val) in ops {
+                                let filter = match op.as_str() {
+                                    "eq" => Some(Filter::Eq(field.to_string(), op_val.clone())),
+                                    "ne" => Some(Filter::Ne(field.to_string(), op_val.clone())),
+                                    "gt" => Some(Filter::Gt(field.to_string(), op_val.clone())),
+                                    "gte" => Some(Filter::Gte(field.to_string(), op_val.clone())),
+                                    "lt" => Some(Filter::Lt(field.to_string(), op_val.clone())),
+                                    "lte" => Some(Filter::Lte(field.to_string(), op_val.clone())),
+                                    "in" => Some(Filter::In(field.to_string(), op_val.clone())),
+                                    "nin" => Some(Filter::NotIn(field.to_string(), op_val.clone())),
+                                    "contains" => {
+                                        Some(Filter::Contains(field.to_string(), op_val.clone()))
+                                    }
+                                    "startsWith" => {
+                                        Some(Filter::StartsWith(field.to_string(), op_val.clone()))
+                                    }
+                                    "endsWith" => {
+                                        Some(Filter::EndsWith(field.to_string(), op_val.clone()))
+                                    }
+                                    "isNull" => Some(Filter::IsNull(field.to_string())),
+                                    "isNotNull" => Some(Filter::IsNotNull(field.to_string())),
+                                    _ => None,
+                                };
+                                if let Some(f) = filter {
+                                    filters.push(f);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            match filters.len() {
+                0 => None,
+                1 => Some(filters.remove(0)),
+                _ => Some(Filter::And(filters)),
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Resolve variables in a document, replacing Value::Variable with actual values
@@ -537,6 +620,9 @@ pub fn resolve_variables(
             }
             ast::Operation::Schema(_) => {}
             ast::Operation::Migration(_) => {}
+            ast::Operation::FragmentDefinition(_) => {} // Handled when fragment is used
+            ast::Operation::Introspection(_) => {}      // No variables in introspection
+            ast::Operation::Handler(_) => {}            // Handlers don't have variable resolution
         }
     }
     Ok(())
@@ -562,9 +648,9 @@ fn resolve_in_mutation_op(
     variables: &HashMap<String, ast::Value>,
 ) -> Result<(), ValidationError> {
     match &mut op.operation {
-        ast::MutationOp::Insert { data, .. } |
-        ast::MutationOp::Update { data, .. } |
-        ast::MutationOp::Upsert { data, .. } => {
+        ast::MutationOp::Insert { data, .. }
+        | ast::MutationOp::Update { data, .. }
+        | ast::MutationOp::Upsert { data, .. } => {
             resolve_in_value(data, variables)?;
         }
         ast::MutationOp::InsertMany { data, .. } => {
@@ -618,32 +704,44 @@ fn resolve_in_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{FieldDefinition};
+    use crate::types::FieldDefinition;
 
     fn create_test_schema() -> InMemorySchema {
         let mut schema = InMemorySchema::new();
-        
+
         let mut users_fields = HashMap::new();
-        users_fields.insert("name".to_string(), FieldDefinition {
-            field_type: FieldType::String,
-            unique: false,
-            indexed: false,
-        });
-        users_fields.insert("email".to_string(), FieldDefinition {
-            field_type: FieldType::String,
-            unique: true,
-            indexed: true,
-        });
-        users_fields.insert("age".to_string(), FieldDefinition {
-            field_type: FieldType::Int,
-            unique: false,
-            indexed: false,
-        });
-        users_fields.insert("active".to_string(), FieldDefinition {
-            field_type: FieldType::Bool,
-            unique: false,
-            indexed: false,
-        });
+        users_fields.insert(
+            "name".to_string(),
+            FieldDefinition {
+                field_type: FieldType::String,
+                unique: false,
+                indexed: false,
+            },
+        );
+        users_fields.insert(
+            "email".to_string(),
+            FieldDefinition {
+                field_type: FieldType::String,
+                unique: true,
+                indexed: true,
+            },
+        );
+        users_fields.insert(
+            "age".to_string(),
+            FieldDefinition {
+                field_type: FieldType::Int,
+                unique: false,
+                indexed: false,
+            },
+        );
+        users_fields.insert(
+            "active".to_string(),
+            FieldDefinition {
+                field_type: FieldType::Bool,
+                unique: false,
+                indexed: false,
+            },
+        );
 
         schema.add_collection(Collection {
             name: "users".to_string(),
@@ -657,60 +755,60 @@ mod tests {
     fn test_validate_unknown_collection() {
         let schema = create_test_schema();
         let doc = Document {
-            operations: vec![
-                ast::Operation::Query(Query {
-                    name: None,
-                    variable_definitions: vec![],
+            operations: vec![ast::Operation::Query(Query {
+                name: None,
+                variable_definitions: vec![],
+                directives: vec![],
+                selection_set: vec![Field {
+                    alias: None,
+                    name: "nonexistent".to_string(),
+                    arguments: vec![],
                     directives: vec![],
                     selection_set: vec![Field {
                         alias: None,
-                        name: "nonexistent".to_string(),
+                        name: "id".to_string(),
                         arguments: vec![],
                         directives: vec![],
-                        selection_set: vec![Field {
-                            alias: None,
-                            name: "id".to_string(),
-                            arguments: vec![],
-                            directives: vec![],
-                            selection_set: vec![],
-                        }],
+                        selection_set: vec![],
                     }],
-                    variables_values: HashMap::new(),
-                }),
-            ],
+                }],
+                variables_values: HashMap::new(),
+            })],
         };
 
         let result = validate_document(&doc, &schema, HashMap::new());
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| e.code == ErrorCode::UnknownCollection));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::UnknownCollection)
+        );
     }
 
     #[test]
     fn test_validate_unknown_field() {
         let schema = create_test_schema();
         let doc = Document {
-            operations: vec![
-                ast::Operation::Query(Query {
-                    name: None,
-                    variable_definitions: vec![],
+            operations: vec![ast::Operation::Query(Query {
+                name: None,
+                variable_definitions: vec![],
+                directives: vec![],
+                selection_set: vec![Field {
+                    alias: None,
+                    name: "users".to_string(),
+                    arguments: vec![],
                     directives: vec![],
                     selection_set: vec![Field {
                         alias: None,
-                        name: "users".to_string(),
+                        name: "nonexistent_field".to_string(),
                         arguments: vec![],
                         directives: vec![],
-                        selection_set: vec![Field {
-                            alias: None,
-                            name: "nonexistent_field".to_string(),
-                            arguments: vec![],
-                            directives: vec![],
-                            selection_set: vec![],
-                        }],
+                        selection_set: vec![],
                     }],
-                    variables_values: HashMap::new(),
-                }),
-            ],
+                }],
+                variables_values: HashMap::new(),
+            })],
         };
 
         let result = validate_document(&doc, &schema, HashMap::new());
@@ -723,73 +821,73 @@ mod tests {
     fn test_validate_missing_required_variable() {
         let schema = create_test_schema();
         let doc = Document {
-            operations: vec![
-                ast::Operation::Query(Query {
-                    name: Some("GetUsers".to_string()),
-                    variable_definitions: vec![ast::VariableDefinition {
-                        name: "minAge".to_string(),
-                        var_type: ast::TypeAnnotation {
-                            name: "Int".to_string(),
-                            is_array: false,
-                            is_required: true,
-                        },
-                        default_value: None,
-                    }],
-                    directives: vec![],
-                    selection_set: vec![],
-                    variables_values: HashMap::new(),
-                }),
-            ],
+            operations: vec![ast::Operation::Query(Query {
+                name: Some("GetUsers".to_string()),
+                variable_definitions: vec![ast::VariableDefinition {
+                    name: "minAge".to_string(),
+                    var_type: ast::TypeAnnotation {
+                        name: "Int".to_string(),
+                        is_array: false,
+                        is_required: true,
+                    },
+                    default_value: None,
+                }],
+                directives: vec![],
+                selection_set: vec![],
+                variables_values: HashMap::new(),
+            })],
         };
 
         // No variables provided
         let result = validate_document(&doc, &schema, HashMap::new());
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| e.code == ErrorCode::MissingRequiredVariable));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::MissingRequiredVariable)
+        );
     }
 
     #[test]
     fn test_validate_valid_query() {
         let schema = create_test_schema();
         let doc = Document {
-            operations: vec![
-                ast::Operation::Query(Query {
-                    name: Some("GetUsers".to_string()),
-                    variable_definitions: vec![],
+            operations: vec![ast::Operation::Query(Query {
+                name: Some("GetUsers".to_string()),
+                variable_definitions: vec![],
+                directives: vec![],
+                selection_set: vec![Field {
+                    alias: None,
+                    name: "users".to_string(),
+                    arguments: vec![],
                     directives: vec![],
-                    selection_set: vec![Field {
-                        alias: None,
-                        name: "users".to_string(),
-                        arguments: vec![],
-                        directives: vec![],
-                        selection_set: vec![
-                            Field {
-                                alias: None,
-                                name: "id".to_string(),
-                                arguments: vec![],
-                                directives: vec![],
-                                selection_set: vec![],
-                            },
-                            Field {
-                                alias: None,
-                                name: "name".to_string(),
-                                arguments: vec![],
-                                directives: vec![],
-                                selection_set: vec![],
-                            },
-                            Field {
-                                alias: None,
-                                name: "email".to_string(),
-                                arguments: vec![],
-                                directives: vec![],
-                                selection_set: vec![],
-                            },
-                        ],
-                    }],
-                    variables_values: HashMap::new(),
-                }),
-            ],
+                    selection_set: vec![
+                        Field {
+                            alias: None,
+                            name: "id".to_string(),
+                            arguments: vec![],
+                            directives: vec![],
+                            selection_set: vec![],
+                        },
+                        Field {
+                            alias: None,
+                            name: "name".to_string(),
+                            arguments: vec![],
+                            directives: vec![],
+                            selection_set: vec![],
+                        },
+                        Field {
+                            alias: None,
+                            name: "email".to_string(),
+                            arguments: vec![],
+                            directives: vec![],
+                            selection_set: vec![],
+                        },
+                    ],
+                }],
+                variables_values: HashMap::new(),
+            })],
         };
 
         let result = validate_document(&doc, &schema, HashMap::new());
@@ -821,30 +919,32 @@ mod tests {
         validate_filter(&filter, collection, &mut ctx);
 
         assert!(ctx.has_errors());
-        assert!(ctx.errors.iter().any(|e| e.code == ErrorCode::InvalidFilterOperator));
+        assert!(
+            ctx.errors
+                .iter()
+                .any(|e| e.code == ErrorCode::InvalidFilterOperator)
+        );
     }
 
     #[test]
     fn test_resolve_variables() {
         let mut doc = Document {
-            operations: vec![
-                ast::Operation::Query(Query {
-                    name: None,
-                    variable_definitions: vec![],
-                    directives: vec![],
-                    selection_set: vec![Field {
-                        alias: None,
-                        name: "users".to_string(),
-                        arguments: vec![ast::Argument {
-                            name: "limit".to_string(),
-                            value: Value::Variable("pageSize".to_string()),
-                        }],
-                        directives: vec![],
-                        selection_set: vec![],
+            operations: vec![ast::Operation::Query(Query {
+                name: None,
+                variable_definitions: vec![],
+                directives: vec![],
+                selection_set: vec![Field {
+                    alias: None,
+                    name: "users".to_string(),
+                    arguments: vec![ast::Argument {
+                        name: "limit".to_string(),
+                        value: Value::Variable("pageSize".to_string()),
                     }],
-                    variables_values: HashMap::new(),
-                }),
-            ],
+                    directives: vec![],
+                    selection_set: vec![],
+                }],
+                variables_values: HashMap::new(),
+            })],
         };
 
         let mut vars = HashMap::new();
