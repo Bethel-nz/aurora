@@ -120,7 +120,7 @@ impl Job {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// // Create different job types
     /// let email = Job::new("send_email");
     /// let image = Job::new("resize_image");
@@ -152,7 +152,7 @@ impl Job {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use std::collections::HashMap;
     /// use serde_json::json;
     ///
@@ -175,7 +175,7 @@ impl Job {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use serde_json::json;
     ///
     /// let job = Job::new("send_email")
@@ -196,7 +196,7 @@ impl Job {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// // Critical - payments, security operations
     /// let payment = Job::new("charge_card")
     ///     .with_priority(JobPriority::Critical);
@@ -221,7 +221,7 @@ impl Job {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// // Network operation - retry more
     /// let api_call = Job::new("fetch_api_data")
     ///     .with_max_retries(5);
@@ -246,7 +246,7 @@ impl Job {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use chrono::{Utc, Duration};
     ///
     /// // Run in 1 hour
@@ -274,7 +274,7 @@ impl Job {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// // Quick task
     /// let quick = Job::new("send_sms")
     ///     .with_timeout(30); // 30 seconds

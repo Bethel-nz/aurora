@@ -373,11 +373,12 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
-    /// // Use a specific location
+   
+    /// use aurora_db::Aurora;
+    ///
     /// let db = Aurora::open("./data/my_application.db")?;
     ///
-    /// // Just use a name (creates in current directory)
+    /// // Or use a relative path
     /// let db = Aurora::open("customer_data.db")?;
     /// ```
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -732,12 +733,11 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::Aurora;
     ///
     /// let db = Aurora::open("mydb.db")?;
-    ///
-    /// // Check cache performance
+
     /// let stats = db.get_cache_stats();
     /// println!("Cache hit rate: {:.1}%", stats.hit_rate * 100.0);
     /// println!("Cache size: {} / {} entries", stats.size, stats.capacity);
@@ -857,7 +857,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -882,7 +882,7 @@ impl Aurora {
     /// # Real-World Use Cases
     ///
     /// **Cache Invalidation:**
-    /// ```
+   
     /// use std::sync::Arc;
     /// use tokio::sync::RwLock;
     /// use std::collections::HashMap;
@@ -1315,9 +1315,13 @@ impl Aurora {
             });
         }
 
+        // Check if this key should be cached (false for Any-field collections)
+        let should_cache = self.should_cache_key(&key_arc);
+
         // --- 2. Cold Store Write ---
-        if is_blob {
-            // Blobs write directly to cold storage (skip buffer to avoid memory pressure)
+        if is_blob || !should_cache {
+            // Blobs and Any-field docs write directly to cold storage
+            // (blobs: avoid memory pressure, Any-fields: ensure immediate queryability)
             self.cold.set(key_arc.to_string(), value_arc.to_vec())?;
         } else if let Some(ref write_buffer) = self.write_buffer {
             write_buffer.write(Arc::clone(&key_arc), Arc::clone(&value_arc))?;
@@ -1326,7 +1330,7 @@ impl Aurora {
         }
 
         // --- 3. Hot Cache Write ---
-        if self.should_cache_key(&key_arc) {
+        if should_cache {
             if is_blob {
                 // For blobs: cache only a lightweight reference (not the actual data)
                 // Format: "BLOBREF:<size>" - just 16-24 bytes instead of potentially MB
@@ -1810,7 +1814,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -1938,7 +1942,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     /// use std::collections::HashMap;
     ///
@@ -2185,7 +2189,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// // Start a transaction for atomic operations
     /// db.begin_transaction()?;
     ///
@@ -2207,7 +2211,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -2247,7 +2251,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -2328,7 +2332,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -2612,7 +2616,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;

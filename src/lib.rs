@@ -14,7 +14,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```
+
 //! use aurora_db::{Aurora, Value, FieldType};
 //!
 //! // Open a database
