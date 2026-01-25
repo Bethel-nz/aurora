@@ -93,6 +93,17 @@ pub struct Job {
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub timeout_seconds: Option<u64>,
+    /// Unix timestamp of last "I'm alive" signal from worker (for Reaper)
+    #[serde(default)]
+    pub last_heartbeat: u64,
+    /// Seconds before worker is considered dead (default: 30)
+    #[serde(default = "default_lease")]
+    pub lease_duration: u64,
+}
+
+/// Default lease duration: 30 seconds
+fn default_lease() -> u64 {
+    30
 }
 
 impl Job {
@@ -129,6 +140,8 @@ impl Job {
             started_at: None,
             completed_at: None,
             timeout_seconds: Some(300), // 5 minutes default
+            last_heartbeat: 0,
+            lease_duration: default_lease(),
         }
     }
 
@@ -297,6 +310,36 @@ impl Job {
     pub fn mark_running(&mut self) {
         self.status = JobStatus::Running;
         self.started_at = Some(Utc::now());
+        self.touch(); // Update heartbeat when starting
+    }
+
+    /// Update heartbeat timestamp to "now"
+    ///
+    /// Workers should call this periodically while processing a job.
+    /// The Reaper uses this to detect dead workers.
+    pub fn touch(&mut self) {
+        self.last_heartbeat = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+    }
+
+    /// Check if job's heartbeat has expired (worker presumed dead)
+    pub fn is_heartbeat_expired(&self) -> bool {
+        if !matches!(self.status, JobStatus::Running) {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        now.saturating_sub(self.last_heartbeat) > self.lease_duration
+    }
+
+    /// Set custom lease duration
+    pub fn with_lease_duration(mut self, seconds: u64) -> Self {
+        self.lease_duration = seconds;
+        self
     }
 
     /// Mark job as completed
