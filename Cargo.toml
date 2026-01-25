@@ -36,7 +36,7 @@ fst = { version = "0.4", features = ["levenshtein"] }
 pest = "2.7"
 pest_derive = "2.7"
 moka = { version = "0.12", features = ["future", "sync"] }
-rhai = { version = "1.17", features = ["serde", "metadata"] }
+rhai = { version = "1.17", features = ["serde", "metadata", "sync"] }
 rkyv = { version = "0.7", features = ["validation", "uuid"] }
 bumpalo = "3.14"
 async-stream = "0.3"
@@ -74,8 +74,12 @@ name = "aurora_benchmarks"
 harness = false
 
 [[bench]]
-name = "aurora_vs_sqlite"
+name = "baseline_benchmark"
 harness = false
+
+# [[bench]]
+# name = "aurora_vs_sqlite"
+# harness = false
 
 [profile.dev.package."*"]
 opt-level = 0
