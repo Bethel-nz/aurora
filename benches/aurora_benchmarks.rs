@@ -2,7 +2,7 @@ use aurora_db::computed::{ComputedExpression, ComputedFields}; // Imports for co
 use aurora_db::error::ErrorCode;
 use aurora_db::{Aurora, Document, Result};
 use aurora_db::{FieldType, Value};
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
