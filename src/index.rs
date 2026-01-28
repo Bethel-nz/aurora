@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::search::FullTextIndex;
 use crate::types::{Document, Value};
-use dashmap::DashMap;
+use crossbeam_skiplist::{SkipMap, SkipSet};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -24,7 +24,9 @@ pub struct IndexDefinition {
 
 pub struct Index {
     definition: IndexDefinition,
-    data: Arc<DashMap<Value, Vec<String>>>, // Value -> Document IDs
+    // Using SkipMap for lock-free concurrent sorted storage
+    // Value -> Set of Document IDs (Sorted) to avoid O(N) cloning on insert
+    data: Arc<SkipMap<Value, Arc<SkipSet<String>>>>,
     full_text: Option<Arc<FullTextIndex>>,
 }
 
@@ -41,7 +43,7 @@ impl Index {
 
         Self {
             definition,
-            data: Arc::new(DashMap::new()),
+            data: Arc::new(SkipMap::new()),
             full_text,
         }
     }
@@ -50,19 +52,29 @@ impl Index {
         let key = self.extract_key(doc)?;
         let doc_id = doc.id.clone();
 
-        match self.data.get_mut(&key) {
-            Some(mut ids) => {
-                if self.definition.unique && !ids.is_empty() {
+        // Check unique constraint first if necessary
+        if self.definition.unique {
+            if let Some(entry) = self.data.get(&key) {
+                if !entry.value().is_empty() {
                     return Err(crate::error::AqlError::invalid_operation(
                         "Unique constraint violation".to_string(),
                     ));
                 }
-                ids.push(doc_id.clone());
-            }
-            None => {
-                self.data.insert(key, vec![doc_id.clone()]);
             }
         }
+
+        // Get or create the SkipSet for this key
+        let id_set = if let Some(entry) = self.data.get(&key) {
+            entry.value().clone()
+        } else {
+            // Use a shortcut: only insert if it doesn't exist yet to avoid race conditions
+            // but for secondary indexes, multiple threads might create the set.
+            // SkipMap's get_or_insert isn't available, so we use a simple approach.
+            self.data.get_or_insert(key.clone(), Arc::new(SkipSet::new())).value().clone()
+        };
+
+        // SkipSet provides lock-free insertion of the ID
+        id_set.insert(doc_id);
 
         if let Some(ft_index) = &self.full_text {
             ft_index.index_document(doc)?;
@@ -72,7 +84,23 @@ impl Index {
     }
 
     pub fn search(&self, value: &Value) -> Option<Vec<String>> {
-        self.data.get(value).map(|ids| ids.clone())
+        self.data.get(value).map(|e| e.value().iter().map(|v| v.to_string()).collect())
+    }
+
+    pub fn remove(&self, doc: &Document) -> Result<()> {
+        let key = self.extract_key(doc)?;
+        if let Some(entry) = self.data.get(&key) {
+            entry.value().remove(&doc.id);
+        }
+        Ok(())
+    }
+
+    /// Return all IDs in the index, sorted by key value (Lock-free iteration)
+    pub fn iter_ids(&self) -> Vec<String> {
+        self.data.iter().flat_map(|e| {
+            let ids: Vec<String> = e.value().iter().map(|v| v.to_string()).collect();
+            ids
+        }).collect()
     }
 
     pub fn search_text(&self, query: &str) -> Option<Vec<(String, f32)>> {
