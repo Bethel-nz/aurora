@@ -3,5 +3,4 @@
 
 # Windows linker fix - use LLD to handle large Rust binaries (65k section limit)
 [target.x86_64-pc-windows-msvc]
-linker = "rust-lld.exe"
-rustflags = ["-C", "link-arg=/FORCE:MULTIPLE"]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

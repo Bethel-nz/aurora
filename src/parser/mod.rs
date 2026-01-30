@@ -60,11 +60,11 @@ pub fn parse_with_variables(input: &str, variables: JsonValue) -> Result<Documen
         HashMap::new()
     };
 
-    if let Some(op) = doc.operations.first_mut() {
+    for op in doc.operations.iter_mut() {
         match op {
-            Operation::Query(q) => q.variables_values = vars,
-            Operation::Mutation(m) => m.variables_values = vars,
-            Operation::Subscription(s) => s.variables_values = vars,
+            Operation::Query(q) => q.variables_values = vars.clone(),
+            Operation::Mutation(m) => m.variables_values = vars.clone(),
+            Operation::Subscription(s) => s.variables_values = vars.clone(),
             _ => {}
         }
     }
@@ -421,10 +421,8 @@ fn parse_data_transform(pair: pest::iterators::Pair<Rule>) -> Result<DataTransfo
             Rule::identifier => field = inner.as_str().to_string(),
             Rule::expression => expression = inner.as_str().to_string(),
             Rule::filter_object => {
-                // Parse filter_object to Value then convert to Filter
-                if let Ok(filter_value) = parse_filter_object_to_value(inner) {
-                    filter = value_to_filter(filter_value).ok();
-                }
+                let filter_value = parse_filter_object_to_value(inner)?;
+                filter = Some(value_to_filter(filter_value)?);
             }
             _ => {}
         }
@@ -739,14 +737,40 @@ fn parse_directive(pair: pest::iterators::Pair<Rule>) -> Result<Directive> {
     Ok(Directive { name, arguments })
 }
 
-fn parse_selection_set(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Field>> {
-    let mut fields = Vec::new();
+fn parse_inline_fragment(pair: pest::iterators::Pair<Rule>) -> Result<InlineFragment> {
+    let mut type_condition = String::new();
+    let mut selection_set = Vec::new();
+
     for inner in pair.into_inner() {
-        if inner.as_rule() == Rule::field {
-            fields.push(parse_field(inner)?);
+        match inner.as_rule() {
+            Rule::identifier => type_condition = inner.as_str().to_string(),
+            Rule::selection_set => selection_set = parse_selection_set(inner)?,
+            _ => {}
         }
     }
-    Ok(fields)
+
+    Ok(InlineFragment {
+        type_condition,
+        selection_set,
+    })
+}
+
+fn parse_selection_set(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Selection>> {
+    let mut selections = Vec::new();
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::field => selections.push(Selection::Field(parse_field(inner)?)),
+            Rule::fragment_spread => {
+                let name = inner.as_str().trim_start_matches("...").trim().to_string();
+                selections.push(Selection::FragmentSpread(name));
+            }
+            Rule::inline_fragment => {
+                selections.push(Selection::InlineFragment(parse_inline_fragment(inner)?))
+            }
+            _ => {}
+        }
+    }
+    Ok(selections)
 }
 
 fn parse_subscription_set(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Field>> {
@@ -1335,9 +1359,13 @@ fn parse_value(pair: pest::iterators::Pair<Rule>) -> Result<Value> {
         Rule::number => {
             let s = pair.as_str();
             if s.contains('.') || s.contains('e') || s.contains('E') {
-                Ok(Value::Float(s.parse().unwrap_or(0.0)))
+                s.parse::<f64>()
+                    .map(Value::Float)
+                    .map_err(|_| AqlError::new(ErrorCode::ProtocolError, format!("Invalid number literal: {}", s)))
             } else {
-                Ok(Value::Int(s.parse().unwrap_or(0)))
+                s.parse::<i64>()
+                    .map(Value::Int)
+                    .map_err(|_| AqlError::new(ErrorCode::ProtocolError, format!("Invalid integer literal: {}", s)))
             }
         }
         Rule::boolean => Ok(Value::Boolean(pair.as_str() == "true")),

@@ -31,7 +31,14 @@ impl Client {
 
         let mut len_bytes = [0u8; 4];
         self.stream.read_exact(&mut len_bytes).await?;
+        const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024; // 8 MiB
         let len = u32::from_le_bytes(len_bytes) as usize;
+        if len > MAX_FRAME_SIZE {
+            return Err(AqlError::new(
+                ErrorCode::ProtocolError,
+                format!("Response too large: {} bytes", len),
+            ));
+        }
 
         let mut buffer = vec![0u8; len];
         self.stream.read_exact(&mut buffer).await?;

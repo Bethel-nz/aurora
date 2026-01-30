@@ -46,6 +46,13 @@ impl BincodeServer {
             }
 
             let len = u32::from_le_bytes(len_bytes) as usize;
+            const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024; // 8 MiB
+            if len > MAX_FRAME_SIZE {
+                return Err(AqlError::new(
+                    crate::error::ErrorCode::ProtocolError,
+                    format!("Frame too large: {} bytes", len),
+                ));
+            }
             let mut buffer = vec![0u8; len];
             stream.read_exact(&mut buffer).await?;
 
