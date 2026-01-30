@@ -7,7 +7,7 @@ pub mod updates;
 pub mod watcher;
 
 pub use updates::{QueryUpdate, UpdateType};
-pub use watcher::QueryWatcher;
+pub use watcher::{QueryWatcher, ThrottledQueryWatcher};
 
 use crate::types::Document;
 use std::collections::HashMap;

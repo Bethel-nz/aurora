@@ -148,6 +148,32 @@ pub enum EventFilter {
     And(Vec<EventFilter>),
     /// Combine multiple filters with OR
     Or(Vec<EventFilter>),
+    /// Invert a filter
+    Not(Box<EventFilter>),
+    /// Greater than
+    Gt(String, Value),
+    /// Greater than or equal
+    Gte(String, Value),
+    /// Less than
+    Lt(String, Value),
+    /// Less than or equal
+    Lte(String, Value),
+    /// Not equal
+    Ne(String, Value),
+    /// In list
+    In(String, Value),
+    /// Not in list
+    NotIn(String, Value),
+    /// Contains string
+    Contains(String, Value),
+    /// Starts with string
+    StartsWith(String, Value),
+    /// Ends with string
+    EndsWith(String, Value),
+    /// Is Null
+    IsNull(String),
+    /// Is Not Null
+    IsNotNull(String),
 }
 
 impl EventFilter {
@@ -161,6 +187,60 @@ impl EventFilter {
             EventFilter::FieldChanged(field) => event.field_changed(field),
             EventFilter::And(filters) => filters.iter().all(|f| f.matches(event)),
             EventFilter::Or(filters) => filters.iter().any(|f| f.matches(event)),
+            EventFilter::Not(filter) => !filter.matches(event),
+            EventFilter::Gt(field, val) => event.get_field(field).map_or(false, |v| v > val),
+            EventFilter::Gte(field, val) => event.get_field(field).map_or(false, |v| v >= val),
+            EventFilter::Lt(field, val) => event.get_field(field).map_or(false, |v| v < val),
+            EventFilter::Lte(field, val) => event.get_field(field).map_or(false, |v| v <= val),
+            EventFilter::Ne(field, val) => event.get_field(field).map_or(true, |v| v != val), // Missing field != value is true usually? Or separate IsNotNull? Let's say missing != value is true unless value is Null.
+            EventFilter::In(field, val) => {
+                 if let Some(field_val) = event.get_field(field) {
+                     if let Value::Array(arr) = val {
+                         arr.contains(field_val)
+                     } else {
+                         false
+                     }
+                 } else {
+                     false
+                 }
+            },
+            EventFilter::NotIn(field, val) => {
+                 if let Some(field_val) = event.get_field(field) {
+                     if let Value::Array(arr) = val {
+                         !arr.contains(field_val)
+                     } else {
+                         true
+                     }
+                 } else {
+                     true
+                 }
+            },
+            EventFilter::Contains(field, val) => {
+                event.get_field(field).map_or(false, |v| {
+                    match (v, val) {
+                        (Value::String(s), Value::String(sub)) => s.contains(sub),
+                        _ => false,
+                    }
+                })
+            },
+            EventFilter::StartsWith(field, val) => {
+                event.get_field(field).map_or(false, |v| {
+                    match (v, val) {
+                        (Value::String(s), Value::String(sub)) => s.starts_with(sub),
+                        _ => false,
+                    }
+                })
+            },
+            EventFilter::EndsWith(field, val) => {
+                 event.get_field(field).map_or(false, |v| {
+                    match (v, val) {
+                        (Value::String(s), Value::String(sub)) => s.ends_with(sub),
+                        _ => false,
+                    }
+                })
+            },
+            EventFilter::IsNull(field) => event.get_field(field).map_or(true, |v| matches!(v, Value::Null)),
+            EventFilter::IsNotNull(field) => event.get_field(field).map_or(false, |v| !matches!(v, Value::Null)),
         }
     }
 }

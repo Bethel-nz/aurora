@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ("email", FieldType::String, true),
             ("active", FieldType::Bool, false),
         ],
-    )?;
+    ).await?;
 
     // ==========================================
     // Demo 1: Basic LISTEN/NOTIFY
@@ -215,7 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ("title", FieldType::String, false),
             ("user_id", FieldType::String, false),
         ],
-    )?;
+    ).await?;
 
     let mut global_listener = db.listen_all();
 

@@ -1,5 +1,5 @@
 use crate::db::Aurora;
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, Result};
 use crate::network::protocol::Request;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -46,15 +46,22 @@ impl BincodeServer {
             }
 
             let len = u32::from_le_bytes(len_bytes) as usize;
+            const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024; // 8 MiB
+            if len > MAX_FRAME_SIZE {
+                return Err(AqlError::new(
+                    crate::error::ErrorCode::ProtocolError,
+                    format!("Frame too large: {} bytes", len),
+                ));
+            }
             let mut buffer = vec![0u8; len];
             stream.read_exact(&mut buffer).await?;
 
             let request: Request =
-                bincode::deserialize(&buffer).map_err(AuroraError::Bincode)?;
+                bincode::deserialize(&buffer).map_err(AqlError::from)?;
 
             let response = db.process_network_request(request).await;
 
-            let response_bytes = bincode::serialize(&response).map_err(AuroraError::Bincode)?;
+            let response_bytes = bincode::serialize(&response).map_err(AqlError::from)?;
             let len_bytes = (response_bytes.len() as u32).to_le_bytes();
 
             stream.write_all(&len_bytes).await?;

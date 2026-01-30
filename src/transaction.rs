@@ -1,4 +1,4 @@
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, Result};
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -79,8 +79,8 @@ impl TransactionManager {
 
     pub fn commit(&self, tx_id: TransactionId) -> Result<()> {
         if !self.active_transactions.contains_key(&tx_id) {
-            return Err(AuroraError::InvalidOperation(
-                "Transaction not found or already committed".into(),
+            return Err(AqlError::invalid_operation(
+                "Transaction not found or already committed",
             ));
         }
 
@@ -90,8 +90,8 @@ impl TransactionManager {
 
     pub fn rollback(&self, tx_id: TransactionId) -> Result<()> {
         if !self.active_transactions.contains_key(&tx_id) {
-            return Err(AuroraError::InvalidOperation(
-                "Transaction not found or already rolled back".into(),
+            return Err(AqlError::invalid_operation(
+                "Transaction not found or already rolled back",
             ));
         }
 

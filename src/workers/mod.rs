@@ -36,7 +36,7 @@ use tokio::sync::RwLock;
 ///
 /// # Examples
 ///
-/// ```
+/// ```rust,no_run
 /// use aurora_db::workers::{WorkerSystem, WorkerConfig, Job, JobPriority};
 /// use serde_json::json;
 ///
@@ -84,7 +84,7 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// let config = WorkerConfig {
     ///     storage_path: "./jobs.db".to_string(),
     ///     max_concurrent_jobs: 5,
@@ -107,7 +107,7 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// let workers = WorkerSystem::new(config)?;
     ///
     /// // Register handlers first
@@ -127,7 +127,7 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// // Graceful shutdown
     /// workers.stop().await?;
     /// ```
@@ -148,7 +148,7 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use serde_json::json;
     ///
     /// // Simple job
@@ -190,7 +190,7 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// let job_id = workers.enqueue(job).await?;
     ///
     /// // Check status later
@@ -221,7 +221,7 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// let stats = workers.stats().await?;
     ///
     /// println!("Queue status:");

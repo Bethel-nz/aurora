@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Helper to create a test database with WAL enabled
-fn create_test_db(path: PathBuf) -> Result<Aurora, aurora_db::AuroraError> {
+fn create_test_db(path: PathBuf) -> Result<Aurora, aurora_db::AqlError> {
     let mut config = AuroraConfig::default();
     config.db_path = path;
     config.enable_wal = true;
@@ -37,7 +37,7 @@ async fn test_crash_recovery_basic() {
         db.new_collection("users", vec![
             ("name", FieldType::String, false),
             ("age", FieldType::Int, false),
-        ]).unwrap();
+        ]).await.unwrap();
 
         // Insert some data
         for i in 0..100 {
@@ -93,7 +93,7 @@ async fn test_crash_during_writes() {
         db.new_collection("transactions", vec![
             ("tx_id", FieldType::String, false),
             ("amount", FieldType::Int, false),
-        ]).unwrap();
+        ]).await.unwrap();
 
         // Insert data concurrently and crash suddenly
         let mut tasks = vec![];
@@ -111,8 +111,13 @@ async fn test_crash_during_writes() {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         println!("Simulating crash mid-write...");
-        // Forcefully drop everything (simulates sudden process termination)
-        drop(tasks);
+        // Forcefully abort all tasks (simulates sudden process termination)
+        // Note: Dropping JoinHandles doesn't cancel tasks - we must abort explicitly
+        for task in tasks {
+            task.abort();
+        }
+        // Small delay to allow aborted tasks to release their Arc references
+        tokio::time::sleep(Duration::from_millis(50)).await;
         drop(db);
     }
 
@@ -158,7 +163,7 @@ async fn test_wal_replay_idempotency() {
         db.new_collection("items", vec![
             ("item_id", FieldType::String, true), // unique
             ("count", FieldType::Int, false),
-        ]).unwrap();
+        ]).await.unwrap();
 
         // Insert specific items
         for i in 0..50 {
@@ -220,7 +225,7 @@ async fn test_partial_write_crash_recovery() {
         db.new_collection("batches", vec![
             ("batch_id", FieldType::Int, false),
             ("item_id", FieldType::Int, false),
-        ]).unwrap();
+        ]).await.unwrap();
 
         // Write first batch completely
         for i in 0..50 {
@@ -294,7 +299,7 @@ async fn test_multiple_crash_cycles() {
             db.new_collection("resilient", vec![
                 ("data", FieldType::String, false),
                 ("cycle", FieldType::Int, false),
-            ]).unwrap();
+            ]).await.unwrap();
         }
 
         // Verify previous data survived
@@ -366,7 +371,7 @@ async fn test_crash_with_large_documents() {
         db.new_collection("large_docs", vec![
             ("doc_id", FieldType::String, false),
             ("large_data", FieldType::String, false),
-        ]).unwrap();
+        ]).await.unwrap();
 
         // Create large documents (100KB each)
         let large_text = "x".repeat(100_000);
@@ -417,7 +422,7 @@ async fn test_checkpoint_after_crash() {
 
         db.new_collection("checkpointed", vec![
             ("value", FieldType::Int, false),
-        ]).unwrap();
+        ]).await.unwrap();
 
         // Insert data
         for i in 0..100 {

@@ -17,7 +17,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ("department".to_string(), FieldType::String, false),
             ("salary".to_string(), FieldType::Float, false),
         ],
-    )?;
+    )
+    .await?;
 
     println!("🏗️  Inserting 10,000 test users...");
     let start = Instant::now();

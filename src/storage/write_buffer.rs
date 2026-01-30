@@ -1,4 +1,4 @@
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, Result};
 use crate::storage::ColdStore;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 pub enum WriteOp {
-    Write { key: String, value: Vec<u8> },
+    Write { key: Arc<String>, value: Arc<Vec<u8>> },
     Flush(mpsc::SyncSender<Result<()>>),
     Shutdown,
 }
@@ -14,6 +14,7 @@ pub enum WriteOp {
 pub struct WriteBuffer {
     sender: mpsc::SyncSender<WriteOp>,
     is_alive: Arc<AtomicBool>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WriteBuffer {
@@ -24,7 +25,7 @@ impl WriteBuffer {
 
         // Use a real OS thread instead of tokio::spawn
         // This allows Drop to safely block without async context issues
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             struct TaskGuard(Arc<AtomicBool>);
             impl Drop for TaskGuard {
                 fn drop(&mut self) {
@@ -48,7 +49,8 @@ impl WriteBuffer {
 
                         // Flush if batch is full
                         if batch.len() >= buffer_size {
-                            if let Err(e) = cold.batch_set(std::mem::take(&mut batch)) {
+                            let batch_to_write = std::mem::take(&mut batch);
+                            if let Err(e) = cold.batch_set_arc(batch_to_write) {
                                 eprintln!("Write buffer flush error: {}", e);
                             }
                             last_flush = Instant::now();
@@ -56,7 +58,8 @@ impl WriteBuffer {
                     }
                     Ok(WriteOp::Flush(response)) => {
                         let result = if !batch.is_empty() {
-                            cold.batch_set(std::mem::take(&mut batch))
+                            let batch_to_write = std::mem::take(&mut batch);
+                            cold.batch_set_arc(batch_to_write)
                         } else {
                             Ok(())
                         };
@@ -65,45 +68,62 @@ impl WriteBuffer {
                     }
                     Ok(WriteOp::Shutdown) => {
                         // Final flush before shutdown
-                        if !batch.is_empty()
-                            && let Err(e) = cold.batch_set(batch) {
+                        if !batch.is_empty() {
+                            let batch_to_write = std::mem::take(&mut batch);
+                            if let Err(e) = cold.batch_set_arc(batch_to_write) {
                                 eprintln!("Write buffer shutdown flush error: {}", e);
                             }
-                        break; // Exit gracefully
+                        }
+                        break;
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         // Periodic flush
                         if !batch.is_empty() && last_flush.elapsed() >= flush_duration {
-                            if let Err(e) = cold.batch_set(std::mem::take(&mut batch)) {
-                                eprintln!("Write buffer periodic flush error: {}", e);
+                            let batch_to_write = std::mem::take(&mut batch);
+                            
+                            // Use a match to handle the error cleanly
+                            match cold.batch_set_arc(batch_to_write) {
+                                Ok(_) => last_flush = Instant::now(),
+                                Err(_) => {
+                                    eprintln!("Write buffer periodic flush error: Disk Full. Pausing writes.");
+                                    // PAUSE OR RETURN ERROR
+                                    std::thread::sleep(Duration::from_millis(100)); 
+                                }
                             }
-                            last_flush = Instant::now();
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         // Channel closed, flush and exit
-                        if !batch.is_empty()
-                            && let Err(e) = cold.batch_set(batch) {
+                        if !batch.is_empty() {
+                            let batch_to_write = std::mem::take(&mut batch);
+                            if let Err(e) = cold.batch_set_arc(batch_to_write) {
                                 eprintln!("Write buffer final flush error: {}", e);
                             }
+                        }
                         break;
                     }
                 }
             }
         });
 
-        Self { sender, is_alive }
+        Self {
+            sender,
+            is_alive,
+            thread_handle: Some(handle),
+        }
     }
 
-    pub fn write(&self, key: String, value: Vec<u8>) -> Result<()> {
+    pub fn write(&self, key: Arc<String>, value: Arc<Vec<u8>>) -> Result<()> {
         if !self.is_alive.load(Ordering::SeqCst) {
-            return Err(AuroraError::InvalidOperation(
-                "Write buffer is not active.".into(),
+            return Err(AqlError::invalid_operation(
+                "Write buffer is not active.".to_string(),
             ));
         }
-        self.sender.send(WriteOp::Write { key, value }).map_err(|_| {
-            AuroraError::InvalidOperation("Write buffer channel closed unexpectedly.".into())
-        })?;
+        self.sender
+            .send(WriteOp::Write { key, value })
+            .map_err(|_| {
+                AqlError::invalid_operation("Write buffer channel closed unexpectedly.".to_string())
+            })?;
         Ok(())
     }
 
@@ -111,10 +131,10 @@ impl WriteBuffer {
         let (tx, rx) = mpsc::sync_channel(1);
         self.sender
             .send(WriteOp::Flush(tx))
-            .map_err(|_| AuroraError::InvalidOperation("Write buffer closed".into()))?;
+            .map_err(|_| AqlError::invalid_operation("Write buffer closed".to_string()))?;
 
         rx.recv()
-            .map_err(|_| AuroraError::InvalidOperation("Flush response lost".into()))?
+            .map_err(|_| AqlError::invalid_operation("Flush response lost".to_string()))?
     }
 
     pub fn is_active(&self) -> bool {
@@ -124,14 +144,12 @@ impl WriteBuffer {
 
 impl Drop for WriteBuffer {
     fn drop(&mut self) {
-        // Signal graceful shutdown
-        // The background thread (not tokio task) will perform final flush
-        // We can safely send because we're using std::sync::mpsc
         let _ = self.sender.send(WriteOp::Shutdown);
 
-        // Give the background thread a moment to flush
-        // The thread will exit cleanly after flushing
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // HACK: Join thread to prevent Windows zombie process (causing LNK1104 on next build)
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -148,9 +166,9 @@ mod tests {
 
         let buffer = WriteBuffer::new(Arc::clone(&cold), 100, 50);
 
-        buffer.write("key1".to_string(), b"value1".to_vec())?;
-        buffer.write("key2".to_string(), b"value2".to_vec())?;
-        buffer.write("key3".to_string(), b"value3".to_vec())?;
+        buffer.write(Arc::new("key1".to_string()), Arc::new(b"value1".to_vec()))?;
+        buffer.write(Arc::new("key2".to_string()), Arc::new(b"value2".to_vec()))?;
+        buffer.write(Arc::new("key3".to_string()), Arc::new(b"value3".to_vec()))?;
 
         // Explicitly flush to ensure data is written
         buffer.flush()?;
@@ -171,7 +189,7 @@ mod tests {
         let buffer = WriteBuffer::new(Arc::clone(&cold), 5, 1000);
 
         for i in 0..10 {
-            buffer.write(format!("key{}", i), format!("value{}", i).into_bytes())?;
+            buffer.write(Arc::new(format!("key{}", i)), Arc::new(format!("value{}", i).into_bytes()))?;
         }
 
         // Wait for flush interval (1000ms) plus some buffer

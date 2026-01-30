@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     println!("\n=== 1. Basic Key-Value Operations ===");
     let key = "my_key";
     let value = b"my_value".to_vec();
-    time_operation!("Set key", db.put(key.to_string(), value.clone(), None))?;
+    time_operation!("Set key", db.put(key.to_string(), value.clone(), None)).await?;
     let retrieved = time_operation!("Get key", db.get(key))?.unwrap();
     assert_eq!(retrieved, value);
     println!("Get/Set verification successful.");
@@ -52,7 +52,8 @@ async fn main() -> Result<()> {
                 ("premium".to_string(), FieldType::Bool, false),
             ]
         )
-    )?;
+    )
+    .await?;
     println!("-> Created collection '{}'", collection_name);
 
     let user_id = time_operation!(
@@ -126,8 +127,10 @@ async fn main() -> Result<()> {
             ("title".to_string(), FieldType::String, false),
             ("content".to_string(), FieldType::String, false),
         ],
-    )?;
-    db.create_text_index(articles_collection, "content", true)?;
+    )
+    .await?;
+    db.create_text_index(articles_collection, "content", true)
+        .await?;
 
     println!("\n[Indexing Articles...]");
     db.insert_into(

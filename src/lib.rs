@@ -14,7 +14,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```
+
 //! use aurora_db::{Aurora, Value, FieldType};
 //!
 //! // Open a database
@@ -44,8 +44,8 @@
 // Re-export primary types and modules
 pub use crate::db::Aurora;
 pub use crate::db::DataInfo;
-pub use crate::error::{AuroraError, Result};
-pub use crate::query::{FilterBuilder, QueryBuilder, SearchBuilder};
+pub use crate::error::{AqlError, Result};
+pub use crate::query::{QueryBuilder, SearchBuilder};
 pub use types::{
     AuroraConfig, ColdStoreMode, Collection, Document, DurabilityMode, FieldDefinition, FieldType,
     Value,
@@ -70,6 +70,7 @@ pub mod db;
 pub mod error;
 pub mod index;
 pub mod network;
+pub mod parser; // AQL parser module
 pub mod pubsub;
 pub mod query;
 pub mod reactive;

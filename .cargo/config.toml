@@ -1,2 +1,6 @@
 [build]
-# target-dir = "E:/aurora/target"  # Commented out for Linux/WSL compatibility 
+# target-dir = "./target"
+
+# Windows linker fix - use LLD to handle large Rust binaries (65k section limit)
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"

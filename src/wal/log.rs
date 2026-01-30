@@ -1,4 +1,4 @@
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -30,24 +30,26 @@ pub struct WriteAheadLog {
 impl WriteAheadLog {
     /// Create or open a Write-Ahead Log file
     ///
-    /// Opens existing WAL files in append mode, preserving their contents
-    /// for crash recovery. WAL entries are automatically replayed on database
-    /// startup and cleared after successful checkpoint.
+    /// Opens existing WAL files preserving their contents for crash recovery.
+    /// WAL entries are automatically replayed on database startup and cleared
+    /// after successful checkpoint.
     pub fn new(path: &str) -> Result<Self> {
         let path = PathBuf::from(path);
         let wal_path = path.with_extension("wal");
 
-        // Open in append mode - preserves existing WAL entries for recovery
-        let file = BufWriter::new(
-            OpenOptions::new()
-                .create(true)
-                .read(true)
-                .append(true)  // Never truncates existing WAL on open
-                .open(&wal_path)?,
-        );
+        // Open in read+write mode (not append) to allow truncation on Windows.
+        // We seek to end after opening to preserve append semantics.
+        let mut file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&wal_path)?;
+
+        // Seek to end to preserve existing WAL entries
+        file.seek(SeekFrom::End(0))?;
 
         Ok(Self {
-            file,
+            file: BufWriter::new(file),
             _path: wal_path,
         })
     }
@@ -55,7 +57,7 @@ impl WriteAheadLog {
     pub fn append(&mut self, operation: Operation, key: &str, value: Option<&[u8]>) -> Result<()> {
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|e| AuroraError::Protocol(e.to_string()))?
+            .map_err(|e| AqlError::new(ErrorCode::ProtocolError, e.to_string()))?
             .as_secs();
 
         let entry = LogEntry {
@@ -65,13 +67,14 @@ impl WriteAheadLog {
             value: value.map(|v| v.to_vec()),
         };
 
-        let serialized =
-            bincode::serialize(&entry).map_err(|e| AuroraError::Protocol(e.to_string()))?;
+        let serialized = bincode::serialize(&entry)
+            .map_err(|e| AqlError::new(ErrorCode::ProtocolError, e.to_string()))?;
         let len = serialized.len() as u32;
 
         self.file.write_all(&len.to_le_bytes())?;
         self.file.write_all(&serialized)?;
         self.file.flush()?;
+        self.file.get_mut().sync_all()?;
 
         Ok(())
     }
@@ -90,7 +93,7 @@ impl WriteAheadLog {
                     let mut buffer = vec![0u8; len];
                     reader.read_exact(&mut buffer)?;
                     let entry: LogEntry = bincode::deserialize(&buffer)
-                        .map_err(|e| AuroraError::Protocol(e.to_string()))?;
+                        .map_err(|e| AqlError::new(ErrorCode::ProtocolError, e.to_string()))?;
                     entries.push(entry);
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => break,

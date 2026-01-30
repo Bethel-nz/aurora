@@ -1,188 +1,183 @@
 # Aurora DB Query System
 
-This guide explains Aurora DB's powerful query capabilities for filtering, sorting, and retrieving documents.
+This guide explains Aurora DB's powerful query capabilities using the Aurora Query Language (AQL).
 
 ## Basic Queries
 
-To start a query on a collection, use the `query` method:
+To retrieve data, use the `query` operation and select the fields you need:
 
-```rust
-let results = db.query("users")
-    .collect()
-    .await?;
+```graphql
+query {
+    users {
+        id
+        name
+        email
+    }
+}
 ```
 
-This returns all documents in the collection.
+This returns a JSON list of users with only the requested fields.
 
 ## Filtering
 
 ### Simple Filters
 
-Aurora supports various filter operations:
+Use the `where` argument to filter results. The filter syntax uses operator objects (e.g., `eq`, `gt`, `contains`).
 
-```rust
-// Equality filter
-let active_users = db.query("users")
-    .filter(|f| f.eq("active", true))
-    .collect()
-    .await?;
+```graphql
+query {
+    # Equality
+    active_users: users(where: { active: { eq: true } }) {
+        name
+    }
 
-// Greater than filter
-let adult_users = db.query("users")
-    .filter(|f| f.gt("age", 18))
-    .collect()
-    .await?;
+    # Greater than
+    adults: users(where: { age: { gt: 18 } }) {
+        name
+        age
+    }
 
-// Less than filter
-let young_users = db.query("users")
-    .filter(|f| f.lt("age", 30))
-    .collect()
-    .await?;
-
-// Contains filter (for strings and arrays)
-let admin_users = db.query("users")
-    .filter(|f| f.contains("roles", "admin"))
-    .collect()
-    .await?;
+    # Contains (Arrays or Strings)
+    admins: users(where: { roles: { contains: "admin" } }) {
+        name
+    }
+}
 ```
 
 ### Combining Filters
 
-Combine multiple conditions with logical operators:
+Combine conditions using `and`, `or`, and `not` operators.
 
-```rust
-// AND: Find active adult users
-let active_adults = db.query("users")
-    .filter(|f| f.eq("active", true) && f.gt("age", 18))
-    .collect()
-    .await?;
-
-// Complex conditions
-let target_users = db.query("users")
-    .filter(|f| 
-        (f.gt("age", 18) && f.lt("age", 65)) && 
-        (f.eq("subscription", "premium") || f.gt("purchase_count", 5))
-    )
-    .collect()
-    .await?;
+```graphql
+query {
+    target_users: users(where: {
+        and: [
+            { age: { gt: 18 } },
+            { age: { lt: 65 } },
+            { or: [
+                { subscription: { eq: "premium" } },
+                { purchase_count: { gt: 5 } }
+            ]}
+        ]
+    }) {
+        name
+        email
+    }
+}
 ```
 
 ## Sorting
 
-Sort results by one or more fields:
+Sort results using the `orderBy` argument.
 
-```rust
-// Sort by age ascending
-let users = db.query("users")
-    .filter(|f| f.gt("age", 18))
-    .order_by("age", true)  // true = ascending
-    .collect()
-    .await?;
+```graphql
+query {
+    users(orderBy: { field: "age", direction: ASC }) {
+        name
+        age
+    }
+}
+```
 
-// Sort by subscription status, then by name
-let users = db.query("users")
-    .order_by("subscription_status", false)  // false = descending
-    .order_by("name", true)  // ascending
-    .collect()
-    .await?;
+For multiple sort fields, pass a list:
+
+```graphql
+query {
+    users(orderBy: [
+        { field: "status", direction: DESC },
+        { field: "name", direction: ASC }
+    ]) {
+        name
+        status
+    }
+}
 ```
 
 ## Pagination
 
-Limit and skip results for pagination:
+Use `limit` and `offset` for traditional pagination.
 
-```rust
-// Get second page of users (10 per page)
-let page = 2;
-let page_size = 10;
-
-let users = db.query("users")
-    .order_by("name", true)
-    .limit(page_size)
-    .offset((page - 1) * page_size)
-    .collect()
-    .await?;
+```graphql
+query {
+    # Get page 2 (items 11-20)
+    users(limit: 10, offset: 10) {
+        id
+        name
+    }
+}
 ```
 
-## Projection
-
-Select only specific fields:
-
-```rust
-// Get only names and emails
-let contacts = db.query("users")
-    .select(vec!["name", "email"])
-    .collect()
-    .await?;
-```
-
-## Using Indices
-
-Aurora automatically uses indices when available. Create indices on frequently queried fields:
-
-```rust
-// Create an index on the age field
-db.create_index("users", "age").await?;
-
-// Queries filtering on age will now use the index
-let adult_users = db.query("users")
-    .filter(|f| f.gt("age", 18))
-    .collect()
-    .await?;
-```
+Aurora also supports cursor-based pagination via the `edges` selection (Relay-style).
 
 ## Full-Text Search
 
-For text search capabilities:
+Perform full-text search using the `search` argument. This requires a text index on the target field.
 
-```rust
-// Create a full-text index
-db.create_text_index("articles", "content", true)?;
-
-// Perform full-text search
-let results = db.search("articles")
-    .field("content")
-    .matching("quantum computing")
-    .collect()
-    .await?;
+```graphql
+query {
+    articles(search: {
+        query: "quantum computing",
+        fields: ["title", "content"],
+        fuzzy: true
+    }) {
+        title
+        snippet: content # You can alias fields
+    }
+}
 ```
 
-## Query Examples
+## Aggregation
 
-### Finding Recent Orders
+You can perform aggregations directly within your query.
 
-```rust
-let recent_orders = db.query("orders")
-    .filter(|f| f.gt("date", "2023-01-01") && f.eq("status", "completed"))
-    .order_by("date", false)  // newest first
-    .limit(10)
-    .collect()
-    .await?;
+```graphql
+query {
+    orders {
+        # Get individual order data
+        id
+        amount
+        
+        # Get aggregate stats for this query result
+        stats: aggregate {
+            count
+            total_revenue: sum(field: "amount")
+            avg_order: avg(field: "amount")
+        }
+    }
+}
 ```
 
-### Aggregation-Like Queries
+## Group By
 
-While Aurora doesn't have built-in aggregations, you can implement them in code:
+Group results by a specific field.
 
-```rust
-// Get all orders for a customer
-let customer_orders = db.query("orders")
-    .filter(|f| f.eq("customer_id", "cust-123"))
-    .collect()
-    .await?;
-
-// Calculate total in application code
-let total_spent = customer_orders.iter()
-    .map(|order| match order.data.get("amount") {
-        Some(Value::Float(amount)) => *amount,
-        _ => 0.0,
-    })
-    .sum::<f64>();
+```graphql
+query {
+    orders {
+        groupBy(field: "status") {
+            key          # The status value (e.g., "shipped")
+            count        # Number of orders in this group
+            aggregate {  # Aggregates per group
+                sum(field: "amount")
+            }
+        }
+    }
+}
 ```
 
-## Performance Tips
+## Computed Fields
 
-1. **Always use indices** for frequently queried fields
-2. **Be specific with filters** to allow index usage
-3. **Limit results** when you don't need the entire collection
-4. **Use projection** to reduce data transfer when only specific fields are needed 
+You can define temporary computed fields in your query using pipe syntax or functions.
+
+```graphql
+query {
+    users {
+        name
+        # Create a new field on the fly
+        display_name: "${name} (${email})"
+        
+        # Transform existing data
+        upper_role: role | uppercase
+    }
+}
+```

@@ -6,7 +6,7 @@
 *.csv
 
 # Ignore benchmark output files
-aurora_baseline_*.txt
+# aurora_baseline_*.txt
 aurora_query_stats.log
 
 # Ignore documentation TODO (internal planning)

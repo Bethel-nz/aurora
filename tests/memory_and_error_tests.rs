@@ -17,10 +17,15 @@ async fn test_memory_usage_growth() {
 
     let db = Arc::new(Aurora::with_config(config).unwrap());
 
-    db.new_collection("memory_test", vec![
-        ("data", FieldType::String, false),
-        ("index", FieldType::Int, false),
-    ]).unwrap();
+    db.new_collection(
+        "memory_test",
+        vec![
+            ("data", FieldType::String, false),
+            ("index", FieldType::Int, false),
+        ],
+    )
+    .await
+    .unwrap();
 
     // Get initial process info
     let pid = std::process::id();
@@ -39,10 +44,21 @@ async fn test_memory_usage_growth() {
         // Insert batch
         for i in 0..batch_size {
             let idx = batch * batch_size + i;
-            db.insert_into("memory_test", vec![
-                ("data", Value::String(format!("Lorem ipsum dolor sit amet, consectetur adipiscing elit. Document {}", idx))),
-                ("index", Value::Int(idx as i64)),
-            ]).await.unwrap();
+            db.insert_into(
+                "memory_test",
+                vec![
+                    (
+                        "data",
+                        Value::String(format!(
+                            "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Document {}",
+                            idx
+                        )),
+                    ),
+                    ("index", Value::Int(idx as i64)),
+                ],
+            )
+            .await
+            .unwrap();
         }
 
         let duration = start.elapsed();
@@ -53,7 +69,10 @@ async fn test_memory_usage_growth() {
         println!("  Time: {:.2?}", duration);
         println!("  Current RSS: {} MB", current_rss);
         println!("  Growth: {} MB", growth);
-        println!("  Throughput: {:.2} docs/sec", batch_size as f64 / duration.as_secs_f64());
+        println!(
+            "  Throughput: {:.2} docs/sec",
+            batch_size as f64 / duration.as_secs_f64()
+        );
     }
 
     // Final flush
@@ -75,12 +94,19 @@ async fn test_memory_usage_growth() {
     let count = db.query("memory_test").collect().await.unwrap().len();
     let query_time = query_start.elapsed();
 
-    println!("Query verification: {} documents in {:.2?}", count, query_time);
+    println!(
+        "Query verification: {} documents in {:.2?}",
+        count, query_time
+    );
 
     assert_eq!(count, 100000, "All documents should be queryable");
 
     // Memory growth should be reasonable (< 500MB for 100k docs)
-    assert!(total_growth < 500, "Memory growth should be under 500MB (got {} MB)", total_growth);
+    assert!(
+        total_growth < 500,
+        "Memory growth should be under 500MB (got {} MB)",
+        total_growth
+    );
 }
 
 #[tokio::test]
@@ -97,17 +123,26 @@ async fn test_hot_cache_eviction() {
 
     let db = Arc::new(Aurora::with_config(config).unwrap());
 
-    db.new_collection("cache_test", vec![
-        ("data", FieldType::String, false),
-    ]).unwrap();
+    db.new_collection("cache_test", vec![("data", FieldType::String, false)])
+        .await
+        .unwrap();
 
     println!("Inserting 10,000 documents with 10MB hot cache limit...");
 
     // Insert documents that should exceed cache
     for i in 0..10000 {
-        db.insert_into("cache_test", vec![
-            ("data", Value::String(format!("Document {} with some padding text to increase size", i))),
-        ]).await.unwrap();
+        db.insert_into(
+            "cache_test",
+            vec![(
+                "data",
+                Value::String(format!(
+                    "Document {} with some padding text to increase size",
+                    i
+                )),
+            )],
+        )
+        .await
+        .unwrap();
     }
 
     println!("All documents inserted successfully");
@@ -119,8 +154,14 @@ async fn test_hot_cache_eviction() {
 
     // Query recent document (likely in cache)
     let start = Instant::now();
-    let doc2 = db.query("cache_test")
-        .filter(|f| f.eq("data", "Document 9999 with some padding text to increase size"))
+    let doc2 = db
+        .query("cache_test")
+        .filter(|f| {
+            f.eq(
+                "data",
+                "Document 9999 with some padding text to increase size",
+            )
+        })
         .collect()
         .await
         .unwrap();
@@ -129,7 +170,10 @@ async fn test_hot_cache_eviction() {
     println!("Old document query time: {:?}", time1);
     println!("Recent document query time: {:?}", time2);
 
-    assert!(doc1.is_some() || doc2.len() > 0, "Should be able to retrieve evicted documents from cold storage");
+    assert!(
+        doc1.is_some() || doc2.len() > 0,
+        "Should be able to retrieve evicted documents from cold storage"
+    );
 
     println!("✓ Hot cache eviction working correctly");
 }
@@ -146,9 +190,9 @@ async fn test_error_disk_full_simulation() {
 
     let db = Arc::new(Aurora::open(db_path.to_str().unwrap()).unwrap());
 
-    db.new_collection("disk_test", vec![
-        ("data", FieldType::String, false),
-    ]).unwrap();
+    db.new_collection("disk_test", vec![("data", FieldType::String, false)])
+        .await
+        .unwrap();
 
     println!("Attempting to insert large documents...");
 
@@ -158,9 +202,13 @@ async fn test_error_disk_full_simulation() {
     let mut error_count = 0;
 
     for i in 0..100 {
-        match db.insert_into("disk_test", vec![
-            ("data", Value::String(format!("{}{}", large_data, i))),
-        ]).await {
+        match db
+            .insert_into(
+                "disk_test",
+                vec![("data", Value::String(format!("{}{}", large_data, i)))],
+            )
+            .await
+        {
             Ok(_) => success_count += 1,
             Err(e) => {
                 println!("Error on document {}: {:?}", i, e);
@@ -190,10 +238,12 @@ async fn test_concurrent_collection_creation() {
     for i in 0..10 {
         let db_clone = Arc::clone(&db);
         tasks.push(tokio::spawn(async move {
-            db_clone.new_collection(
-                &format!("collection_{}", i),
-                vec![("field", FieldType::String, false)]
-            )
+            db_clone
+                .new_collection(
+                    &format!("collection_{}", i),
+                    vec![("field", FieldType::String, false)],
+                )
+                .await
         }));
     }
 
@@ -221,15 +271,18 @@ async fn test_rapid_flush_calls() {
 
     let db = Arc::new(Aurora::with_config(config).unwrap());
 
-    db.new_collection("flush_test", vec![
-        ("data", FieldType::String, false),
-    ]).unwrap();
+    db.new_collection("flush_test", vec![("data", FieldType::String, false)])
+        .await
+        .unwrap();
 
     // Insert some data
     for i in 0..100 {
-        db.insert_into("flush_test", vec![
-            ("data", Value::String(format!("data_{}", i))),
-        ]).await.unwrap();
+        db.insert_into(
+            "flush_test",
+            vec![("data", Value::String(format!("data_{}", i)))],
+        )
+        .await
+        .unwrap();
     }
 
     println!("Calling flush() rapidly 50 times...");
@@ -250,6 +303,7 @@ async fn test_rapid_flush_calls() {
 
 // Helper function to get process RSS in MB
 fn get_process_rss_mb(pid: u32) -> i64 {
+    let _ = pid;
     #[cfg(target_os = "linux")]
     {
         if let Ok(status) = std::fs::read_to_string(format!("/proc/{}/status", pid)) {

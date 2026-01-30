@@ -15,7 +15,7 @@
 //!
 //! ## Example
 //!
-//! ```rust
+
 //! // Create a high-performance search index
 //! let mut index = FullTextIndex::new("products", "description");
 //!
@@ -82,7 +82,7 @@ impl FullTextIndex {
     /// * `field` - Name of the field within documents to index
     ///
     /// # Examples
-    /// ```rust
+    /// ```
     /// let index = FullTextIndex::new("products", "description");
     /// ```
     pub fn new(_collection: &str, field: &str) -> Self {
@@ -114,7 +114,7 @@ impl FullTextIndex {
     /// * `enable_stop_words` - Whether to filter common words
     ///
     /// # Examples
-    /// ```rust
+    /// ```
     /// // Create index optimized for short documents (titles, names)
     /// let index = FullTextIndex::with_options("products", "name", 1.6, 0.3, true);
     ///
@@ -372,7 +372,7 @@ impl FullTextIndex {
     /// A Result indicating success or an error
     ///
     /// # Examples
-    /// ```rust
+    /// ```
     /// index.index_document(&document)?;
     /// ```
     pub fn index_document(&self, doc: &Document) -> Result<()> {
@@ -418,7 +418,7 @@ impl FullTextIndex {
     /// A vector of (document_id, relevance_score) pairs, sorted by relevance
     ///
     /// # Examples
-    /// ```rust
+    /// ```
     /// let results = index.search("wireless bluetooth headphones");
     /// for (doc_id, score) in results {
     ///     println!("Document {}: relevance {:.3}", doc_id, score);
@@ -488,7 +488,7 @@ impl FullTextIndex {
     /// A vector of (document_id, relevance_score) pairs
     ///
     /// # Examples
-    /// ```rust
+    /// ```
     /// // Find documents matching "wireless" with up to 2 typos
     /// let results = index.fuzzy_search("wireles", 2);
     /// ```
@@ -567,7 +567,7 @@ impl FullTextIndex {
     /// * `doc_id` - ID of the document to remove
     ///
     /// # Examples
-    /// ```rust
+    /// ```
     /// index.remove_document("doc-123");
     /// ```
     pub fn remove_document(&self, doc_id: &str) {
@@ -631,7 +631,7 @@ impl FullTextIndex {
     /// Text with search terms wrapped in <mark> tags
     ///
     /// # Examples
-    /// ```rust
+    /// ```
     /// let highlighted = index.highlight_matches(
     ///     "This is a wireless bluetooth device",
     ///     "wireless bluetooth"

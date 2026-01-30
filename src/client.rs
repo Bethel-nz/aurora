@@ -1,4 +1,4 @@
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, Result, ErrorCode};
 use crate::network::protocol::{Request, Response};
 use crate::query::SimpleQueryBuilder;
 use crate::types::{Document, FieldType, Value};
@@ -23,7 +23,7 @@ impl Client {
 
     /// Sends a request to the server and awaits a response.
     async fn send_request(&mut self, request: Request) -> Result<Response> {
-        let request_bytes = bincode::serialize(&request).map_err(AuroraError::Bincode)?;
+        let request_bytes = bincode::serialize(&request).map_err(AqlError::from)?;
         let len_bytes = (request_bytes.len() as u32).to_le_bytes();
 
         self.stream.write_all(&len_bytes).await?;
@@ -31,12 +31,19 @@ impl Client {
 
         let mut len_bytes = [0u8; 4];
         self.stream.read_exact(&mut len_bytes).await?;
+        const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024; // 8 MiB
         let len = u32::from_le_bytes(len_bytes) as usize;
+        if len > MAX_FRAME_SIZE {
+            return Err(AqlError::new(
+                ErrorCode::ProtocolError,
+                format!("Response too large: {} bytes", len),
+            ));
+        }
 
         let mut buffer = vec![0u8; len];
         self.stream.read_exact(&mut buffer).await?;
 
-        let response: Response = bincode::deserialize(&buffer).map_err(AuroraError::Bincode)?;
+        let response: Response = bincode::deserialize(&buffer).map_err(AqlError::from)?;
 
         Ok(response)
     }
@@ -52,8 +59,8 @@ impl Client {
         };
         match self.send_request(req).await? {
             Response::Done => Ok(()),
-            Response::Error(e) => Err(AuroraError::Protocol(e)),
-            _ => Err(AuroraError::Protocol("Unexpected response".into())),
+            Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
+            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
         }
     }
 
@@ -68,8 +75,8 @@ impl Client {
         };
         match self.send_request(req).await? {
             Response::Message(id) => Ok(id),
-            Response::Error(e) => Err(AuroraError::Protocol(e)),
-            _ => Err(AuroraError::Protocol("Unexpected response".into())),
+            Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
+            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
         }
     }
 
@@ -80,8 +87,8 @@ impl Client {
         };
         match self.send_request(req).await? {
             Response::Document(doc) => Ok(doc),
-            Response::Error(e) => Err(AuroraError::Protocol(e)),
-            _ => Err(AuroraError::Protocol("Unexpected response".into())),
+            Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
+            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
         }
     }
 
@@ -89,8 +96,8 @@ impl Client {
         let req = Request::Query(builder);
         match self.send_request(req).await? {
             Response::Documents(docs) => Ok(docs),
-            Response::Error(e) => Err(AuroraError::Protocol(e)),
-            _ => Err(AuroraError::Protocol("Unexpected response".into())),
+            Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
+            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
         }
     }
 
@@ -100,30 +107,30 @@ impl Client {
                 self.current_transaction = Some(tx_id);
                 Ok(tx_id)
             }
-            Response::Error(e) => Err(AuroraError::Protocol(e)),
-            _ => Err(AuroraError::Protocol("Unexpected response".into())),
+            Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
+            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
         }
     }
 
     pub async fn commit_transaction(&mut self) -> Result<()> {
         let tx_id = self
             .current_transaction
-            .ok_or_else(|| AuroraError::InvalidOperation("No active transaction".into()))?;
+            .ok_or_else(|| AqlError::invalid_operation("No active transaction".to_string()))?;
 
         match self.send_request(Request::CommitTransaction(tx_id)).await? {
             Response::Done => {
                 self.current_transaction = None;
                 Ok(())
             }
-            Response::Error(e) => Err(AuroraError::Protocol(e)),
-            _ => Err(AuroraError::Protocol("Unexpected response".into())),
+            Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
+            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
         }
     }
 
     pub async fn rollback_transaction(&mut self) -> Result<()> {
         let tx_id = self
             .current_transaction
-            .ok_or_else(|| AuroraError::InvalidOperation("No active transaction".into()))?;
+            .ok_or_else(|| AqlError::invalid_operation("No active transaction".to_string()))?;
 
         match self
             .send_request(Request::RollbackTransaction(tx_id))
@@ -133,16 +140,16 @@ impl Client {
                 self.current_transaction = None;
                 Ok(())
             }
-            Response::Error(e) => Err(AuroraError::Protocol(e)),
-            _ => Err(AuroraError::Protocol("Unexpected response".into())),
+            Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
+            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
         }
     }
 
     pub async fn delete(&mut self, key: &str) -> Result<()> {
         match self.send_request(Request::Delete(key.to_string())).await? {
             Response::Done => Ok(()),
-            Response::Error(e) => Err(AuroraError::Protocol(e)),
-            _ => Err(AuroraError::Protocol("Unexpected response".into())),
+            Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
+            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
         }
     }
 }

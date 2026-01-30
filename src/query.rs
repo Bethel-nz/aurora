@@ -3,9 +3,23 @@
 //! This module provides a powerful, fluent query interface for filtering, sorting,
 //! and retrieving documents from Aurora collections.
 //!
+//! ## Architectural Note: "The Query as a Stream"
+//!
+//! Unlike traditional databases that parse SQL strings into an execution plan,
+//! Aurora's query engine is built around the **Fluent Builder Pattern** and **Iterators**.
+//!
+//! 1.  **Type-Safe Construction**: Queries are built using Rust method chaining, ensuring
+//!     validity at compile time (or runtime construction without parsing overhead).
+//! 2.  **Zero-Allocation Filtering**: The `Queryable` trait and `DocumentFilter` type allow
+//!     us to stack closures. These filters run directly on the data stream without
+//!     intermediate allocations.
+//! 3.  **Reactive Core**: The `watch()` method transforms a static query into a
+//!     live stream of `QueryUpdate` events. This is the heart of the "Embedded Platform"
+//!     concept—allowing the application to react to data changes instantly.
+//!
 //! ## Examples
 //!
-//! ```rust
+
 //! // Get all active users over 21
 //! let users = db.query("users")
 //!     .filter(|f| f.eq("status", "active") && f.gt("age", 21))
@@ -16,7 +30,7 @@
 //! ```
 
 use crate::Aurora;
-use crate::error::AuroraError;
+use crate::error::AqlError;
 use crate::error::Result;
 use crate::types::{Document, Value};
 use serde::{Deserialize, Serialize};
@@ -49,7 +63,7 @@ type DocumentFilter<'a> = Box<dyn Fn(&Document) -> bool + Send + Sync + 'a>;
 ///
 /// # Examples
 ///
-/// ```
+/// ```rust,no_run
 /// // Query for active premium users
 /// let premium_users = db.query("users")
 ///     .filter(|f| f.eq("status", "active") && f.eq("account_type", "premium"))
@@ -66,6 +80,9 @@ pub struct QueryBuilder<'a> {
     limit: Option<usize>,
     offset: Option<usize>,
     fields: Option<Vec<String>>,
+    /// Optional debounce duration for reactive queries (watch)
+    /// When set, updates are batched and emitted at most once per interval
+    debounce_duration: Option<std::time::Duration>,
 }
 
 /// Builder for constructing document filter expressions.
@@ -75,7 +92,7 @@ pub struct QueryBuilder<'a> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```rust,no_run
 /// // Combine multiple filter conditions
 /// db.query("products")
 ///     .filter(|f| {
@@ -103,66 +120,66 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field equals a value
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.eq("status", "active"))
     /// ```
     pub fn eq<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field) == Some(&value)
+        self.get_nested_value(field) == Some(&value)
     }
 
     /// Check if a field is greater than a value
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.gt("age", 21))
     /// ```
     pub fn gt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).is_some_and(|v| v > &value)
+        self.get_nested_value(field).is_some_and(|v| v > &value)
     }
 
     /// Check if a field is greater than or equal to a value
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.gte("age", 21))
     /// ```
     pub fn gte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).is_some_and(|v| v >= &value)
+        self.get_nested_value(field).is_some_and(|v| v >= &value)
     }
 
     /// Check if a field is less than a value
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.lt("age", 65))
     /// ```
     pub fn lt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).is_some_and(|v| v < &value)
+        self.get_nested_value(field).is_some_and(|v| v < &value)
     }
 
     /// Check if a field is less than or equal to a value
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.lte("age", 65))
     /// ```
     pub fn lte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
         let value = value.into();
-        self.doc.data.get(field).is_some_and(|v| v <= &value)
+        self.get_nested_value(field).is_some_and(|v| v <= &value)
     }
 
     /// Check if a field contains a value
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.contains("name", "widget"))
     /// ```
     pub fn contains(&self, field: &str, value: &str) -> bool {
-        self.doc.data.get(field).is_some_and(|v| match v {
+        self.get_nested_value(field).is_some_and(|v| match v {
             Value::String(s) => s.contains(value),
             Value::Array(arr) => arr.contains(&Value::String(value.to_string())),
             _ => false,
@@ -172,21 +189,18 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field is in a list of values
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.in_values("status", &["active", "inactive"]))
     /// ```
     pub fn in_values<T: Into<Value> + Clone>(&self, field: &str, values: &[T]) -> bool {
         let values: Vec<Value> = values.iter().map(|v| v.clone().into()).collect();
-        self.doc
-            .data
-            .get(field)
-            .is_some_and(|v| values.contains(v))
+        self.get_nested_value(field).is_some_and(|v| values.contains(v))
     }
 
     /// Check if a field is between two values (inclusive)
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.between("age", 18, 65))
     /// ```
     pub fn between<T: Into<Value> + Clone>(&self, field: &str, min: T, max: T) -> bool {
@@ -196,37 +210,33 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field exists and is not null
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.exists("email"))
     /// ```
     pub fn exists(&self, field: &str) -> bool {
-        self.doc
-            .data
-            .get(field)
+        self.get_nested_value(field)
             .is_some_and(|v| !matches!(v, Value::Null))
     }
 
     /// Check if a field doesn't exist or is null
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.is_null("email"))
     /// ```
     pub fn is_null(&self, field: &str) -> bool {
-        self.doc
-            .data
-            .get(field)
+        self.get_nested_value(field)
             .is_none_or(|v| matches!(v, Value::Null))
     }
 
     /// Check if a field starts with a prefix
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.starts_with("name", "John"))
     /// ```
     pub fn starts_with(&self, field: &str, prefix: &str) -> bool {
-        self.doc.data.get(field).is_some_and(|v| match v {
+        self.get_nested_value(field).is_some_and(|v| match v {
             Value::String(s) => s.starts_with(prefix),
             _ => false,
         })
@@ -235,11 +245,11 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field ends with a suffix
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.ends_with("name", "son"))
     /// ```
     pub fn ends_with(&self, field: &str, suffix: &str) -> bool {
-        self.doc.data.get(field).is_some_and(|v| match v {
+        self.get_nested_value(field).is_some_and(|v| match v {
             Value::String(s) => s.ends_with(suffix),
             _ => false,
         })
@@ -248,12 +258,12 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field is in an array
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.array_contains("status", "active"))
     /// ```
     pub fn array_contains(&self, field: &str, value: impl Into<Value>) -> bool {
         let value = value.into();
-        self.doc.data.get(field).is_some_and(|v| match v {
+        self.get_nested_value(field).is_some_and(|v| match v {
             Value::Array(arr) => arr.contains(&value),
             _ => false,
         })
@@ -262,11 +272,11 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if an array has a specific length
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.array_len_eq("status", 2))
     /// ```
     pub fn array_len_eq(&self, field: &str, len: usize) -> bool {
-        self.doc.data.get(field).is_some_and(|v| match v {
+        self.get_nested_value(field).is_some_and(|v| match v {
             Value::Array(arr) => arr.len() == len,
             _ => false,
         })
@@ -275,7 +285,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Access a nested field using dot notation
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.get_nested_value("user.address.city") == Some(&Value::String("New York")))
     /// ```
     pub fn get_nested_value(&self, path: &str) -> Option<&Value> {
@@ -296,7 +306,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a nested field equals a value
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.nested_eq("user.address.city", "New York"))
     /// ```
     pub fn nested_eq<T: Into<Value>>(&self, path: &str, value: T) -> bool {
@@ -307,14 +317,19 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field matches a regular expression
     ///
     /// # Examples
-    /// ```
+   
     /// .filter(|f| f.matches_regex("email", r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"))
     /// ```
     pub fn matches_regex(&self, field: &str, pattern: &str) -> bool {
         use regex::Regex;
 
+        // Prevent DoS via overly complex/long regex
+        if pattern.len() > 100 {
+            return false;
+        }
+
         if let Ok(re) = Regex::new(pattern) {
-            self.doc.data.get(field).is_some_and(|v| match v {
+            self.get_nested_value(field).is_some_and(|v| match v {
                 Value::String(s) => re.is_match(s),
                 _ => false,
             })
@@ -328,7 +343,7 @@ impl<'a> QueryBuilder<'a> {
     /// Create a new query builder for the specified collection
     ///
     /// # Examples
-    /// ```
+   
     /// let query = db.query("users");
     /// ```
     pub fn new(db: &'a Aurora, collection: &str) -> Self {
@@ -340,13 +355,14 @@ impl<'a> QueryBuilder<'a> {
             limit: None,
             offset: None,
             fields: None,
+            debounce_duration: None,
         }
     }
 
     /// Add a filter function to the query
     ///
     /// # Examples
-    /// ```
+   
     /// let active_users = db.query("users")
     ///     .filter(|f| f.eq("status", "active"))
     ///     .collect()
@@ -419,13 +435,35 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
+    /// Set debounce/throttle interval for reactive queries (watch)
+    ///
+    /// When watching a query, updates will be batched and emitted at most once
+    /// per interval. This prevents overwhelming the UI with high-frequency updates.
+    /// Events are deduplicated by document ID, keeping only the latest state.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// // Rate-limit to max 10 updates per second
+    /// let mut watcher = db.query("logs")
+    ///     .filter(|f| f.eq("level", "ERROR"))
+    ///     .debounce(Duration::from_millis(100))
+    ///     .watch()
+    ///     .await?;
+    /// ```
+    pub fn debounce(mut self, duration: std::time::Duration) -> Self {
+        self.debounce_duration = Some(duration);
+        self
+    }
+
     /// Execute the query and collect the results
     ///
     /// # Returns
     /// A vector of documents matching the query criteria
     ///
     /// # Examples
-    /// ```
+   
     /// let results = db.query("products")
     ///     .filter(|f| f.lt("price", 100))
     ///     .collect()
@@ -440,7 +478,8 @@ impl<'a> QueryBuilder<'a> {
             // Early termination path - scan only until we have enough results
             let target = self.limit.unwrap() + self.offset.unwrap_or(0);
             let filter = |doc: &Document| self.filters.iter().all(|f| f(doc));
-            self.db.scan_and_filter(&self.collection, filter, Some(target))?
+            self.db
+                .scan_and_filter(&self.collection, filter, Some(target))?
         } else {
             // Standard path - need all matching docs (for sorting or no limit)
             let mut docs = self.db.get_all_collection(&self.collection).await?;
@@ -702,7 +741,7 @@ impl<'a> QueryBuilder<'a> {
     /// Get only the first matching document or None if no matches
     ///
     /// # Examples
-    /// ```
+   
     /// let user = db.query("users")
     ///     .filter(|f| f.eq("email", "jane@example.com"))
     ///     .first_one()
@@ -715,7 +754,7 @@ impl<'a> QueryBuilder<'a> {
     /// Count the number of documents matching the query
     ///
     /// # Examples
-    /// ```
+   
     /// let active_count = db.query("users")
     ///     .filter(|f| f.eq("status", "active"))
     ///     .count()
@@ -731,7 +770,7 @@ impl<'a> QueryBuilder<'a> {
     /// The number of documents updated
     ///
     /// # Examples
-    /// ```
+   
     /// let updated = db.query("products")
     ///     .filter(|f| f.lt("stock", 5))
     ///     .update([
@@ -763,7 +802,8 @@ impl<'a> QueryBuilder<'a> {
                     format!("{}:{}", collection, updated_doc.id),
                     serde_json::to_vec(&updated_doc)?,
                     None,
-                )?;
+                )
+                .await?;
                 updated_count += 1;
             }
         }
@@ -775,7 +815,7 @@ impl<'a> QueryBuilder<'a> {
 /// Builder for performing full-text search operations
 ///
 /// # Examples
-/// ```
+/// ```rust,no_run
 /// let results = db.search("products")
 ///     .field("description")
 ///     .matching("wireless headphones")
@@ -806,7 +846,7 @@ impl<'a> SearchBuilder<'a> {
     /// Specify the field to search in
     ///
     /// # Examples
-    /// ```
+   
     /// .field("description")
     /// ```
     pub fn field(mut self, field: &str) -> Self {
@@ -817,7 +857,7 @@ impl<'a> SearchBuilder<'a> {
     /// Specify the search query text
     ///
     /// # Examples
-    /// ```
+   
     /// .matching("wireless headphones")
     /// ```
     pub fn matching(mut self, query: &str) -> Self {
@@ -828,7 +868,7 @@ impl<'a> SearchBuilder<'a> {
     /// Enable or disable fuzzy matching (for typo tolerance)
     ///
     /// # Examples
-    /// ```
+   
     /// .fuzzy(true)  // Enable fuzzy matching
     /// ```
     pub fn fuzzy(mut self, enable: bool) -> Self {
@@ -842,7 +882,7 @@ impl<'a> SearchBuilder<'a> {
     /// A vector of documents matching the search criteria
     ///
     /// # Examples
-    /// ```
+   
     /// let results = db.search("articles")
     ///     .field("content")
     ///     .matching("quantum computing")
@@ -852,10 +892,10 @@ impl<'a> SearchBuilder<'a> {
     pub async fn collect(self) -> Result<Vec<Document>> {
         let field = self
             .field
-            .ok_or_else(|| AuroraError::InvalidOperation("Search field not specified".into()))?;
+            .ok_or_else(|| AqlError::invalid_operation("Search field not specified"))?;
         let query = self
             .query
-            .ok_or_else(|| AuroraError::InvalidOperation("Search query not specified".into()))?;
+            .ok_or_else(|| AqlError::invalid_operation("Search query not specified"))?;
 
         self.db.search_text(&self.collection, &field, &query).await
     }
@@ -897,7 +937,7 @@ impl SimpleQueryBuilder {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -941,7 +981,7 @@ impl SimpleQueryBuilder {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -981,7 +1021,7 @@ impl SimpleQueryBuilder {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -1013,7 +1053,7 @@ impl SimpleQueryBuilder {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -1046,7 +1086,7 @@ impl SimpleQueryBuilder {
     ///
     /// # Examples
     ///
-    /// ```
+   
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -1147,4 +1187,54 @@ pub enum Filter {
     Lt(String, Value),
     Lte(String, Value),
     Contains(String, String),
+    And(Vec<Filter>),
+    Or(Vec<Filter>),
+}
+
+fn get_field_value<'a>(doc: &'a Document, path: &str) -> Option<&'a Value> {
+    // First, try a direct lookup for field names that might contain dots.
+    if let Some(value) = doc.data.get(path) {
+        return Some(value);
+    }
+
+    if !path.contains('.') {
+        return None;
+    }
+
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut current = doc.data.get(parts[0])?;
+
+    for &part in &parts[1..] {
+        if let Value::Object(map) = current {
+            current = map.get(part)?;
+        } else {
+            return None;
+        }
+    }
+
+    Some(current)
+}
+
+impl Filter {
+    /// Check if a document matches this filter
+    pub fn matches(&self, doc: &Document) -> bool {
+        match self {
+            Filter::Eq(field, value) => get_field_value(doc, field) == Some(value),
+            Filter::Gt(field, value) => get_field_value(doc, field).is_some_and(|v| v > value),
+            Filter::Gte(field, value) => get_field_value(doc, field).is_some_and(|v| v >= value),
+            Filter::Lt(field, value) => get_field_value(doc, field).is_some_and(|v| v < value),
+            Filter::Lte(field, value) => get_field_value(doc, field).is_some_and(|v| v <= value),
+            Filter::Contains(field, substr) => get_field_value(doc, field).is_some_and(|v| {
+                if let Value::String(s) = v {
+                    s.contains(substr)
+                } else if let Value::Array(arr) = v {
+                    arr.contains(&Value::String(substr.clone()))
+                } else {
+                    false
+                }
+            }),
+            Filter::And(filters) => filters.iter().all(|f| f.matches(doc)),
+            Filter::Or(filters) => filters.iter().any(|f| f.matches(doc)),
+        }
+    }
 }

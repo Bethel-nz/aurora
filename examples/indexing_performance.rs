@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("age", FieldType::Int, false),        // NOT indexed
                 ("address", FieldType::String, false), // NOT indexed
             ],
-        )?;
+        ).await?;
 
         let start = Instant::now();
         for i in 0..1000 {
@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("category", FieldType::String, false), // NOT indexed
                 ("stock", FieldType::Int, false),       // NOT indexed
             ],
-        )?;
+        ).await?;
 
         let start = Instant::now();
         for i in 0..1000 {
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("status", FieldType::Int, false),
                 ("metadata", FieldType::String, false),
             ],
-        )?;
+        ).await?;
 
         let start = Instant::now();
         for i in 0..1000 {

@@ -30,10 +30,15 @@ async fn stress_test_concurrent_writes() {
         let db = Arc::new(Aurora::with_config(config).unwrap());
 
         // Create collection
-        db.new_collection("stress_test", vec![
-            ("name", FieldType::String, false),
-            ("value", FieldType::Int, false),
-        ]).unwrap();
+        db.new_collection(
+            "stress_test",
+            vec![
+                ("name", FieldType::String, false),
+                ("value", FieldType::Int, false),
+            ],
+        )
+        .await
+        .unwrap();
 
         let start = Instant::now();
         let mut tasks = JoinSet::new();
@@ -42,10 +47,15 @@ async fn stress_test_concurrent_writes() {
         for i in 0..num_requests {
             let db_clone = Arc::clone(&db);
             tasks.spawn(async move {
-                db_clone.insert_into("stress_test", vec![
-                    ("name", Value::String(format!("item_{}", i))),
-                    ("value", Value::Int(i as i64)),
-                ]).await
+                db_clone
+                    .insert_into(
+                        "stress_test",
+                        vec![
+                            ("name", Value::String(format!("item_{}", i))),
+                            ("value", Value::Int(i as i64)),
+                        ],
+                    )
+                    .await
             });
         }
 
@@ -68,7 +78,10 @@ async fn stress_test_concurrent_writes() {
         println!("  Successful: {}", success_count);
         println!("  Failed: {}", error_count);
         println!("  Duration: {:.2?}", duration);
-        println!("  Throughput: {:.2} req/sec", num_requests as f64 / duration.as_secs_f64());
+        println!(
+            "  Throughput: {:.2} req/sec",
+            num_requests as f64 / duration.as_secs_f64()
+        );
 
         // Verify data integrity
         let query_start = Instant::now();
@@ -79,7 +92,11 @@ async fn stress_test_concurrent_writes() {
         println!("  Documents in DB: {}", results.len());
 
         assert_eq!(success_count, num_requests, "All requests should succeed");
-        assert_eq!(results.len(), num_requests, "All documents should be queryable");
+        assert_eq!(
+            results.len(),
+            num_requests,
+            "All documents should be queryable"
+        );
     }
 }
 
@@ -97,15 +114,15 @@ async fn stress_test_concurrent_reads_writes() {
 
     let db = Arc::new(Aurora::with_config(config).unwrap());
 
-    db.new_collection("rw_test", vec![
-        ("counter", FieldType::Int, false),
-    ]).unwrap();
+    db.new_collection("rw_test", vec![("counter", FieldType::Int, false)])
+        .await
+        .unwrap();
 
     // Pre-populate with some data
     for i in 0..100 {
-        db.insert_into("rw_test", vec![
-            ("counter", Value::Int(i)),
-        ]).await.unwrap();
+        db.insert_into("rw_test", vec![("counter", Value::Int(i))])
+            .await
+            .unwrap();
     }
 
     let start = Instant::now();
@@ -116,18 +133,16 @@ async fn stress_test_concurrent_reads_writes() {
     for i in 0..1000 {
         let db_clone = Arc::clone(&db);
         write_tasks.spawn(async move {
-            db_clone.insert_into("rw_test", vec![
-                ("counter", Value::Int(i + 1000)),
-            ]).await
+            db_clone
+                .insert_into("rw_test", vec![("counter", Value::Int(i + 1000))])
+                .await
         });
     }
 
     // Spawn 1000 readers
     for _ in 0..1000 {
         let db_clone = Arc::clone(&db);
-        read_tasks.spawn(async move {
-            db_clone.query("rw_test").collect().await
-        });
+        read_tasks.spawn(async move { db_clone.query("rw_test").collect().await });
     }
 
     let mut write_success = 0;
@@ -158,7 +173,10 @@ async fn stress_test_concurrent_reads_writes() {
     println!("  Reads successful: {}", read_success);
     println!("  Failed: {}", errors);
     println!("  Duration: {:.2?}", duration);
-    println!("  Throughput: {:.2} ops/sec", 2000.0 / duration.as_secs_f64());
+    println!(
+        "  Throughput: {:.2} ops/sec",
+        2000.0 / duration.as_secs_f64()
+    );
 
     assert_eq!(errors, 0, "No operations should fail");
     assert_eq!(write_success, 1000, "All writes should succeed");
@@ -174,9 +192,9 @@ async fn stress_test_pubsub_notifications() {
 
     let db = Arc::new(Aurora::open(db_path.to_str().unwrap()).unwrap());
 
-    db.new_collection("pubsub_test", vec![
-        ("event", FieldType::String, false),
-    ]).unwrap();
+    db.new_collection("pubsub_test", vec![("event", FieldType::String, false)])
+        .await
+        .unwrap();
 
     // Create 10 listeners
     let mut listeners = vec![];
@@ -216,9 +234,12 @@ async fn stress_test_pubsub_notifications() {
     // Insert 100 documents
     let start = Instant::now();
     for i in 0..100 {
-        db.insert_into("pubsub_test", vec![
-            ("event", Value::String(format!("event_{}", i))),
-        ]).await.unwrap();
+        db.insert_into(
+            "pubsub_test",
+            vec![("event", Value::String(format!("event_{}", i)))],
+        )
+        .await
+        .unwrap();
     }
     let insert_duration = start.elapsed();
 
@@ -233,9 +254,19 @@ async fn stress_test_pubsub_notifications() {
     println!("Results:");
     println!("  Documents inserted: 100");
     println!("  Insert duration: {:.2?}", insert_duration);
-    println!("  Total events received across all listeners: {}", total_events_received);
-    println!("  Average events per listener: {:.1}", total_events_received as f64 / 10.0);
+    println!(
+        "  Total events received across all listeners: {}",
+        total_events_received
+    );
+    println!(
+        "  Average events per listener: {:.1}",
+        total_events_received as f64 / 10.0
+    );
 
     // Each listener should have received most/all events
-    assert!(total_events_received >= 900, "Should receive most events (got {})", total_events_received);
+    assert!(
+        total_events_received >= 900,
+        "Should receive most events (got {})",
+        total_events_received
+    );
 }

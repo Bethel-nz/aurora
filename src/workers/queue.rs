@@ -1,8 +1,10 @@
 use super::job::{Job, JobStatus};
-use crate::error::{AuroraError, Result};
+use crate::error::{AqlError, ErrorCode, Result};
 use crate::storage::ColdStore;
 use dashmap::DashMap;
 use std::sync::Arc;
+
+use tokio::sync::Notify;
 
 /// Persistent job queue
 pub struct JobQueue {
@@ -12,17 +14,21 @@ pub struct JobQueue {
     storage: Arc<ColdStore>,
     // Collection name for jobs
     collection: String,
+    // Notification for worker wake-up
+    notify: Arc<Notify>,
 }
 
 impl JobQueue {
     pub fn new(storage_path: String) -> Result<Self> {
         let storage = Arc::new(ColdStore::new(&storage_path)?);
         let jobs = Arc::new(DashMap::new());
+        let notify = Arc::new(Notify::new());
 
         let queue = Self {
             jobs,
             storage,
             collection: "__aurora_jobs".to_string(),
+            notify,
         };
 
         // Load existing jobs from storage
@@ -38,13 +44,14 @@ impl JobQueue {
 
         for entry in self.storage.scan_prefix(&prefix) {
             if let Ok((key, value)) = entry
-                && let Ok(job) = bincode::deserialize::<Job>(&value) {
-                    // Only load jobs that aren't completed
-                    if !matches!(job.status, JobStatus::Completed) {
-                        let job_id = key.strip_prefix(&prefix).unwrap_or(&key).to_string();
-                        self.jobs.insert(job_id, job);
-                    }
+                && let Ok(job) = bincode::deserialize::<Job>(&value)
+            {
+                // Only load jobs that aren't completed
+                if !matches!(job.status, JobStatus::Completed) {
+                    let job_id = key.strip_prefix(&prefix).unwrap_or(&key).to_string();
+                    self.jobs.insert(job_id, job);
                 }
+            }
         }
 
         Ok(())
@@ -56,14 +63,27 @@ impl JobQueue {
         let key = format!("{}:{}", self.collection, job_id);
 
         // Persist to storage
-        let serialized =
-            bincode::serialize(&job).map_err(|e| AuroraError::SerializationError(e.to_string()))?;
+        let serialized = bincode::serialize(&job)
+            .map_err(|e| AqlError::new(ErrorCode::SerializationError, e.to_string()))?;
         self.storage.set(key, serialized)?;
 
         // Add to in-memory index
         self.jobs.insert(job_id.clone(), job);
 
+        // Wake up waiting workers
+        self.notify.notify_waiters();
+
         Ok(job_id)
+    }
+
+    /// Wait for a notification
+    pub async fn notified(&self) {
+        self.notify.notified().await;
+    }
+
+    /// Notify all waiting workers (used for shutdown)
+    pub fn notify_all(&self) {
+        self.notify.notify_waiters();
     }
 
     /// Dequeue next job (highest priority, oldest first)
@@ -115,8 +135,8 @@ impl JobQueue {
         let key = format!("{}:{}", self.collection, job_id);
 
         // Persist to storage
-        let serialized =
-            bincode::serialize(&job).map_err(|e| AuroraError::SerializationError(e.to_string()))?;
+        let serialized = bincode::serialize(&job)
+            .map_err(|e| AqlError::new(ErrorCode::SerializationError, e.to_string()))?;
         self.storage.set(key, serialized)?;
 
         // Update in-memory index
@@ -177,6 +197,18 @@ impl JobQueue {
         }
 
         Ok(stats)
+    }
+
+    /// Find zombie jobs (Running with expired heartbeat)
+    ///
+    /// Efficiently scans running jobs using the in-memory DashMap index.
+    /// Returns job IDs of zombies that need to be reset to Pending.
+    pub async fn find_zombie_jobs(&self) -> Vec<String> {
+        self.jobs
+            .iter()
+            .filter(|entry| entry.value().is_heartbeat_expired())
+            .map(|entry| entry.key().clone())
+            .collect()
     }
 }
 

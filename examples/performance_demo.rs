@@ -57,7 +57,7 @@ async fn test_config(
             ("age", FieldType::Int, false),
             ("active", FieldType::Bool, false),
         ],
-    )?;
+    ).await?;
 
     // === WRITE PERFORMANCE TEST ===
     let write_count = 1000;
