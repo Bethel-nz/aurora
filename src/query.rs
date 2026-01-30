@@ -329,7 +329,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
         }
 
         if let Ok(re) = Regex::new(pattern) {
-            self.doc.data.get(field).is_some_and(|v| match v {
+            self.get_nested_value(field).is_some_and(|v| match v {
                 Value::String(s) => re.is_match(s),
                 _ => false,
             })
@@ -1192,8 +1192,13 @@ pub enum Filter {
 }
 
 fn get_field_value<'a>(doc: &'a Document, path: &str) -> Option<&'a Value> {
+    // First, try a direct lookup for field names that might contain dots.
+    if let Some(value) = doc.data.get(path) {
+        return Some(value);
+    }
+
     if !path.contains('.') {
-        return doc.data.get(path);
+        return None;
     }
 
     let parts: Vec<&str> = path.split('.').collect();
