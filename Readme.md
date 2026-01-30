@@ -26,7 +26,7 @@ Most embedded databases force you to choose: either **simple key-value storage**
 
 ```toml
 [dependencies]
-aurora-db = "0.4.1"
+aurora-db = "0.5.0"
 ```
 
 ### Basic Usage

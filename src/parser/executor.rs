@@ -748,7 +748,7 @@ pub fn validate_document(doc: &Document, rules: &[ast::ValidationRule]) -> Resul
                                 }
                             }
                             "uuid" => {
-                                if s.len() != 36 || s.chars().filter(|c| *c == '-').count() != 4 {
+                                if uuid::Uuid::parse_str(s).is_err() {
                                     errors.push(format!("{}: invalid UUID format", rule.field));
                                 }
                             }
@@ -881,18 +881,20 @@ pub fn execute_downsample(
 fn parse_interval(interval: &str) -> Result<i64> {
     let interval = interval.trim().to_lowercase();
     let (num_str, unit) = interval.split_at(interval.len().saturating_sub(1));
-
     let num: i64 = num_str.parse().unwrap_or(1);
-
     let multiplier = match unit {
         "s" => 1,
         "m" => 60,
         "h" => 3600,
         "d" => 86400,
         "w" => 604800,
-        _ => 1,
+        _ => {
+            return Err(AqlError::new(
+                ErrorCode::QueryError,
+                format!("Invalid interval unit '{}'", unit),
+            ))
+        }
     };
-
     Ok(num * multiplier)
 }
 

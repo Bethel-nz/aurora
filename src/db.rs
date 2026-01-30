@@ -492,16 +492,28 @@ impl Aurora {
                 if let Some(wal) = wal_clone {
                     while let Some(op) = rx.recv().await {
                         // Properly handle the RwLock write guard
-                        if let Ok(mut guard) = wal.write() {
-                            let _ = match op {
-                                WalOperation::Put { key, value } => {
-                                    // Deref Arc to pass slices
-                                    guard.append(Operation::Put, &key, Some(&value.as_ref()))
+                        match wal.write() {
+                            Ok(mut guard) => {
+                                let result = match op {
+                                    WalOperation::Put { key, value } => {
+                                        // Deref Arc to pass slices
+                                        guard.append(Operation::Put, &key, Some(value.as_ref()))
+                                    }
+                                    WalOperation::Delete { key } => {
+                                        guard.append(Operation::Delete, &key, None)
+                                    }
+                                };
+                                if let Err(e) = result {
+                                    eprintln!("CRITICAL: Failed to append to WAL: {}. Shutting down.", e);
+                                    // A failed WAL write is a catastrophic failure.
+                                    std::process::exit(1);
                                 }
-                                WalOperation::Delete { key } => {
-                                    guard.append(Operation::Delete, &key, None)
-                                }
-                            };
+                            }
+                            Err(e) => {
+                                // This likely means the lock is poisoned, which is a critical state.
+                                eprintln!("CRITICAL: Failed to acquire WAL lock: {}. Shutting down.", e);
+                                std::process::exit(1);
+                            }
                         }
                     }
                 }
