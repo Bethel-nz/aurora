@@ -111,7 +111,8 @@ async fn test_1_million_records_memory() {
 }
 
 // Helper function to get process RSS in MB
-fn get_process_rss_mb(_pid: u32) -> i64 {
+fn get_process_rss_mb(pid: u32) -> i64 {
+    let _ = pid;
     #[cfg(target_os = "linux")]
     {
         if let Ok(status) = std::fs::read_to_string(format!("/proc/{}/status", pid)) {

@@ -323,6 +323,11 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     pub fn matches_regex(&self, field: &str, pattern: &str) -> bool {
         use regex::Regex;
 
+        // Prevent DoS via overly complex/long regex
+        if pattern.len() > 100 {
+            return false;
+        }
+
         if let Ok(re) = Regex::new(pattern) {
             self.doc.data.get(field).is_some_and(|v| match v {
                 Value::String(s) => re.is_match(s),
