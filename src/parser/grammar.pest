@@ -317,7 +317,6 @@ filter_operator = {
     matches_operator |
     is_null_operator |
     is_not_null_operator |
-    is_not_null_operator |
     increment_operator |
     decrement_operator |
     push_operator |
