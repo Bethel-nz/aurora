@@ -17,6 +17,9 @@
 
 //! use aurora_db::{Aurora, Value, FieldType};
 //!
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Open a database
 //! let db = Aurora::open("my_app.db")?;
 //!
@@ -25,20 +28,23 @@
 //!     ("name", FieldType::String, false),
 //!     ("email", FieldType::String, true),  // unique field
 //!     ("age", FieldType::Int, false),
-//! ])?;
+//! ]).await?;
 //!
 //! // Insert data
 //! let user_id = db.insert_into("users", vec![
-//!     ("name", "Jane Doe"),
-//!     ("email", "jane@example.com"),
-//!     ("age", 28),
-//! ])?;
+//!     ("name", Value::String("Jane Doe".to_string())),
+//!     ("email", Value::String("jane@example.com".to_string())),
+//!     ("age", Value::Int(28)),
+//! ]).await?;
 //!
 //! // Query data
 //! let users = db.query("users")
 //!     .filter(|f| f.gt("age", 21))
 //!     .collect()
 //!     .await?;
+//!
+//! # Ok(())
+//! # }
 //! ```
 
 // Re-export primary types and modules
