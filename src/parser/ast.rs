@@ -293,12 +293,11 @@ pub struct IntrospectionQuery {
 
 /// Selection within a selection set
 #[derive(Debug, Clone)]
+
 pub enum Selection {
     Field(Field),
     FragmentSpread(String),
     InlineFragment(InlineFragment),
-    ComputedField(ComputedField),
-    SpecialSelection(SpecialSelection),
 }
 
 /// Inline fragment (... on Type { ... })
@@ -433,7 +432,7 @@ pub struct LookupSelection {
     pub local_field: String,
     pub foreign_field: String,
     pub filter: Option<Filter>,
-    pub selection_set: Vec<Selection>,
+    pub selection_set: Vec<Field>,
 }
 
 /// Page info selection
@@ -452,7 +451,7 @@ pub struct EdgesSelection {
 #[derive(Debug, Clone)]
 pub enum EdgeField {
     Cursor,
-    Node(Vec<Selection>),
+    Node(Vec<Field>),
 }
 
 /// Downsample selection (time-series)
@@ -460,7 +459,7 @@ pub enum EdgeField {
 pub struct DownsampleSelection {
     pub interval: String,
     pub aggregation: String,
-    pub selection_set: Vec<Selection>,
+    pub selection_set: Vec<Field>,
 }
 
 /// Window function selection (time-series)
