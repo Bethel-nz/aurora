@@ -27,7 +27,7 @@ pub struct Query {
     pub name: Option<String>,
     pub variable_definitions: Vec<VariableDefinition>,
     pub directives: Vec<Directive>,
-    pub selection_set: Vec<Selection>,
+    pub selection_set: Vec<Field>,
     pub variables_values: HashMap<String, Value>,
 }
 
@@ -47,7 +47,7 @@ pub struct Subscription {
     pub name: Option<String>,
     pub variable_definitions: Vec<VariableDefinition>,
     pub directives: Vec<Directive>,
-    pub selection_set: Vec<Selection>,
+    pub selection_set: Vec<Field>,
     pub variables_values: HashMap<String, Value>,
 }
 
@@ -175,7 +175,7 @@ pub struct Field {
     pub name: String,
     pub arguments: Vec<Argument>,
     pub directives: Vec<Directive>,
-    pub selection_set: Vec<Selection>,
+    pub selection_set: Vec<Field>,
 }
 
 /// Argument (key-value pair)
@@ -191,7 +191,7 @@ pub struct MutationOperation {
     pub alias: Option<String>,
     pub operation: MutationOp,
     pub directives: Vec<Directive>,
-    pub selection_set: Vec<Selection>,
+    pub selection_set: Vec<Field>,
 }
 
 /// Mutation operation types
