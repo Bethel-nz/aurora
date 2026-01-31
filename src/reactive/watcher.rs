@@ -25,6 +25,7 @@ impl QueryWatcher {
         mut listener: ChangeListener,
         state: Arc<ReactiveQueryState>,
         initial_results: Vec<Document>,
+        debounce_duration: Option<std::time::Duration>,
     ) -> Self {
         let collection = collection.into();
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -70,8 +71,50 @@ impl QueryWatcher {
             }
         });
 
+        // If debounce is requested, wrap the receiver in a throttling task
+        let final_receiver = if let Some(duration) = debounce_duration {
+            let (tx_throttled, rx_throttled) = mpsc::unbounded_channel();
+            let mut raw_rx = receiver;
+
+            tokio::spawn(async move {
+                use std::collections::HashMap;
+                use tokio::time::interval as tokio_interval;
+
+                let mut tick = tokio_interval(duration);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                let mut pending: HashMap<String, QueryUpdate> = HashMap::new();
+
+                loop {
+                    tokio::select! {
+                        biased;
+                        maybe_update = raw_rx.recv() => {
+                            match maybe_update {
+                                Some(update) => {
+                                    pending.insert(update.id().to_string(), update);
+                                }
+                                None => break,
+                            }
+                        }
+                        _ = tick.tick() => {
+                            if !pending.is_empty() {
+                                for (_, update) in pending.drain() {
+                                    if tx_throttled.send(update).is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            rx_throttled
+        } else {
+            receiver
+        };
+
         Self {
-            receiver,
+            receiver: final_receiver,
             collection,
         }
     }
@@ -198,7 +241,7 @@ mod tests {
             doc.data.get("active") == Some(&Value::Bool(true))
         }));
 
-        let mut watcher = QueryWatcher::new("users", listener, state, vec![]);
+        let mut watcher = QueryWatcher::new("users", listener, state, vec![], None);
 
         // Publish an insert event for an active user
         let mut data = HashMap::new();
@@ -229,7 +272,7 @@ mod tests {
             doc.data.get("active") == Some(&Value::Bool(true))
         }));
 
-        let mut watcher = QueryWatcher::new("users", listener, state, vec![]);
+        let mut watcher = QueryWatcher::new("users", listener, state, vec![], None);
 
         // Publish an inactive user (should be filtered)
         let mut inactive_data = HashMap::new();
