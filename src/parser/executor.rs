@@ -227,20 +227,26 @@ async fn execute_collection_query(
         .iter()
         .any(|f| f.name == "edges" || f.name == "pageInfo");
 
-    // Get all documents from collection using AQL helper
-    // Note: This fetches ALL docs. efficient pagination requires passing filters/cursors down to DB.
-    // For now we filter in memory.
-    let all_docs = db.aql_get_all_collection(collection_name).await?;
+    // Extract and apply orderBy if present
+    let orderings = extract_order_by(&field.arguments);
 
-    // Apply filter if present
-    let mut filtered_docs_iter: Vec<Document> = if let Some(ref aql_filter) = filter {
-        all_docs
-            .into_iter()
-            .filter(|doc| matches_filter(doc, aql_filter, variables))
-            .collect()
-    } else {
-        all_docs
+    // Create filter closure
+    let filter_fn = |doc: &Document| {
+        if let Some(ref aql_filter) = filter {
+            matches_filter(doc, aql_filter, variables)
+        } else {
+            true
+        }
     };
+
+    // Optimization: If no sorting is required, we can limit the scan
+    let target = if orderings.is_empty() {
+        limit.map(|l| l + offset)
+    } else {
+        None
+    };
+
+    let mut filtered_docs_iter = db.scan_and_filter(collection_name, filter_fn, target)?;
 
     // Extract and apply orderBy if present
     let orderings = extract_order_by(&field.arguments);
@@ -615,17 +621,7 @@ async fn execute_lookup(
         .into_iter()
         .map(|doc| {
             // Convert Selection to Field for projection
-            let fields: Vec<ast::Field> = lookup
-                .selection_set
-                .iter()
-                .filter_map(|sel| {
-                    if let ast::Selection::Field(f) = sel {
-                        Some(f.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let fields: Vec<ast::Field> = lookup.selection_set.iter().map(|f| f.clone()).collect();
 
             if fields.is_empty() {
                 Value::Object(doc.data)
@@ -667,12 +663,12 @@ pub async fn apply_projection_with_lookups(
 
     let mut projected_data = HashMap::new();
 
-    // Always include id
-    if let Some(id_val) = doc.data.get("id") {
+    // Always include id (prefer the document ID)
+    if !doc.id.is_empty() {
+        projected_data.insert("id".to_string(), Value::String(doc.id.clone()));
+    } else if let Some(id_val) = doc.data.get("id") {
         projected_data.insert("id".to_string(), id_val.clone());
     }
-    // Also include the document's id field
-    projected_data.insert("id".to_string(), Value::String(doc.id.clone()));
 
     for field in fields {
         let field_name = field.alias.as_ref().unwrap_or(&field.name);
@@ -688,17 +684,34 @@ pub async fn apply_projection_with_lookups(
             // Extract where filter if present
             let filter = extract_filter_from_args(&field.arguments).ok().flatten();
 
+            let collection =
+                extract_string_arg(&field.arguments, "collection").ok_or_else(|| {
+                    AqlError::new(
+                        ErrorCode::QueryError,
+                        "lookup requires 'collection' argument".to_string(),
+                    )
+                })?;
+            let local_field =
+                extract_string_arg(&field.arguments, "localField").ok_or_else(|| {
+                    AqlError::new(
+                        ErrorCode::QueryError,
+                        "lookup requires 'localField' argument".to_string(),
+                    )
+                })?;
+            let foreign_field =
+                extract_string_arg(&field.arguments, "foreignField").ok_or_else(|| {
+                    AqlError::new(
+                        ErrorCode::QueryError,
+                        "lookup requires 'foreignField' argument".to_string(),
+                    )
+                })?;
+
             let lookup = ast::LookupSelection {
-                collection: extract_string_arg(&field.arguments, "collection").unwrap_or_default(),
-                local_field: extract_string_arg(&field.arguments, "localField").unwrap_or_default(),
-                foreign_field: extract_string_arg(&field.arguments, "foreignField")
-                    .unwrap_or_default(),
+                collection,
+                local_field,
+                foreign_field,
                 filter,
-                selection_set: field
-                    .selection_set
-                    .iter()
-                    .map(|f| ast::Selection::Field(f.clone()))
-                    .collect(),
+                selection_set: field.selection_set.clone(),
             };
 
             let lookup_result = execute_lookup(db, &doc, &lookup, variables).await?;
@@ -792,10 +805,18 @@ pub fn validate_document(doc: &Document, rules: &[ast::ValidationRule]) -> Resul
                 }
                 ast::ValidationConstraint::Pattern(pattern) => {
                     if let Some(Value::String(s)) = field_value {
-                        if let Ok(re) = regex::Regex::new(pattern) {
-                            if !re.is_match(s) {
+                        match regex::Regex::new(pattern) {
+                            Ok(re) => {
+                                if !re.is_match(s) {
+                                    errors.push(format!(
+                                        "{}: does not match pattern '{}'",
+                                        rule.field, pattern
+                                    ));
+                                }
+                            }
+                            Err(_) => {
                                 errors.push(format!(
-                                    "{}: does not match pattern '{}'",
+                                    "{}: invalid regex pattern '{}'",
                                     rule.field, pattern
                                 ));
                             }
@@ -892,7 +913,7 @@ fn parse_interval(interval: &str) -> Result<i64> {
             return Err(AqlError::new(
                 ErrorCode::QueryError,
                 format!("Invalid interval unit '{}'", unit),
-            ))
+            ));
         }
     };
     Ok(num * multiplier)
@@ -905,6 +926,12 @@ pub fn execute_window_function(
     function: &str,
     window_size: usize,
 ) -> Result<Vec<Document>> {
+    if window_size == 0 {
+        return Err(AqlError::new(
+            ErrorCode::QueryError,
+            "window_size must be >= 1".to_string(),
+        ));
+    }
     let mut result_docs = Vec::new();
 
     for (i, doc) in docs.iter().enumerate() {
@@ -1057,24 +1084,24 @@ fn execute_mutation_op<'a>(
             } => {
                 let resolved_data = resolve_value(data, variables, context);
                 let update_data = aql_value_to_hashmap(&resolved_data)?;
-                let all_docs = db.aql_get_all_collection(collection).await?;
+                let filter_fn = |doc: &Document| {
+                    filter
+                        .as_ref()
+                        .map(|f| matches_filter(doc, f, variables))
+                        .unwrap_or(true)
+                };
+                // Get only matching docs
+                let matching_docs = db.scan_and_filter(collection, filter_fn, None)?;
 
                 let mut affected = 0;
                 let mut returned = Vec::new();
 
-                for doc in all_docs {
-                    let should_update = filter
-                        .as_ref()
-                        .map(|f| matches_filter(&doc, f, variables))
-                        .unwrap_or(true);
-
-                    if should_update {
-                        let updated_doc = db
-                            .aql_update_document(collection, &doc.id, update_data.clone())
-                            .await?;
-                        returned.push(updated_doc);
-                        affected += 1;
-                    }
+                for doc in matching_docs {
+                    let updated_doc = db
+                        .aql_update_document(collection, &doc.id, update_data.clone())
+                        .await?;
+                    returned.push(updated_doc);
+                    affected += 1;
                 }
 
                 let returned = if !mut_op.selection_set.is_empty() && options.apply_projections {
@@ -1102,17 +1129,19 @@ fn execute_mutation_op<'a>(
                 // For upsert, try update first, if no matches then insert
                 let resolved_data = resolve_value(data, variables, context);
                 let update_data = aql_value_to_hashmap(&resolved_data)?;
-                let all_docs = db.aql_get_all_collection(collection).await?;
+                let filter_fn = |doc: &Document| {
+                    filter
+                        .as_ref()
+                        .map(|f| matches_filter(doc, f, variables))
+                        .unwrap_or(false) // For upsert finding matches, default to false if no filter? 
+                    // Actually if filter is None, it should match nothing? Or everything?
+                    // Logic: Upsert needs to find matches. If matches, update.
+                    // If filter is None, Update all?
+                    // Standard upsert usually requires a filter.
+                    // Existing logic: map(...).unwrap_or(false).
+                };
 
-                let matching: Vec<_> = all_docs
-                    .iter()
-                    .filter(|doc| {
-                        filter
-                            .as_ref()
-                            .map(|f| matches_filter(doc, f, variables))
-                            .unwrap_or(false)
-                    })
-                    .collect();
+                let matching = db.scan_and_filter(collection, filter_fn, None)?;
 
                 if matching.is_empty() {
                     // Insert
@@ -1146,21 +1175,22 @@ fn execute_mutation_op<'a>(
             }
 
             MutationOp::Delete { collection, filter } => {
-                let all_docs = db.aql_get_all_collection(collection).await?;
+                let filter_fn = |doc: &Document| {
+                    filter
+                        .as_ref()
+                        .map(|f| matches_filter(doc, f, variables))
+                        .unwrap_or(true)
+                };
+
+                let matching_docs = db.scan_and_filter(collection, filter_fn, None)?;
+
                 let mut affected = 0;
                 let mut returned = Vec::new();
 
-                for doc in all_docs {
-                    let should_delete = filter
-                        .as_ref()
-                        .map(|f| matches_filter(&doc, f, variables))
-                        .unwrap_or(true);
-
-                    if should_delete {
-                        let deleted_doc = db.aql_delete_document(collection, &doc.id).await?;
-                        returned.push(deleted_doc);
-                        affected += 1;
-                    }
+                for doc in matching_docs {
+                    let deleted_doc = db.aql_delete_document(collection, &doc.id).await?;
+                    returned.push(deleted_doc);
+                    affected += 1;
                 }
 
                 Ok(MutationResult {
@@ -1913,8 +1943,13 @@ fn decode_cursor(cursor: &str) -> Result<String> {
 }
 
 fn get_doc_value_at_path<'a>(doc: &'a Document, path: &str) -> Option<&'a Value> {
+    // Optimization: Check for exact key match first (supports "user.name" as a literal key)
+    if let Some(val) = doc.data.get(path) {
+        return Some(val);
+    }
+
     if !path.contains('.') {
-        return doc.data.get(path);
+        return None;
     }
 
     let parts: Vec<&str> = path.split('.').collect();
@@ -2012,11 +2047,14 @@ pub fn matches_filter(
             }
         }
         AqlFilter::Matches(field, value) => {
-            // Simplified regex matching - contains for now
             if let (Some(Value::String(doc_val)), ast::Value::String(pattern)) =
                 (get_doc_value_at_path(doc, field), value)
             {
-                doc_val.contains(pattern)
+                // TODO: optimization - compile regex once outside the loop if possible
+                match regex::Regex::new(pattern) {
+                    Ok(re) => re.is_match(doc_val),
+                    Err(_) => false, // Invalid regex treated as no match (validation should catch this)
+                }
             } else {
                 false
             }
