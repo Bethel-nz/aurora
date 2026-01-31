@@ -2,13 +2,15 @@
 fn setup_database() -> std::io::Result<Arc<Aurora>> {
     let db_path = "aurora_data";
 
+    let exists = std::path::Path::new(db_path).exists();
+
     // Open existing database or create new one
     let db = Arc::new(
         Aurora::open(db_path)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?,
     );
 
-    if std::path::Path::new(db_path).exists() {
+    if exists {
         println!("💽 Opened existing database at '{}'", db_path);
     } else {
         println!("💽 Created new database at '{}'", db_path);
