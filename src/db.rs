@@ -373,7 +373,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::Aurora;
     ///
     /// let db = Aurora::open("./data/my_application.db")?;
@@ -491,29 +491,46 @@ impl Aurora {
             tokio::spawn(async move {
                 if let Some(wal) = wal_clone {
                     while let Some(op) = rx.recv().await {
-                        // Properly handle the RwLock write guard
-                        match wal.write() {
-                            Ok(mut guard) => {
-                                let result = match op {
-                                    WalOperation::Put { key, value } => {
-                                        // Deref Arc to pass slices
-                                        guard.append(Operation::Put, &key, Some(value.as_ref()))
+                        let wal = wal.clone();
+                        // Move blocking I/O to a blocking thread
+                        let result = tokio::task::spawn_blocking(move || {
+                            // Properly handle the RwLock write guard
+                            match wal.write() {
+                                Ok(mut guard) => {
+                                    let result = match op {
+                                        WalOperation::Put { key, value } => {
+                                            // Deref Arc to pass slices
+                                            guard.append(Operation::Put, &key, Some(value.as_ref()))
+                                        }
+                                        WalOperation::Delete { key } => {
+                                            guard.append(Operation::Delete, &key, None)
+                                        }
+                                    };
+                                    if let Err(e) = result {
+                                        eprintln!(
+                                            "CRITICAL: Failed to append to WAL: {}. Shutting down.",
+                                            e
+                                        );
+                                        // A failed WAL write is a catastrophic failure.
+                                        std::process::exit(1);
                                     }
-                                    WalOperation::Delete { key } => {
-                                        guard.append(Operation::Delete, &key, None)
-                                    }
-                                };
-                                if let Err(e) = result {
-                                    eprintln!("CRITICAL: Failed to append to WAL: {}. Shutting down.", e);
-                                    // A failed WAL write is a catastrophic failure.
+                                }
+                                Err(e) => {
+                                    // This likely means the lock is poisoned, which is a critical state.
+                                    eprintln!(
+                                        "CRITICAL: Failed to acquire WAL lock: {}. Shutting down.",
+                                        e
+                                    );
                                     std::process::exit(1);
                                 }
                             }
-                            Err(e) => {
-                                // This likely means the lock is poisoned, which is a critical state.
-                                eprintln!("CRITICAL: Failed to acquire WAL lock: {}. Shutting down.", e);
-                                std::process::exit(1);
-                            }
+                        })
+                        .await;
+
+                        if let Err(e) = result {
+                            eprintln!("WAL blocking task failed: {}", e);
+                            // If the blocking task panics or is cancelled, that's critical
+                            std::process::exit(1);
                         }
                     }
                 }
@@ -618,9 +635,21 @@ impl Aurora {
         };
 
         if !wal_entries.is_empty() {
-            let handle = tokio::runtime::Handle::try_current()
-                .expect("Tokio runtime must be started to open database");
-            handle.block_on(db.replay_wal(wal_entries))?;
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => handle.block_on(db.replay_wal(wal_entries))?,
+                Err(_) => {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| {
+                            AqlError::new(
+                                ErrorCode::InternalError,
+                                format!("Failed to create temp runtime: {}", e),
+                            )
+                        })?;
+                    rt.block_on(db.replay_wal(wal_entries))?;
+                }
+            }
         }
 
         Ok(db)
@@ -745,7 +774,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::Aurora;
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -869,7 +898,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -894,7 +923,7 @@ impl Aurora {
     /// # Real-World Use Cases
     ///
     /// **Cache Invalidation:**
-   
+
     /// use std::sync::Arc;
     /// use tokio::sync::RwLock;
     /// use std::collections::HashMap;
@@ -1321,10 +1350,17 @@ impl Aurora {
         if let Some(ref sender) = self.wal_writer
             && self.config.durability_mode != DurabilityMode::None
         {
-            let _ = sender.send(WalOperation::Put {
-                key: Arc::clone(&key_arc),
-                value: Arc::clone(&value_arc),
-            });
+            sender
+                .send(WalOperation::Put {
+                    key: Arc::clone(&key_arc),
+                    value: Arc::clone(&value_arc),
+                })
+                .map_err(|_| {
+                    AqlError::new(
+                        ErrorCode::InternalError,
+                        "WAL writer channel closed".to_string(),
+                    )
+                })?;
         }
 
         // Check if this key should be cached (false for Any-field collections)
@@ -1640,11 +1676,29 @@ impl Aurora {
                 }
             }
         } else {
-            // Fallback
-            documents = self.scan_collection(collection)?;
-            documents.retain(|doc| filter(doc));
-            if let Some(max) = limit {
-                documents.truncate(max);
+            // Fallback: scan from cold storage if primary index not yet initialized
+            // Optimization: Apply filter and limit during scan to avoid full load
+            let prefix = format!("{}:", collection);
+            for result in self.cold.scan_prefix(&prefix) {
+                // Early termination
+                if let Some(max) = limit {
+                    if documents.len() >= max {
+                        break;
+                    }
+                }
+
+                if let Ok((_key, value)) = result {
+                    if let Ok(mut doc) = serde_json::from_slice::<Document>(&value) {
+                        // Apply computed fields
+                        if let Ok(computed) = self.computed.read() {
+                            let _ = computed.apply(collection, &mut doc);
+                        }
+
+                        if filter(&doc) {
+                            documents.push(doc);
+                        }
+                    }
+                }
             }
         }
 
@@ -1826,7 +1880,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -1954,7 +2008,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     /// use std::collections::HashMap;
     ///
@@ -2201,7 +2255,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-   
+
     /// // Start a transaction for atomic operations
     /// db.begin_transaction()?;
     ///
@@ -2223,7 +2277,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -2263,7 +2317,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -2344,7 +2398,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -2628,7 +2682,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -3208,6 +3262,9 @@ impl Aurora {
 
         // Check if document exists
         if let Some(mut doc) = self.get_document(collection, id)? {
+            // Clone for notification
+            let old_doc = doc.clone();
+
             // Update existing document - merge new data
             for (key, value) in data_map {
                 doc.data.insert(key, value);
@@ -3224,6 +3281,11 @@ impl Aurora {
                 None,
             )
             .await?;
+
+            // Publish update event
+            let event = crate::pubsub::ChangeEvent::update(collection, id, old_doc, doc);
+            let _ = self.pubsub.publish(event);
+
             Ok(id.to_string())
         } else {
             // Insert new document with specified ID - validate unique constraints
@@ -3241,6 +3303,11 @@ impl Aurora {
                 None,
             )
             .await?;
+
+            // Publish insert event
+            let event = crate::pubsub::ChangeEvent::insert(collection, id, document);
+            let _ = self.pubsub.publish(event);
+
             Ok(id.to_string())
         }
     }
@@ -4880,7 +4947,17 @@ impl Aurora {
         let doc: Document = serde_json::from_slice(&existing)?;
 
         // Append to WAL for durability
-        if let Some(wal) = &self.wal {
+        if let Some(wal_writer) = &self.wal_writer {
+            // Use async writer if available
+            let op = WalOperation::Delete { key: key.clone() };
+            wal_writer.send(op).map_err(|_| {
+                AqlError::new(
+                    ErrorCode::InternalError,
+                    "Failed to send to WAL writer".to_string(),
+                )
+            })?;
+        } else if let Some(wal) = &self.wal {
+            // Fallback to blocking write if async writer not set (should be rare/legacy)
             wal.write()
                 .map_err(|e| AqlError::new(ErrorCode::InternalError, e.to_string()))?
                 .append(crate::wal::Operation::Delete, &key, None)?;
