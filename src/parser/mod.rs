@@ -60,11 +60,11 @@ pub fn parse_with_variables(input: &str, variables: JsonValue) -> Result<Documen
         HashMap::new()
     };
 
-    if let Some(op) = doc.operations.first_mut() {
+    for op in &mut doc.operations {
         match op {
-            Operation::Query(q) => q.variables_values = vars,
-            Operation::Mutation(m) => m.variables_values = vars,
-            Operation::Subscription(s) => s.variables_values = vars,
+            Operation::Query(q) => q.variables_values = vars.clone(),
+            Operation::Mutation(m) => m.variables_values = vars.clone(),
+            Operation::Subscription(s) => s.variables_values = vars.clone(),
             _ => {}
         }
     }
@@ -847,10 +847,8 @@ fn parse_field(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                                     value: filter_to_value(&filter),
                                 });
                             }
-                            // Convert Selection back to Field for selection_set
-                            selection_set = lookup.selection_set.into_iter().filter_map(|s| {
-                                if let ast::Selection::Field(f) = s { Some(f) } else { None }
-                            }).collect();
+                            // Convert Selection to Field for selection_set
+                            selection_set = lookup.selection_set;
                         }
                         Rule::page_info_selection => {
                             name = "pageInfo".to_string();
@@ -1335,9 +1333,13 @@ fn parse_value(pair: pest::iterators::Pair<Rule>) -> Result<Value> {
         Rule::number => {
             let s = pair.as_str();
             if s.contains('.') || s.contains('e') || s.contains('E') {
-                Ok(Value::Float(s.parse().unwrap_or(0.0)))
+                Ok(Value::Float(s.parse().map_err(|e| {
+                    AqlError::new(ErrorCode::ProtocolError, format!("Invalid float: {}", e))
+                })?))
             } else {
-                Ok(Value::Int(s.parse().unwrap_or(0)))
+                Ok(Value::Int(s.parse().map_err(|e| {
+                    AqlError::new(ErrorCode::ProtocolError, format!("Invalid integer: {}", e))
+                })?))
             }
         }
         Rule::boolean => Ok(Value::Boolean(pair.as_str() == "true")),
@@ -1434,7 +1436,12 @@ fn value_to_filter(value: Value) -> Result<Filter> {
                                     "endsWith" => Filter::EndsWith(field.to_string(), op_val),
                                     "isNull" => Filter::IsNull(field.to_string()),
                                     "isNotNull" => Filter::IsNotNull(field.to_string()),
-                                    _ => continue,
+                                    _ => {
+                                        return Err(AqlError::new(
+                                            ErrorCode::ProtocolError,
+                                            format!("Unknown filter operator: {}", op.as_str()),
+                                        ));
+                                    }
                                 };
                                 filters.push(f);
                             }
@@ -1656,7 +1663,7 @@ fn parse_lookup_selection(pair: pest::iterators::Pair<Rule>) -> Result<ast::Look
                         }
                         Rule::filter_object => {
                             if let Ok(filter_value) = parse_filter_object_to_value(arg) {
-                                filter = value_to_filter(filter_value).ok();
+                                filter = Some(value_to_filter(filter_value)?);
                             }
                         }
                         _ => {}
@@ -1667,12 +1674,19 @@ fn parse_lookup_selection(pair: pest::iterators::Pair<Rule>) -> Result<ast::Look
                 for sel in inner.into_inner() {
                     if sel.as_rule() == Rule::selection_set {
                         let fields = parse_selection_set(sel)?;
-                        selection_set = fields.into_iter().map(ast::Selection::Field).collect();
+                        selection_set = fields;
                     }
                 }
             }
             _ => {}
         }
+    }
+
+    if collection.is_empty() || local_field.is_empty() || foreign_field.is_empty() {
+        return Err(AqlError::new(
+            ErrorCode::ProtocolError,
+            "Lookup must specify collection, localField, and foreignField".to_string(),
+        ));
     }
 
     Ok(ast::LookupSelection {
@@ -1916,11 +1930,7 @@ mod tests {
             }
         "#;
         let result = parse(query);
-        assert!(
-            result.is_ok(),
-            "Failed to parse lookup: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "Failed to parse lookup: {:?}", result.err());
 
         let doc = result.unwrap();
         if let Operation::Query(q) = &doc.operations[0] {
@@ -1936,15 +1946,24 @@ mod tests {
 
             // Check lookup arguments were parsed
             assert!(
-                lookup_field.arguments.iter().any(|a| a.name == "collection"),
+                lookup_field
+                    .arguments
+                    .iter()
+                    .any(|a| a.name == "collection"),
                 "Should have collection argument"
             );
             assert!(
-                lookup_field.arguments.iter().any(|a| a.name == "localField"),
+                lookup_field
+                    .arguments
+                    .iter()
+                    .any(|a| a.name == "localField"),
                 "Should have localField argument"
             );
             assert!(
-                lookup_field.arguments.iter().any(|a| a.name == "foreignField"),
+                lookup_field
+                    .arguments
+                    .iter()
+                    .any(|a| a.name == "foreignField"),
                 "Should have foreignField argument"
             );
 
