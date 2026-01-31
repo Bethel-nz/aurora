@@ -120,7 +120,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field equals a value
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.eq("status", "active"))
     /// ```
     pub fn eq<T: Into<Value>>(&self, field: &str, value: T) -> bool {
@@ -131,7 +131,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field is greater than a value
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.gt("age", 21))
     /// ```
     pub fn gt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
@@ -142,7 +142,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field is greater than or equal to a value
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.gte("age", 21))
     /// ```
     pub fn gte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
@@ -153,7 +153,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field is less than a value
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.lt("age", 65))
     /// ```
     pub fn lt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
@@ -164,7 +164,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field is less than or equal to a value
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.lte("age", 65))
     /// ```
     pub fn lte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
@@ -175,7 +175,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field contains a value
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.contains("name", "widget"))
     /// ```
     pub fn contains(&self, field: &str, value: &str) -> bool {
@@ -189,18 +189,19 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field is in a list of values
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.in_values("status", &["active", "inactive"]))
     /// ```
     pub fn in_values<T: Into<Value> + Clone>(&self, field: &str, values: &[T]) -> bool {
         let values: Vec<Value> = values.iter().map(|v| v.clone().into()).collect();
-        self.get_nested_value(field).is_some_and(|v| values.contains(v))
+        self.get_nested_value(field)
+            .is_some_and(|v| values.contains(v))
     }
 
     /// Check if a field is between two values (inclusive)
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.between("age", 18, 65))
     /// ```
     pub fn between<T: Into<Value> + Clone>(&self, field: &str, min: T, max: T) -> bool {
@@ -210,7 +211,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field exists and is not null
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.exists("email"))
     /// ```
     pub fn exists(&self, field: &str) -> bool {
@@ -221,7 +222,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field doesn't exist or is null
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.is_null("email"))
     /// ```
     pub fn is_null(&self, field: &str) -> bool {
@@ -232,7 +233,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field starts with a prefix
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.starts_with("name", "John"))
     /// ```
     pub fn starts_with(&self, field: &str, prefix: &str) -> bool {
@@ -245,7 +246,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field ends with a suffix
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.ends_with("name", "son"))
     /// ```
     pub fn ends_with(&self, field: &str, suffix: &str) -> bool {
@@ -258,7 +259,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field is in an array
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.array_contains("status", "active"))
     /// ```
     pub fn array_contains(&self, field: &str, value: impl Into<Value>) -> bool {
@@ -272,7 +273,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if an array has a specific length
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.array_len_eq("status", 2))
     /// ```
     pub fn array_len_eq(&self, field: &str, len: usize) -> bool {
@@ -285,7 +286,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Access a nested field using dot notation
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.get_nested_value("user.address.city") == Some(&Value::String("New York")))
     /// ```
     pub fn get_nested_value(&self, path: &str) -> Option<&Value> {
@@ -306,7 +307,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a nested field equals a value
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.nested_eq("user.address.city", "New York"))
     /// ```
     pub fn nested_eq<T: Into<Value>>(&self, path: &str, value: T) -> bool {
@@ -317,7 +318,7 @@ impl<'a, 'b> FilterBuilder<'a, 'b> {
     /// Check if a field matches a regular expression
     ///
     /// # Examples
-   
+
     /// .filter(|f| f.matches_regex("email", r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"))
     /// ```
     pub fn matches_regex(&self, field: &str, pattern: &str) -> bool {
@@ -343,7 +344,7 @@ impl<'a> QueryBuilder<'a> {
     /// Create a new query builder for the specified collection
     ///
     /// # Examples
-   
+
     /// let query = db.query("users");
     /// ```
     pub fn new(db: &'a Aurora, collection: &str) -> Self {
@@ -362,7 +363,7 @@ impl<'a> QueryBuilder<'a> {
     /// Add a filter function to the query
     ///
     /// # Examples
-   
+
     /// let active_users = db.query("users")
     ///     .filter(|f| f.eq("status", "active"))
     ///     .collect()
@@ -463,13 +464,18 @@ impl<'a> QueryBuilder<'a> {
     /// A vector of documents matching the query criteria
     ///
     /// # Examples
-   
+
     /// let results = db.query("products")
     ///     .filter(|f| f.lt("price", 100))
     ///     .collect()
     ///     .await?;
     /// ```
     pub async fn collect(self) -> Result<Vec<Document>> {
+        self.collect_internal().await
+    }
+
+    /// Internal helper to execute query without consuming self
+    async fn collect_internal(&self) -> Result<Vec<Document>> {
         // Ensure indices are initialized
         self.db.ensure_indices_initialized().await?;
 
@@ -488,11 +494,11 @@ impl<'a> QueryBuilder<'a> {
         };
 
         // Apply ordering
-        if let Some((field, ascending)) = self.order_by {
-            docs.sort_by(|a, b| match (a.data.get(&field), b.data.get(&field)) {
+        if let Some((field, ascending)) = &self.order_by {
+            docs.sort_by(|a, b| match (a.data.get(field), b.data.get(field)) {
                 (Some(v1), Some(v2)) => {
                     let cmp = v1.cmp(v2);
-                    if ascending { cmp } else { cmp.reverse() }
+                    if *ascending { cmp } else { cmp.reverse() }
                 }
                 (None, Some(_)) => std::cmp::Ordering::Less,
                 (Some(_), None) => std::cmp::Ordering::Greater,
@@ -501,14 +507,14 @@ impl<'a> QueryBuilder<'a> {
         }
 
         // Apply field selection if specified
-        if let Some(fields) = self.fields {
+        if let Some(fields) = &self.fields {
             // Create new documents with only selected fields
             docs = docs
                 .into_iter()
                 .map(|doc| {
                     let mut new_data = HashMap::new();
                     // Always include the ID
-                    for field in &fields {
+                    for field in fields {
                         if let Some(value) = doc.data.get(field) {
                             new_data.insert(field.clone(), value.clone());
                         }
@@ -717,13 +723,14 @@ impl<'a> QueryBuilder<'a> {
         use crate::reactive::{QueryWatcher, ReactiveQueryState};
         use std::sync::Arc;
 
-        // Extract the filters before consuming self
+        // Get initial results BEFORE moving filters
+        let docs = self.collect_internal().await?;
+
+        // Extract context
         let collection = self.collection.clone();
         let db = self.db;
+        let debounce = self.debounce_duration;
         let filters = std::mem::take(&mut self.filters);
-
-        // Get initial results
-        let docs = self.collect().await?;
 
         // Create a listener for this collection
         let listener = db.listen(&collection);
@@ -735,13 +742,15 @@ impl<'a> QueryBuilder<'a> {
         let state = Arc::new(ReactiveQueryState::new(filter_fn));
 
         // Create and return watcher
-        Ok(QueryWatcher::new(collection, listener, state, docs))
+        Ok(QueryWatcher::new(
+            collection, listener, state, docs, debounce,
+        ))
     }
 
     /// Get only the first matching document or None if no matches
     ///
     /// # Examples
-   
+
     /// let user = db.query("users")
     ///     .filter(|f| f.eq("email", "jane@example.com"))
     ///     .first_one()
@@ -754,7 +763,7 @@ impl<'a> QueryBuilder<'a> {
     /// Count the number of documents matching the query
     ///
     /// # Examples
-   
+
     /// let active_count = db.query("users")
     ///     .filter(|f| f.eq("status", "active"))
     ///     .count()
@@ -770,7 +779,7 @@ impl<'a> QueryBuilder<'a> {
     /// The number of documents updated
     ///
     /// # Examples
-   
+
     /// let updated = db.query("products")
     ///     .filter(|f| f.lt("stock", 5))
     ///     .update([
@@ -810,6 +819,36 @@ impl<'a> QueryBuilder<'a> {
 
         Ok(updated_count)
     }
+
+    /// Delete documents matching the query
+    ///
+    /// # Returns
+    /// The number of documents deleted
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// let deleted = db.query("users")
+    ///     .filter(|f| f.eq("active", false))
+    ///     .delete()
+    ///     .await?;
+    /// ```
+    pub async fn delete(self) -> Result<usize> {
+        // Store reference to db and collection before consuming self
+        let db = self.db;
+        let collection = self.collection.clone();
+
+        // Use collect() to get matching documents (leverages optimization)
+        let docs = self.collect().await?;
+        let mut deleted_count = 0;
+
+        for doc in docs {
+            let key = format!("{}:{}", collection, doc.id);
+            db.delete(&key).await?;
+            deleted_count += 1;
+        }
+
+        Ok(deleted_count)
+    }
 }
 
 /// Builder for performing full-text search operations
@@ -846,7 +885,7 @@ impl<'a> SearchBuilder<'a> {
     /// Specify the field to search in
     ///
     /// # Examples
-   
+
     /// .field("description")
     /// ```
     pub fn field(mut self, field: &str) -> Self {
@@ -857,7 +896,7 @@ impl<'a> SearchBuilder<'a> {
     /// Specify the search query text
     ///
     /// # Examples
-   
+
     /// .matching("wireless headphones")
     /// ```
     pub fn matching(mut self, query: &str) -> Self {
@@ -868,7 +907,7 @@ impl<'a> SearchBuilder<'a> {
     /// Enable or disable fuzzy matching (for typo tolerance)
     ///
     /// # Examples
-   
+
     /// .fuzzy(true)  // Enable fuzzy matching
     /// ```
     pub fn fuzzy(mut self, enable: bool) -> Self {
@@ -882,7 +921,7 @@ impl<'a> SearchBuilder<'a> {
     /// A vector of documents matching the search criteria
     ///
     /// # Examples
-   
+
     /// let results = db.search("articles")
     ///     .field("content")
     ///     .matching("quantum computing")
@@ -937,7 +976,7 @@ impl SimpleQueryBuilder {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -981,7 +1020,7 @@ impl SimpleQueryBuilder {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -1021,7 +1060,7 @@ impl SimpleQueryBuilder {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -1053,7 +1092,7 @@ impl SimpleQueryBuilder {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -1086,7 +1125,7 @@ impl SimpleQueryBuilder {
     ///
     /// # Examples
     ///
-   
+
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
