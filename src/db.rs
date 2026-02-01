@@ -97,6 +97,44 @@ pub enum DataInfo {
     Compressed { size: usize },
 }
 
+/// Trait to convert field tuples into FieldDefinition
+/// Supports both 3-tuple (defaults nullable to false) and 4-tuple (explicit nullable)
+pub trait IntoFieldDefinition {
+    fn into_field_definition(self) -> (String, FieldDefinition);
+}
+
+// 3-tuple: (field_name, field_type, unique) - defaults nullable to false
+impl<S: Into<String>> IntoFieldDefinition for (S, FieldType, bool) {
+    fn into_field_definition(self) -> (String, FieldDefinition) {
+        let (name, field_type, unique) = self;
+        (
+            name.into(),
+            FieldDefinition {
+                field_type,
+                unique,
+                indexed: unique,
+                nullable: false, // Default to false
+            },
+        )
+    }
+}
+
+// 4-tuple: (field_name, field_type, unique, nullable) - explicit control
+impl<S: Into<String>> IntoFieldDefinition for (S, FieldType, bool, bool) {
+    fn into_field_definition(self) -> (String, FieldDefinition) {
+        let (name, field_type, unique, nullable) = self;
+        (
+            name.into(),
+            FieldDefinition {
+                field_type,
+                unique,
+                indexed: unique,
+                nullable,
+            },
+        )
+    }
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 enum WalOperation {
@@ -1810,10 +1848,10 @@ impl Aurora {
     /// // Idempotent - calling again is safe
     /// db.new_collection("users", vec![/* ... */])?.await; // OK!
     /// ```
-    pub async fn new_collection<S: Into<String>>(
+    pub async fn new_collection<F: IntoFieldDefinition>(
         &self,
         name: &str,
-        fields: Vec<(S, FieldType, bool)>,
+        fields: Vec<F>,
     ) -> Result<()> {
         let collection_key = format!("_collection:{}", name);
 
@@ -1824,22 +1862,17 @@ impl Aurora {
 
         // Create field definitions
         let mut field_definitions = HashMap::new();
-        for (field_name, field_type, unique) in fields {
-            if field_type == FieldType::Any && unique {
+        for field in fields {
+            let (field_name, field_def) = field.into_field_definition();
+
+            if field_def.field_type == FieldType::Any && field_def.unique {
                 return Err(AqlError::new(
                     ErrorCode::InvalidDefinition,
                     "Fields of type 'Any' cannot be unique or indexed.".to_string(),
                 ));
             }
-            field_definitions.insert(
-                field_name.into(),
-                FieldDefinition {
-                    field_type,
-                    unique,
-                    indexed: unique, // Auto-index unique fields
-                    nullable: true,
-                },
-            );
+
+            field_definitions.insert(field_name, field_def);
         }
 
         let collection = Collection {
@@ -5650,6 +5683,59 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_nullable_field_definition() -> Result<()> {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new()?;
+        let db_path = temp_dir.path().join("test.aurora");
+        let db = Aurora::open(db_path.to_str().unwrap())?;
+
+        // Test 3-tuple format (defaults nullable to false)
+        db.new_collection(
+            "products",
+            vec![
+                ("name", FieldType::String, false),
+                ("sku", FieldType::String, true), // unique
+            ],
+        )
+        .await?;
+
+        // Test 4-tuple format with explicit nullable control
+        db.new_collection(
+            "users",
+            vec![
+                ("name", FieldType::String, false, false), // not nullable
+                ("email", FieldType::String, true, false), // unique, not nullable
+                ("bio", FieldType::String, false, true),   // nullable
+                ("age", FieldType::Int, false, true),      // nullable
+            ],
+        )
+        .await?;
+
+        // Verify the schema was created correctly
+        let schema = db.ensure_schema_hot("users")?;
+
+        // Check that name is not nullable
+        assert_eq!(schema.fields.get("name").unwrap().nullable, false);
+
+        // Check that email is not nullable
+        assert_eq!(schema.fields.get("email").unwrap().nullable, false);
+
+        // Check that bio is nullable
+        assert_eq!(schema.fields.get("bio").unwrap().nullable, true);
+
+        // Check that age is nullable
+        assert_eq!(schema.fields.get("age").unwrap().nullable, true);
+
+        // Verify products collection (3-tuple defaults to false)
+        let products_schema = db.ensure_schema_hot("products")?;
+        assert_eq!(products_schema.fields.get("name").unwrap().nullable, false);
+        assert_eq!(products_schema.fields.get("sku").unwrap().nullable, false);
 
         Ok(())
     }
