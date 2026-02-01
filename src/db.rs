@@ -3605,8 +3605,7 @@ impl Aurora {
             FieldType::Scalar(ScalarType::Any) => true,
 
             FieldType::Array(_) => value.is_array(),
-            FieldType::Object => value.is_object(),
-            FieldType::Nested(_) => value.is_object(), // Nested fields must be objects
+            FieldType::Object | FieldType::Nested(_) => value.is_object(),
             // Legacy/Duplicate catches just in case
             _ => true,
         }
