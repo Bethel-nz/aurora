@@ -7,6 +7,7 @@ use pest_derive::Parser;
 
 pub mod ast;
 pub mod executor;
+pub mod executor_utils;
 pub mod validator;
 
 #[derive(Parser)]
@@ -20,8 +21,14 @@ use std::collections::HashMap;
 
 /// Parse an AQL query string into an AST Document
 pub fn parse(input: &str) -> Result<Document> {
-    let pairs = AQLParser::parse(Rule::document, input)
-        .map_err(|e| AqlError::new(ErrorCode::ProtocolError, format!("Parse error: {}", e)))?;
+    let pairs = AQLParser::parse(Rule::document, input).map_err(|e| {
+        let (line, col) = match e.line_col {
+            pest::error::LineColLocation::Pos((l, c)) => (l, c),
+            pest::error::LineColLocation::Span((l, c), _) => (l, c),
+        };
+        AqlError::new(ErrorCode::ProtocolError, format!("Parse error: {}", e))
+            .with_location(line, col)
+    })?;
 
     let mut operations = Vec::new();
 
@@ -739,27 +746,63 @@ fn parse_directive(pair: pest::iterators::Pair<Rule>) -> Result<Directive> {
     Ok(Directive { name, arguments })
 }
 
-fn parse_selection_set(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Field>> {
-    let mut fields = Vec::new();
+fn parse_selection_set(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Selection>> {
+    let mut selections = Vec::new();
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::field {
-            fields.push(parse_field(inner)?);
+            selections.push(parse_selection(inner)?);
         }
     }
-    Ok(fields)
+    Ok(selections)
 }
 
-fn parse_subscription_set(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Field>> {
-    let mut fields = Vec::new();
+fn parse_subscription_set(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Selection>> {
+    let mut selections = Vec::new();
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::subscription_field {
-            fields.push(parse_field(inner)?);
+            selections.push(parse_selection(inner)?);
         }
     }
-    Ok(fields)
+    Ok(selections)
 }
 
-fn parse_field(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
+/// Parse a selection (field, fragment spread, or inline fragment)
+fn parse_selection(pair: pest::iterators::Pair<Rule>) -> Result<Selection> {
+    // The rule is `field`, which can contain fragment_spread, inline_fragment, etc.
+    // field = { fragment_spread | inline_fragment | aggregate_with_alias | ... | alias_name? ~ identifier ... }
+
+    // Check first child to determine type if it's a direct alternative
+    let inner = pair.clone().into_inner().next().unwrap();
+
+    match inner.as_rule() {
+        Rule::fragment_spread => {
+            let name = inner.into_inner().next().unwrap().as_str().to_string();
+            return Ok(Selection::FragmentSpread(name));
+        }
+        Rule::inline_fragment => {
+            let mut type_condition = String::new();
+            let mut selection_set = Vec::new();
+            for child in inner.into_inner() {
+                match child.as_rule() {
+                    Rule::identifier => type_condition = child.as_str().to_string(),
+                    Rule::selection_set => selection_set = parse_selection_set(child)?,
+                    _ => {}
+                }
+            }
+            return Ok(Selection::InlineFragment(ast::InlineFragment {
+                type_condition,
+                selection_set,
+            }));
+        }
+        _ => {
+            // It's a field (regular or special)
+            return Ok(Selection::Field(parse_field_inner(pair)?));
+        }
+    }
+}
+
+/// Helper to parse the field content into a Field struct
+fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
     let mut alias = None;
     let mut name = String::new();
     let mut arguments = Vec::new();
@@ -785,11 +828,7 @@ fn parse_field(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                     }
                 }
             }
-            Rule::fragment_spread => {
-                name = format!("...{}", inner.as_str().trim_start_matches("...").trim());
-            }
             Rule::aggregate_with_alias => {
-                // Parse: alias_name? ~ "aggregate" ~ "{" ~ aggregate_field_list ~ "}"
                 name = "aggregate".to_string();
                 for sel in inner.into_inner() {
                     match sel.as_rule() {
@@ -803,7 +842,8 @@ fn parse_field(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                         Rule::aggregate_field_list => {
                             for agg_field in sel.into_inner() {
                                 if agg_field.as_rule() == Rule::aggregate_field {
-                                    selection_set.push(parse_aggregate_field(agg_field)?);
+                                    selection_set
+                                        .push(Selection::Field(parse_aggregate_field(agg_field)?));
                                 }
                             }
                         }
@@ -812,7 +852,6 @@ fn parse_field(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                 }
             }
             Rule::special_field_selection => {
-                // Handle special selections like groupBy, lookup, etc. (aggregate is handled separately)
                 for sel in inner.into_inner() {
                     match sel.as_rule() {
                         Rule::alias_name => {
@@ -827,7 +866,6 @@ fn parse_field(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                         }
                         Rule::lookup_selection => {
                             name = "lookup".to_string();
-                            // Use parse_lookup_selection and convert to Field arguments
                             let lookup = parse_lookup_selection(sel)?;
                             arguments.push(ast::Argument {
                                 name: "collection".to_string(),
@@ -847,7 +885,6 @@ fn parse_field(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                                     value: filter_to_value(&filter),
                                 });
                             }
-                            // Convert Selection to Field for selection_set
                             selection_set = lookup.selection_set;
                         }
                         Rule::page_info_selection => {
@@ -855,22 +892,20 @@ fn parse_field(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                         }
                         Rule::edges_selection => {
                             name = "edges".to_string();
-                            // Parse edge_fields and add to selection_set
                             for edge_inner in sel.into_inner() {
                                 if edge_inner.as_rule() == Rule::edge_fields {
                                     for edge_field in edge_inner.into_inner() {
                                         if edge_field.as_rule() == Rule::edge_field {
                                             let edge_str = edge_field.as_str().trim();
                                             if edge_str.starts_with("cursor") {
-                                                selection_set.push(Field {
+                                                selection_set.push(Selection::Field(Field {
                                                     alias: None,
                                                     name: "cursor".to_string(),
                                                     arguments: Vec::new(),
                                                     directives: Vec::new(),
                                                     selection_set: Vec::new(),
-                                                });
+                                                }));
                                             } else if edge_str.starts_with("node") {
-                                                // Parse node's selection set
                                                 let mut node_selection = Vec::new();
                                                 for node_inner in edge_field.into_inner() {
                                                     if node_inner.as_rule() == Rule::selection_set {
@@ -878,13 +913,13 @@ fn parse_field(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                                                             parse_selection_set(node_inner)?;
                                                     }
                                                 }
-                                                selection_set.push(Field {
+                                                selection_set.push(Selection::Field(Field {
                                                     alias: None,
                                                     name: "node".to_string(),
                                                     arguments: Vec::new(),
                                                     directives: Vec::new(),
                                                     selection_set: node_selection,
-                                                });
+                                                }));
                                             }
                                         }
                                     }
@@ -1064,7 +1099,7 @@ fn parse_mutation_field(pair: pest::iterators::Pair<Rule>) -> Result<MutationOpe
     })
 }
 
-fn parse_mutation_call(pair: pest::iterators::Pair<Rule>) -> Result<(MutationOp, Vec<Field>)> {
+fn parse_mutation_call(pair: pest::iterators::Pair<Rule>) -> Result<(MutationOp, Vec<Selection>)> {
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::insert_mutation => return parse_insert_mutation(inner),
@@ -1081,7 +1116,9 @@ fn parse_mutation_call(pair: pest::iterators::Pair<Rule>) -> Result<(MutationOp,
     ))
 }
 
-fn parse_insert_mutation(pair: pest::iterators::Pair<Rule>) -> Result<(MutationOp, Vec<Field>)> {
+fn parse_insert_mutation(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<(MutationOp, Vec<Selection>)> {
     let mut collection = String::new();
     let mut data = Value::Null;
     let mut selection_set = Vec::new();
@@ -1115,7 +1152,9 @@ fn parse_insert_mutation(pair: pest::iterators::Pair<Rule>) -> Result<(MutationO
     Ok((MutationOp::Insert { collection, data }, selection_set))
 }
 
-fn parse_update_mutation(pair: pest::iterators::Pair<Rule>) -> Result<(MutationOp, Vec<Field>)> {
+fn parse_update_mutation(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<(MutationOp, Vec<Selection>)> {
     let mut collection = String::new();
     let mut filter = None;
     let mut data = Value::Null;
@@ -1132,7 +1171,7 @@ fn parse_update_mutation(pair: pest::iterators::Pair<Rule>) -> Result<(MutationO
                             }
                         }
                         "where" => filter = Some(value_to_filter(arg.value)?),
-                        "data" => data = arg.value,
+                        "data" | "set" => data = arg.value,
                         _ => {}
                     }
                 }
@@ -1158,7 +1197,9 @@ fn parse_update_mutation(pair: pest::iterators::Pair<Rule>) -> Result<(MutationO
     ))
 }
 
-fn parse_delete_mutation(pair: pest::iterators::Pair<Rule>) -> Result<(MutationOp, Vec<Field>)> {
+fn parse_delete_mutation(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<(MutationOp, Vec<Selection>)> {
     let mut collection = String::new();
     let mut filter = None;
     let mut selection_set = Vec::new();
@@ -1194,7 +1235,7 @@ fn parse_delete_mutation(pair: pest::iterators::Pair<Rule>) -> Result<(MutationO
 
 fn parse_enqueue_job_mutation(
     pair: pest::iterators::Pair<Rule>,
-) -> Result<(MutationOp, Vec<Field>)> {
+) -> Result<(MutationOp, Vec<Selection>)> {
     let mut job_type = String::new();
     let mut payload = Value::Null;
     let mut priority = JobPriority::Normal;
@@ -1260,7 +1301,9 @@ fn parse_enqueue_job_mutation(
     ))
 }
 
-fn parse_transaction_block(pair: pest::iterators::Pair<Rule>) -> Result<(MutationOp, Vec<Field>)> {
+fn parse_transaction_block(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<(MutationOp, Vec<Selection>)> {
     let mut operations = Vec::new();
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::mutation_set {
@@ -1600,9 +1643,7 @@ fn parse_fragment_definition(pair: pest::iterators::Pair<Rule>) -> Result<ast::F
                 }
             }
             Rule::selection_set => {
-                // Convert Vec<Field> to Vec<Selection>
-                let fields = parse_selection_set(inner)?;
-                selection_set = fields.into_iter().map(ast::Selection::Field).collect();
+                selection_set = parse_selection_set(inner)?;
             }
             _ => {}
         }
@@ -1884,32 +1925,43 @@ mod tests {
 
         let doc = result.unwrap();
         if let Operation::Query(q) = &doc.operations[0] {
-            let products_field = &q.selection_set[0];
-            assert_eq!(products_field.name, "products");
+            if let Selection::Field(products_field) = &q.selection_set[0] {
+                assert_eq!(products_field.name, "products");
 
-            // Check inner selection set for aggregate
-            let agg_field = &products_field.selection_set[0];
+                // Check inner selection set for aggregate
+                if let Selection::Field(agg_field) = &products_field.selection_set[0] {
+                    assert_eq!(agg_field.alias, Some("stats".to_string()));
+                    assert_eq!(agg_field.name, "aggregate");
 
-            assert_eq!(agg_field.alias, Some("stats".to_string()));
-            assert_eq!(agg_field.name, "aggregate");
+                    // Check aggregate selection set
+                    assert_eq!(agg_field.selection_set.len(), 3, "Expected 3 agg functions");
 
-            // Check aggregate selection set
-            assert_eq!(agg_field.selection_set.len(), 3, "Expected 3 agg functions");
+                    // Check first agg function
+                    if let Selection::Field(total_stock) = &agg_field.selection_set[0] {
+                        assert_eq!(
+                            total_stock.alias,
+                            Some("totalStock".to_string()),
+                            "Expected totalStock alias"
+                        );
+                        assert_eq!(total_stock.name, "sum");
+                        assert_eq!(total_stock.arguments.len(), 1);
+                        assert_eq!(total_stock.arguments[0].name, "field");
+                    } else {
+                        panic!("Expected Field for total_stock");
+                    }
 
-            // Check first agg function
-            let total_stock = &agg_field.selection_set[0];
-            assert_eq!(
-                total_stock.alias,
-                Some("totalStock".to_string()),
-                "Expected totalStock alias"
-            );
-            assert_eq!(total_stock.name, "sum");
-            assert_eq!(total_stock.arguments.len(), 1);
-            assert_eq!(total_stock.arguments[0].name, "field");
-
-            // Check count
-            let count = &agg_field.selection_set[2];
-            assert_eq!(count.name, "count");
+                    // Check count
+                    if let Selection::Field(count) = &agg_field.selection_set[2] {
+                        assert_eq!(count.name, "count");
+                    } else {
+                        panic!("Expected Field for count");
+                    }
+                } else {
+                    panic!("Expected Field for aggregate");
+                }
+            } else {
+                panic!("Expected Field for products");
+            }
         } else {
             panic!("Expected Query operation");
         }
@@ -1934,55 +1986,69 @@ mod tests {
 
         let doc = result.unwrap();
         if let Operation::Query(q) = &doc.operations[0] {
-            let orders_field = &q.selection_set[0];
-            assert_eq!(orders_field.name, "orders");
+            if let Selection::Field(orders_field) = &q.selection_set[0] {
+                assert_eq!(orders_field.name, "orders");
 
-            // Find the lookup field
-            let lookup_field = orders_field
-                .selection_set
-                .iter()
-                .find(|f| f.name == "lookup")
-                .expect("Should have lookup field");
+                // Find the lookup selection
+                let lookup_selection = orders_field
+                    .selection_set
+                    .iter()
+                    .find(|f| match f {
+                        Selection::Field(field) => field.name == "lookup",
+                        _ => false,
+                    })
+                    .expect("Should have lookup field");
 
-            // Check lookup arguments were parsed
-            assert!(
-                lookup_field
-                    .arguments
-                    .iter()
-                    .any(|a| a.name == "collection"),
-                "Should have collection argument"
-            );
-            assert!(
-                lookup_field
-                    .arguments
-                    .iter()
-                    .any(|a| a.name == "localField"),
-                "Should have localField argument"
-            );
-            assert!(
-                lookup_field
-                    .arguments
-                    .iter()
-                    .any(|a| a.name == "foreignField"),
-                "Should have foreignField argument"
-            );
+                if let Selection::Field(lookup_field) = lookup_selection {
+                    // Check lookup arguments were parsed
+                    assert!(
+                        lookup_field
+                            .arguments
+                            .iter()
+                            .any(|a| a.name == "collection"),
+                        "Should have collection argument"
+                    );
+                    assert!(
+                        lookup_field
+                            .arguments
+                            .iter()
+                            .any(|a| a.name == "localField"),
+                        "Should have localField argument"
+                    );
+                    assert!(
+                        lookup_field
+                            .arguments
+                            .iter()
+                            .any(|a| a.name == "foreignField"),
+                        "Should have foreignField argument"
+                    );
 
-            // Check collection value
-            let collection_arg = lookup_field
-                .arguments
-                .iter()
-                .find(|a| a.name == "collection")
-                .unwrap();
-            if let ast::Value::String(val) = &collection_arg.value {
-                assert_eq!(val, "users");
+                    // Check collection value
+                    let collection_arg = lookup_field
+                        .arguments
+                        .iter()
+                        .find(|a| a.name == "collection")
+                        .unwrap();
+                    if let ast::Value::String(val) = &collection_arg.value {
+                        assert_eq!(val, "users");
+                    } else {
+                        panic!("collection should be a string");
+                    }
+
+                    // Check selection set
+                    assert_eq!(lookup_field.selection_set.len(), 2);
+                    if let Selection::Field(f) = &lookup_field.selection_set[0] {
+                        assert_eq!(f.name, "name");
+                    }
+                    if let Selection::Field(f) = &lookup_field.selection_set[1] {
+                        assert_eq!(f.name, "email");
+                    }
+                } else {
+                    panic!("Lookup should be a Field");
+                }
             } else {
-                panic!("collection should be a string");
+                panic!("Expected Field for orders");
             }
-
-            // Check selection set
-            assert_eq!(lookup_field.selection_set.len(), 2);
-            assert_eq!(lookup_field.selection_set[0].name, "name");
-            assert_eq!(lookup_field.selection_set[1].name, "email");
         } else {
             panic!("Expected Query operation");
         }
@@ -2009,18 +2075,28 @@ mod tests {
 
         let doc = result.unwrap();
         if let Operation::Query(q) = &doc.operations[0] {
-            let orders_field = &q.selection_set[0];
-            let lookup_field = orders_field
-                .selection_set
-                .iter()
-                .find(|f| f.name == "lookup")
-                .expect("Should have lookup field");
+            if let Selection::Field(orders_field) = &q.selection_set[0] {
+                let lookup_selection = orders_field
+                    .selection_set
+                    .iter()
+                    .find(|f| match f {
+                        Selection::Field(field) => field.name == "lookup",
+                        _ => false,
+                    })
+                    .expect("Should have lookup field");
 
-            // Check where argument exists
-            assert!(
-                lookup_field.arguments.iter().any(|a| a.name == "where"),
-                "Should have where argument for filter"
-            );
+                if let Selection::Field(lookup_field) = lookup_selection {
+                    // Check where argument exists
+                    assert!(
+                        lookup_field.arguments.iter().any(|a| a.name == "where"),
+                        "Should have where argument for filter"
+                    );
+                } else {
+                    panic!("Expected Field for lookup");
+                }
+            } else {
+                panic!("Expected Field for orders");
+            }
         } else {
             panic!("Expected Query operation");
         }

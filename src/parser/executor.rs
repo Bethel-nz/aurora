@@ -3,7 +3,8 @@
 //! Provides the bridge between AQL AST and Aurora's database operations.
 //! All operations (queries, mutations, subscriptions) go through execute().
 
-use super::ast::{self, Filter as AqlFilter, MutationOp, Operation};
+use super::ast::{self, Field, Filter as AqlFilter, FragmentDef, MutationOp, Operation, Selection};
+use super::executor_utils::{CompiledFilter, compile_filter};
 
 use crate::Aurora;
 use crate::error::{AqlError, ErrorCode, Result};
@@ -13,6 +14,112 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 pub type ExecutionContext = HashMap<String, JsonValue>;
+
+/// Helper to flatten a selection set (processing fragments) into a list of fields
+fn collect_fields(
+    selection_set: &[Selection],
+    fragments: &HashMap<String, FragmentDef>,
+    variable_values: &HashMap<String, ast::Value>,
+    parent_type: Option<&str>,
+) -> Result<Vec<Field>> {
+    let mut fields = Vec::new();
+
+    for selection in selection_set {
+        match selection {
+            Selection::Field(field) => {
+                // Check directives for @skip or @include
+                if should_include(&field.directives, variable_values)? {
+                    fields.push(field.clone());
+                }
+            }
+            Selection::FragmentSpread(name) => {
+                if let Some(fragment) = fragments.get(name) {
+                    // Check type condition if parent type is known
+                    let type_match = if let Some(parent) = parent_type {
+                        parent == fragment.type_condition
+                    } else {
+                        true // If parent type unknown, assume match or skip check
+                    };
+
+                    if type_match {
+                        let fragment_fields = collect_fields(
+                            &fragment.selection_set,
+                            fragments,
+                            variable_values,
+                            parent_type,
+                        )?;
+                        fields.extend(fragment_fields);
+                    }
+                }
+            }
+            Selection::InlineFragment(inline) => {
+                // Check type condition if parent type is known
+                let type_match = if let Some(parent) = parent_type {
+                    parent == inline.type_condition
+                } else {
+                    true // If parent type unknown, assume match
+                };
+
+                if type_match {
+                    let inline_fields = collect_fields(
+                        &inline.selection_set,
+                        fragments,
+                        variable_values,
+                        parent_type,
+                    )?;
+                    fields.extend(inline_fields);
+                }
+            }
+        }
+    }
+
+    Ok(fields)
+}
+
+/// Check if a field/fragment should be included based on @skip/@include
+fn should_include(
+    directives: &[ast::Directive],
+    variables: &HashMap<String, ast::Value>,
+) -> Result<bool> {
+    for dir in directives {
+        if dir.name == "skip" {
+            if let Some(arg) = dir.arguments.iter().find(|a| a.name == "if") {
+                let should_skip = resolve_boolean_arg(&arg.value, variables)?;
+                if should_skip {
+                    return Ok(false);
+                }
+            }
+        } else if dir.name == "include" {
+            if let Some(arg) = dir.arguments.iter().find(|a| a.name == "if") {
+                let should_include = resolve_boolean_arg(&arg.value, variables)?;
+                if !should_include {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn resolve_boolean_arg(
+    value: &ast::Value,
+    variables: &HashMap<String, ast::Value>,
+) -> Result<bool> {
+    match value {
+        ast::Value::Boolean(b) => Ok(*b),
+        ast::Value::Variable(name) => {
+            if let Some(val) = variables.get(name) {
+                match val {
+                    ast::Value::Boolean(b) => Ok(*b),
+                    _ => Ok(false), // Default to false if var not boolean or found? Or Error?
+                }
+            } else {
+                Ok(false)
+            }
+        }
+        _ => Ok(false),
+    }
+}
 
 /// Result of executing an AQL operation
 #[derive(Debug)]
@@ -131,13 +238,48 @@ pub async fn execute_document(
     }
 
     if doc.operations.len() == 1 {
-        execute_operation(db, &doc.operations[0], options).await
+        // Collect fragments from the document for reference
+        let fragments: HashMap<String, FragmentDef> = doc
+            .operations
+            .iter()
+            .filter_map(|op| {
+                if let Operation::FragmentDefinition(frag) = op {
+                    Some((frag.name.clone(), frag.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        execute_operation(db, &doc.operations[0], options, &fragments).await
     } else {
+        // Collect fragments global to the doc (simplification: assuming global fragments for batch)
+        let fragments: HashMap<String, FragmentDef> = doc
+            .operations
+            .iter()
+            .filter_map(|op| {
+                if let Operation::FragmentDefinition(frag) = op {
+                    Some((frag.name.clone(), frag.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         let mut results = Vec::new();
         for op in &doc.operations {
-            results.push(execute_operation(db, op, options).await?);
+            // We can't reuse execute_operation easily because it consumes op and we need to filter fragments first
+            // Actually execute_operation handles it.
+            let result = execute_operation(db, op, options, &fragments).await?;
+            results.push(result);
         }
-        Ok(ExecutionResult::Batch(results))
+
+        // Flatten Batch results if possible or return Batch
+        if results.len() == 1 {
+            Ok(results.remove(0))
+        } else {
+            Ok(ExecutionResult::Batch(results))
+        }
     }
 }
 
@@ -146,10 +288,11 @@ async fn execute_operation(
     db: &Aurora,
     op: &Operation,
     options: &ExecutionOptions,
+    fragments: &HashMap<String, FragmentDef>,
 ) -> Result<ExecutionResult> {
     match op {
-        Operation::Query(query) => execute_query(db, query, options).await,
-        Operation::Mutation(mutation) => execute_mutation(db, mutation, options).await,
+        Operation::Query(query) => execute_query(db, query, options, fragments).await,
+        Operation::Mutation(mutation) => execute_mutation(db, mutation, options, fragments).await,
         Operation::Subscription(sub) => execute_subscription(db, sub, options).await,
         Operation::Schema(schema) => execute_schema(db, schema, options).await,
         Operation::Migration(migration) => execute_migration(db, migration, options).await,
@@ -178,9 +321,18 @@ async fn execute_query(
     db: &Aurora,
     query: &ast::Query,
     options: &ExecutionOptions,
+    fragments: &HashMap<String, FragmentDef>,
 ) -> Result<ExecutionResult> {
+    // Collect fields (flatten fragments)
+    let root_fields = collect_fields(
+        &query.selection_set,
+        fragments,
+        &query.variables_values,
+        None,
+    )?;
+
     // For each field in selection_set, it represents a collection query
-    if query.selection_set.is_empty() {
+    if root_fields.is_empty() {
         return Ok(ExecutionResult::Query(QueryResult {
             collection: String::new(),
             documents: vec![],
@@ -190,8 +342,10 @@ async fn execute_query(
 
     // Execute each top-level field as a collection query
     let mut results = Vec::new();
-    for field in &query.selection_set {
-        let result = execute_collection_query(db, field, &query.variables_values, options).await?;
+    for field in &root_fields {
+        let result =
+            execute_collection_query(db, field, &query.variables_values, options, fragments)
+                .await?;
         results.push(result);
     }
 
@@ -210,10 +364,18 @@ async fn execute_collection_query(
     field: &ast::Field,
     variables: &HashMap<String, ast::Value>,
     options: &ExecutionOptions,
+    fragments: &HashMap<String, FragmentDef>,
 ) -> Result<QueryResult> {
     let collection_name = &field.name;
 
-    // Extract filter from arguments
+    // Collect sub-fields
+    // The parent type for sub-fields is the collection name (which is the field name here)
+    let sub_fields = collect_fields(
+        &field.selection_set,
+        fragments,
+        variables,
+        Some(&field.name),
+    )?;
     let filter = extract_filter_from_args(&field.arguments)?;
 
     // Extract pagination arguments
@@ -222,21 +384,26 @@ async fn execute_collection_query(
 
     // Determines if we are in Connection Mode (Relay style)
     // Check if selection set asks for "edges" or "pageInfo"
-    let is_connection = field
-        .selection_set
+    let is_connection = sub_fields
         .iter()
         .any(|f| f.name == "edges" || f.name == "pageInfo");
 
     // Extract and apply orderBy if present
     let orderings = extract_order_by(&field.arguments);
 
+    // Compile filter once
+    let compiled_filter = if let Some(ref f) = filter {
+        Some(compile_filter(f)?)
+    } else {
+        None
+    };
+
     // Create filter closure
     let filter_fn = |doc: &Document| {
-        if let Some(ref aql_filter) = filter {
-            matches_filter(doc, aql_filter, variables)
-        } else {
-            true
-        }
+        compiled_filter
+            .as_ref()
+            .map(|f| matches_filter(doc, f, variables))
+            .unwrap_or(true)
     };
 
     // Optimization: If no sorting is required, we can limit the scan
@@ -298,16 +465,19 @@ async fn execute_collection_query(
 
             // Process 'node' selection
             // Find 'edges' field in selection set, then 'node' subfield
-            if let Some(edges_field) = field.selection_set.iter().find(|f| f.name == "edges") {
-                if let Some(node_field) =
-                    edges_field.selection_set.iter().find(|f| f.name == "node")
-                {
+            if let Some(edges_field) = sub_fields.iter().find(|f| f.name == "edges") {
+                let edges_sub_fields =
+                    collect_fields(&edges_field.selection_set, fragments, variables, None)?;
+
+                if let Some(node_field) = edges_sub_fields.iter().find(|f| f.name == "node") {
                     // Apply projection to node with lookup support
                     let node_doc = apply_projection_with_lookups(
                         db,
-                        doc,
+                        doc.clone(), // Pass a clone for projection
                         &node_field.selection_set,
                         variables,
+                        fragments,
+                        collection_name,
                     )
                     .await?;
                     edge_data.insert("node".to_string(), Value::Object(node_doc.data));
@@ -346,26 +516,34 @@ async fn execute_collection_query(
             .collect();
 
         // Check for aggregation... (existing logic)
-        let has_aggregation = !field.selection_set.is_empty()
-            && field.selection_set.iter().any(|f| f.name == "aggregate");
+        let has_aggregation =
+            !sub_fields.is_empty() && sub_fields.iter().any(|f| f.name == "aggregate");
 
         // Check for groupBy
-        let group_by_field = if !field.selection_set.is_empty() {
-            field.selection_set.iter().find(|f| f.name == "groupBy")
+        let group_by_field = if !sub_fields.is_empty() {
+            sub_fields.iter().find(|f| f.name == "groupBy")
         } else {
             None
         };
 
         if let Some(gb_field) = group_by_field {
-            execute_group_by(&paginated_docs, gb_field)?
+            execute_group_by(&paginated_docs, gb_field, fragments, variables)?
         } else if has_aggregation {
-            let agg_doc = execute_aggregation(&paginated_docs, &field.selection_set)?;
+            let agg_doc = execute_aggregation(&paginated_docs, &sub_fields, fragments, variables)?;
             vec![agg_doc]
-        } else if options.apply_projections && !field.selection_set.is_empty() {
+        } else if options.apply_projections && !sub_fields.is_empty() {
             let mut projected = Vec::new();
             for doc in paginated_docs {
                 projected.push(
-                    apply_projection_with_lookups(db, doc, &field.selection_set, variables).await?,
+                    apply_projection_with_lookups(
+                        db,
+                        doc,
+                        &field.selection_set,
+                        variables,
+                        fragments,
+                        collection_name,
+                    )
+                    .await?,
                 );
             }
             projected
@@ -382,7 +560,12 @@ async fn execute_collection_query(
 }
 
 /// Execute GroupBy on a set of documents
-fn execute_group_by(docs: &[Document], group_by_field: &ast::Field) -> Result<Vec<Document>> {
+fn execute_group_by(
+    docs: &[Document],
+    group_by_field: &ast::Field,
+    fragments: &HashMap<String, FragmentDef>,
+    variables: &HashMap<String, ast::Value>,
+) -> Result<Vec<Document>> {
     // 1. Identify the grouping key field name
     let key_field_name = group_by_field
         .arguments
@@ -424,7 +607,10 @@ fn execute_group_by(docs: &[Document], group_by_field: &ast::Field) -> Result<Ve
 
         // Process selection set for the group
         // groupBy { key, count, nodes { ... }, aggregate { ... } }
-        for field in &group_by_field.selection_set {
+        let group_fields =
+            collect_fields(&group_by_field.selection_set, fragments, variables, None)?;
+
+        for field in &group_fields {
             let alias = field.alias.as_ref().unwrap_or(&field.name).clone();
 
             match field.name.as_str() {
@@ -440,7 +626,18 @@ fn execute_group_by(docs: &[Document], group_by_field: &ast::Field) -> Result<Ve
                         .iter()
                         .map(|d| {
                             if !field.selection_set.is_empty() {
-                                let proj = apply_projection((*d).clone(), &field.selection_set);
+                                // Need apply_projection that handles Selection... or update apply_projection signature
+                                // Actually apply_projection_with_lookups is async, but this is sync.
+                                // Simplified projection for now as apply_projection helper not fully updated.
+                                // Re-using existing structure but ignoring deep lookups for simple projection
+                                let proj_fields = collect_fields(
+                                    &field.selection_set,
+                                    fragments,
+                                    variables,
+                                    None,
+                                )
+                                .unwrap_or_default();
+                                let proj = apply_projection((*d).clone(), &proj_fields);
                                 Value::Object(proj.data)
                             } else {
                                 Value::Object(d.data.clone())
@@ -453,7 +650,17 @@ fn execute_group_by(docs: &[Document], group_by_field: &ast::Field) -> Result<Ve
                     // Run aggregation on this group's documents
                     let group_docs_owned: Vec<Document> =
                         group_docs.iter().map(|d| (*d).clone()).collect();
-                    let agg_result = execute_aggregation(&group_docs_owned, &[field.clone()])?;
+                    // Note regarding aggregation sub-selections: existing parser puts them in generic selection_set
+                    // or specialized structure. If existing aggregation parsing resulted in Field with nested Fields,
+                    // we need to make sure execute_aggregation handles Vec<Selection> or we collect it.
+                    // The group_by field -> aggregate -> selection_set contains function calls.
+                    // Those are fields.
+                    let agg_result = execute_aggregation(
+                        &group_docs_owned,
+                        &[field.clone()],
+                        fragments,
+                        variables,
+                    )?;
                     // Flatten result into group_data
                     for (k, v) in agg_result.data {
                         group_data.insert(k, v);
@@ -475,7 +682,12 @@ fn execute_group_by(docs: &[Document], group_by_field: &ast::Field) -> Result<Ve
 }
 
 /// Execute aggregation over a set of documents
-fn execute_aggregation(docs: &[Document], selection_set: &[ast::Field]) -> Result<Document> {
+fn execute_aggregation(
+    docs: &[Document],
+    selection_set: &[ast::Field],
+    fragments: &HashMap<String, FragmentDef>,
+    variables: &HashMap<String, ast::Value>,
+) -> Result<Document> {
     let mut result_data = HashMap::new();
 
     for field in selection_set {
@@ -486,7 +698,11 @@ fn execute_aggregation(docs: &[Document], selection_set: &[ast::Field]) -> Resul
             // e.g. aggregate { count, avg(field: "age") }
             let mut agg_result = HashMap::new();
 
-            for agg_fn in &field.selection_set {
+            let agg_fields = collect_fields(&field.selection_set, fragments, variables, None)?;
+
+            for agg_fn in agg_fields {
+                // Aggregation functions inside are Fields
+
                 let agg_alias = agg_fn.alias.as_ref().unwrap_or(&agg_fn.name).clone();
                 let agg_name = &agg_fn.name;
 
@@ -581,6 +797,7 @@ async fn execute_lookup(
     parent_doc: &Document,
     lookup: &ast::LookupSelection,
     variables: &HashMap<String, ast::Value>,
+    fragments: &HashMap<String, FragmentDef>,
 ) -> Result<Value> {
     // Get the local field value from the parent document
     let local_value = parent_doc.data.get(&lookup.local_field);
@@ -608,9 +825,10 @@ async fn execute_lookup(
 
     // Apply optional filter if present
     let filtered_docs = if let Some(ref filter) = lookup.filter {
+        let compiled_filter = compile_filter(filter)?;
         matching_docs
             .into_iter()
-            .filter(|doc| matches_filter(doc, filter, variables))
+            .filter(|doc| matches_filter(doc, &compiled_filter, variables))
             .collect()
     } else {
         matching_docs
@@ -621,7 +839,14 @@ async fn execute_lookup(
         .into_iter()
         .map(|doc| {
             // Convert Selection to Field for projection
-            let fields: Vec<ast::Field> = lookup.selection_set.iter().map(|f| f.clone()).collect();
+            // Collect fields from the lookup's selection set
+            let fields = collect_fields(
+                &lookup.selection_set,
+                fragments,
+                variables,
+                Some(&lookup.collection),
+            )
+            .unwrap_or_default();
 
             if fields.is_empty() {
                 Value::Object(doc.data)
@@ -650,13 +875,17 @@ fn db_values_equal(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// Apply projection with lookup support (async version)
-pub async fn apply_projection_with_lookups(
+/// Apply projection (select specific fields) with support for lookups and fragments
+async fn apply_projection_with_lookups(
     db: &Aurora,
     doc: Document,
-    fields: &[ast::Field],
+    selection_set: &[ast::Selection],
     variables: &HashMap<String, ast::Value>,
+    fragments: &HashMap<String, FragmentDef>,
+    collection: &str,
 ) -> Result<Document> {
+    let fields = collect_fields(selection_set, fragments, variables, Some(collection))?;
+
     if fields.is_empty() {
         return Ok(doc);
     }
@@ -714,7 +943,7 @@ pub async fn apply_projection_with_lookups(
                 selection_set: field.selection_set.clone(),
             };
 
-            let lookup_result = execute_lookup(db, &doc, &lookup, variables).await?;
+            let lookup_result = execute_lookup(db, &doc, &lookup, variables, fragments).await?;
             projected_data.insert(field_name.clone(), lookup_result);
         } else if let Some(value) = doc.data.get(source_name) {
             projected_data.insert(field_name.clone(), value.clone());
@@ -982,13 +1211,21 @@ async fn execute_mutation(
     db: &Aurora,
     mutation: &ast::Mutation,
     options: &ExecutionOptions,
+    fragments: &HashMap<String, FragmentDef>,
 ) -> Result<ExecutionResult> {
     let mut results = Vec::new();
     let mut context: ExecutionContext = HashMap::new();
 
     for mut_op in &mutation.operations {
-        let result =
-            execute_mutation_op(db, mut_op, &mutation.variables_values, &context, options).await?;
+        let result = execute_mutation_op(
+            db,
+            mut_op,
+            &mutation.variables_values,
+            &context,
+            options,
+            fragments,
+        )
+        .await?;
 
         // Update context if alias is present
         if let Some(alias) = &mut_op.alias {
@@ -1020,7 +1257,7 @@ async fn execute_mutation(
 }
 
 use base64::{Engine as _, engine::general_purpose};
-use futures::future::{BoxFuture, FutureExt};
+use futures::future::{BoxFuture, FutureExt}; // Added this import
 
 /// Execute a single mutation operation
 fn execute_mutation_op<'a>(
@@ -1029,6 +1266,7 @@ fn execute_mutation_op<'a>(
     variables: &'a HashMap<String, ast::Value>,
     context: &'a ExecutionContext,
     options: &'a ExecutionOptions,
+    fragments: &'a HashMap<String, FragmentDef>,
 ) -> BoxFuture<'a, Result<MutationResult>> {
     async move {
         match &mut_op.operation {
@@ -1038,7 +1276,18 @@ fn execute_mutation_op<'a>(
                 let doc = db.aql_insert(collection, doc_data).await?;
 
                 let returned = if !mut_op.selection_set.is_empty() && options.apply_projections {
-                    vec![apply_projection(doc.clone(), &mut_op.selection_set)]
+                    // Flatten selection struct for projection
+                    // We use the collection name from the mutation as parent type
+                    // Using passed fragments
+                    let fields = collect_fields(
+                        &mut_op.selection_set,
+                        fragments,
+                        variables,
+                        Some(collection),
+                    )
+                    .unwrap_or_default();
+
+                    vec![apply_projection(doc.clone(), &fields)]
                 } else {
                     vec![doc]
                 };
@@ -1063,7 +1312,16 @@ fn execute_mutation_op<'a>(
                 let count = docs.len();
                 let returned = if !mut_op.selection_set.is_empty() && options.apply_projections {
                     docs.into_iter()
-                        .map(|d| apply_projection(d, &mut_op.selection_set))
+                        .map(|d| {
+                            let fields = collect_fields(
+                                &mut_op.selection_set,
+                                fragments,
+                                variables,
+                                Some(collection),
+                            )
+                            .unwrap_or_default();
+                            apply_projection(d, &fields)
+                        })
                         .collect()
                 } else {
                     docs
@@ -1084,8 +1342,15 @@ fn execute_mutation_op<'a>(
             } => {
                 let resolved_data = resolve_value(data, variables, context);
                 let update_data = aql_value_to_hashmap(&resolved_data)?;
+
+                let compiled_filter = if let Some(f) = filter {
+                    Some(compile_filter(f)?)
+                } else {
+                    None
+                };
+
                 let filter_fn = |doc: &Document| {
-                    filter
+                    compiled_filter
                         .as_ref()
                         .map(|f| matches_filter(doc, f, variables))
                         .unwrap_or(true)
@@ -1107,7 +1372,16 @@ fn execute_mutation_op<'a>(
                 let returned = if !mut_op.selection_set.is_empty() && options.apply_projections {
                     returned
                         .into_iter()
-                        .map(|d| apply_projection(d, &mut_op.selection_set))
+                        .map(|d| {
+                            let fields = collect_fields(
+                                &mut_op.selection_set,
+                                fragments,
+                                variables,
+                                Some(collection),
+                            )
+                            .unwrap_or_default();
+                            apply_projection(d, &fields)
+                        })
                         .collect()
                 } else {
                     returned
@@ -1129,16 +1403,18 @@ fn execute_mutation_op<'a>(
                 // For upsert, try update first, if no matches then insert
                 let resolved_data = resolve_value(data, variables, context);
                 let update_data = aql_value_to_hashmap(&resolved_data)?;
+
+                let compiled_filter = if let Some(f) = filter {
+                    Some(compile_filter(f)?)
+                } else {
+                    None
+                };
+
                 let filter_fn = |doc: &Document| {
-                    filter
+                    compiled_filter
                         .as_ref()
                         .map(|f| matches_filter(doc, f, variables))
-                        .unwrap_or(false) // For upsert finding matches, default to false if no filter? 
-                    // Actually if filter is None, it should match nothing? Or everything?
-                    // Logic: Upsert needs to find matches. If matches, update.
-                    // If filter is None, Update all?
-                    // Standard upsert usually requires a filter.
-                    // Existing logic: map(...).unwrap_or(false).
+                        .unwrap_or(false) // For upsert, no filter means match nothing (trigger Insert)
                 };
 
                 let matching = db.scan_and_filter(collection, filter_fn, None)?;
@@ -1175,11 +1451,17 @@ fn execute_mutation_op<'a>(
             }
 
             MutationOp::Delete { collection, filter } => {
+                let compiled_filter = if let Some(f) = filter {
+                    Some(compile_filter(f)?)
+                } else {
+                    None
+                };
+
                 let filter_fn = |doc: &Document| {
-                    filter
+                    compiled_filter
                         .as_ref()
                         .map(|f| matches_filter(doc, f, variables))
-                        .unwrap_or(true)
+                        .unwrap_or(true) // Delete all if no filter
                 };
 
                 let matching_docs = db.scan_and_filter(collection, filter_fn, None)?;
@@ -1268,7 +1550,9 @@ fn execute_mutation_op<'a>(
                 let mut results = Vec::new();
 
                 for inner_op in operations {
-                    match execute_mutation_op(db, inner_op, variables, context, options).await {
+                    match execute_mutation_op(db, inner_op, variables, context, options, fragments)
+                        .await
+                    {
                         Ok(result) => results.push(result),
                         Err(e) => {
                             let _ = db.aql_rollback_transaction(tx).await;
@@ -1306,7 +1590,10 @@ async fn execute_subscription(
     let collection = sub
         .selection_set
         .first()
-        .map(|f| f.name.clone())
+        .and_then(|sel| match sel {
+            Selection::Field(f) => Some(f.name.clone()),
+            _ => None, // Subscriptions shouldn't use fragments for top level usually?
+        })
         .unwrap_or_default();
 
     if collection.is_empty() {
@@ -1321,14 +1608,18 @@ async fn execute_subscription(
 
     // Apply filter if present
     // We look at the first field's arguments for 'where'
-    if let Some(field) = sub.selection_set.first() {
-        let filter_opt = extract_filter_from_args(&field.arguments)?;
-        if let Some(aql_filter) = filter_opt {
-            if let Some(event_filter) = convert_aql_filter_to_event_filter(&aql_filter) {
-                listener = listener.filter(event_filter);
-            } else {
-                // TODO: Handle complex filters appropriately.
-                // Currently unsupported filters are ignored which may return more data than expected.
+    if let Some(selection) = sub.selection_set.first() {
+        if let Selection::Field(field) = selection {
+            let filter_opt = extract_filter_from_args(&field.arguments)?;
+            if let Some(aql_filter) = filter_opt {
+                if let Some(event_filter) = convert_aql_filter_to_event_filter(&aql_filter) {
+                    listener = listener.filter(event_filter);
+                } else {
+                    return Err(AqlError::new(
+                        ErrorCode::QueryError,
+                        "Unsupported filter operator in subscription",
+                    ));
+                }
             }
         }
     }
@@ -1398,29 +1689,30 @@ async fn execute_introspection(
 
 /// Helper to convert AST FieldDef to DB FieldDefinition
 fn convert_ast_field_to_db_field(field: &ast::FieldDef) -> Result<crate::types::FieldDefinition> {
-    use crate::types::{FieldDefinition, FieldType};
+    use crate::types::{FieldDefinition, FieldType, ScalarType};
 
     // Map Type Name
-    let field_type = match field.field_type.name.as_str() {
+    let base_type = match field.field_type.name.as_str() {
         "String" | "ID" | "Email" | "URL" | "PhoneNumber" | "DateTime" | "Date" | "Time" => {
-            FieldType::String
+            ScalarType::String
         }
-        "Int" => FieldType::Int,
-        "Float" => FieldType::Float,
-        "Boolean" => FieldType::Bool,
-        "Uuid" => FieldType::Uuid,
-        "Object" | "Json" => FieldType::Object,
-        "Any" => FieldType::Any,
-        // Arrays are handled by TypeAnnotation.is_array usually, but if explicit "Array" type:
-        "Array" => FieldType::Array,
-        _ => FieldType::Any,
+        "Int" => ScalarType::Int,
+        "Float" => ScalarType::Float,
+        "Boolean" => ScalarType::Bool,
+        "Uuid" => ScalarType::Uuid,
+        "Object" | "Json" => ScalarType::Object,
+        "Any" => ScalarType::Any,
+        "Array" => ScalarType::Array,
+        _ => ScalarType::Any,
     };
 
-    // Override if is_array (simplification: DB Type Array covers all arrays currently)
-    let field_type = if field.field_type.is_array {
-        FieldType::Array
+    // Construct final field type (Scalar or Array)
+    let field_type = if field.field_type.is_array || field.field_type.name == "Array" {
+        FieldType::Array(base_type)
+    } else if field.field_type.name == "Object" || field.field_type.name == "Json" {
+        FieldType::Object
     } else {
-        field_type
+        FieldType::Scalar(base_type)
     };
 
     // Parse Directives
@@ -1450,6 +1742,7 @@ fn convert_ast_field_to_db_field(field: &ast::FieldDef) -> Result<crate::types::
         field_type,
         unique,
         indexed,
+        nullable: !field.field_type.is_required,
     })
 }
 
@@ -1713,29 +2006,50 @@ fn extract_order_by(args: &[ast::Argument]) -> Vec<ast::Ordering> {
     orderings
 }
 
-/// Parse an ordering object { field: "x", direction: ASC }
+/// Parse an ordering object { field: "x", direction: ASC } OR { x: ASC }
 fn parse_ordering_object(map: &HashMap<String, ast::Value>) -> Option<ast::Ordering> {
-    let field = map.get("field").and_then(|v| {
-        if let ast::Value::String(s) = v {
-            Some(s.clone())
-        } else {
-            None
-        }
-    })?;
+    // 1. Try explicit format: { field: "x", direction: ASC }
+    if let Some(ast::Value::String(field_name)) = map.get("field") {
+        let direction = map
+            .get("direction")
+            .and_then(|v| match v {
+                ast::Value::String(s) | ast::Value::Enum(s) => match s.to_uppercase().as_str() {
+                    "ASC" | "ASCENDING" => Some(ast::SortDirection::Asc),
+                    "DESC" | "DESCENDING" => Some(ast::SortDirection::Desc),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or(ast::SortDirection::Asc);
 
-    let direction = map
-        .get("direction")
-        .and_then(|v| match v {
+        return Some(ast::Ordering {
+            field: field_name.clone(),
+            direction,
+        });
+    }
+
+    // 2. Try shorthand format: { score: DESC } (single key)
+    if map.len() == 1 {
+        let (key, val) = map.iter().next().unwrap();
+        // Check if value is a valid direction
+        let direction = match val {
             ast::Value::String(s) | ast::Value::Enum(s) => match s.to_uppercase().as_str() {
                 "ASC" | "ASCENDING" => Some(ast::SortDirection::Asc),
                 "DESC" | "DESCENDING" => Some(ast::SortDirection::Desc),
                 _ => None,
             },
             _ => None,
-        })
-        .unwrap_or(ast::SortDirection::Asc);
+        };
 
-    Some(ast::Ordering { field, direction })
+        if let Some(dir) = direction {
+            return Some(ast::Ordering {
+                field: key.clone(),
+                direction: dir,
+            });
+        }
+    }
+
+    None
 }
 
 /// Apply ordering to documents
@@ -1969,20 +2283,20 @@ fn get_doc_value_at_path<'a>(doc: &'a Document, path: &str) -> Option<&'a Value>
 /// Check if a document matches a filter
 pub fn matches_filter(
     doc: &Document,
-    filter: &AqlFilter,
+    filter: &CompiledFilter,
     variables: &HashMap<String, ast::Value>,
 ) -> bool {
     match filter {
-        AqlFilter::Eq(field, value) => get_doc_value_at_path(doc, field)
+        CompiledFilter::Eq(field, value) => get_doc_value_at_path(doc, field)
             .map(|v| values_equal(v, value, variables))
             .unwrap_or(false),
-        AqlFilter::Ne(field, value) => get_doc_value_at_path(doc, field)
-            .map(|v| !values_equal(v, value, variables))
+        CompiledFilter::Ne(field, value) => get_doc_value_at_path(doc, field)
+            .map(|v| !values_bit_equal(v, value, variables))
             .unwrap_or(true),
-        AqlFilter::Gt(field, value) => get_doc_value_at_path(doc, field)
+        CompiledFilter::Gt(field, value) => get_doc_value_at_path(doc, field)
             .map(|v| value_compare(v, value, variables) == Some(std::cmp::Ordering::Greater))
             .unwrap_or(false),
-        AqlFilter::Gte(field, value) => get_doc_value_at_path(doc, field)
+        CompiledFilter::Gte(field, value) => get_doc_value_at_path(doc, field)
             .map(|v| {
                 matches!(
                     value_compare(v, value, variables),
@@ -1990,10 +2304,10 @@ pub fn matches_filter(
                 )
             })
             .unwrap_or(false),
-        AqlFilter::Lt(field, value) => get_doc_value_at_path(doc, field)
+        CompiledFilter::Lt(field, value) => get_doc_value_at_path(doc, field)
             .map(|v| value_compare(v, value, variables) == Some(std::cmp::Ordering::Less))
             .unwrap_or(false),
-        AqlFilter::Lte(field, value) => get_doc_value_at_path(doc, field)
+        CompiledFilter::Lte(field, value) => get_doc_value_at_path(doc, field)
             .map(|v| {
                 matches!(
                     value_compare(v, value, variables),
@@ -2001,7 +2315,7 @@ pub fn matches_filter(
                 )
             })
             .unwrap_or(false),
-        AqlFilter::In(field, value) => {
+        CompiledFilter::In(field, value) => {
             if let ast::Value::Array(arr) = value {
                 get_doc_value_at_path(doc, field)
                     .map(|v| arr.iter().any(|item| values_equal(v, item, variables)))
@@ -2010,7 +2324,7 @@ pub fn matches_filter(
                 false
             }
         }
-        AqlFilter::NotIn(field, value) => {
+        CompiledFilter::NotIn(field, value) => {
             if let ast::Value::Array(arr) = value {
                 get_doc_value_at_path(doc, field)
                     .map(|v| !arr.iter().any(|item| values_equal(v, item, variables)))
@@ -2019,16 +2333,24 @@ pub fn matches_filter(
                 true
             }
         }
-        AqlFilter::Contains(field, value) => {
-            if let (Some(Value::String(doc_val)), ast::Value::String(search)) =
-                (get_doc_value_at_path(doc, field), value)
-            {
-                doc_val.contains(search)
-            } else {
-                false
+        CompiledFilter::Contains(field, value) => {
+            match (get_doc_value_at_path(doc, field), value) {
+                (Some(Value::String(doc_val)), ast::Value::String(search)) => {
+                    doc_val.contains(search)
+                }
+                (Some(Value::Array(doc_arr)), ast::Value::String(search)) => {
+                    doc_arr.iter().any(|v| {
+                        if let Value::String(s) = v {
+                            s == search
+                        } else {
+                            false
+                        }
+                    })
+                }
+                _ => false,
             }
         }
-        AqlFilter::StartsWith(field, value) => {
+        CompiledFilter::StartsWith(field, value) => {
             if let (Some(Value::String(doc_val)), ast::Value::String(prefix)) =
                 (get_doc_value_at_path(doc, field), value)
             {
@@ -2037,7 +2359,7 @@ pub fn matches_filter(
                 false
             }
         }
-        AqlFilter::EndsWith(field, value) => {
+        CompiledFilter::EndsWith(field, value) => {
             if let (Some(Value::String(doc_val)), ast::Value::String(suffix)) =
                 (get_doc_value_at_path(doc, field), value)
             {
@@ -2046,28 +2368,22 @@ pub fn matches_filter(
                 false
             }
         }
-        AqlFilter::Matches(field, value) => {
-            if let (Some(Value::String(doc_val)), ast::Value::String(pattern)) =
-                (get_doc_value_at_path(doc, field), value)
-            {
-                // TODO: optimization - compile regex once outside the loop if possible
-                match regex::Regex::new(pattern) {
-                    Ok(re) => re.is_match(doc_val),
-                    Err(_) => false, // Invalid regex treated as no match (validation should catch this)
-                }
+        CompiledFilter::Matches(field, regex) => {
+            if let Some(Value::String(doc_val)) = get_doc_value_at_path(doc, field) {
+                regex.is_match(doc_val)
             } else {
                 false
             }
         }
-        AqlFilter::IsNull(field) => get_doc_value_at_path(doc, field)
+        CompiledFilter::IsNull(field) => get_doc_value_at_path(doc, field)
             .map(|v| matches!(v, Value::Null))
             .unwrap_or(true),
-        AqlFilter::IsNotNull(field) => get_doc_value_at_path(doc, field)
+        CompiledFilter::IsNotNull(field) => get_doc_value_at_path(doc, field)
             .map(|v| !matches!(v, Value::Null))
             .unwrap_or(false),
-        AqlFilter::And(filters) => filters.iter().all(|f| matches_filter(doc, f, variables)),
-        AqlFilter::Or(filters) => filters.iter().any(|f| matches_filter(doc, f, variables)),
-        AqlFilter::Not(filter) => !matches_filter(doc, filter, variables),
+        CompiledFilter::And(filters) => filters.iter().all(|f| matches_filter(doc, f, variables)),
+        CompiledFilter::Or(filters) => filters.iter().any(|f| matches_filter(doc, f, variables)),
+        CompiledFilter::Not(filter) => !matches_filter(doc, filter, variables),
     }
 }
 
@@ -2086,6 +2402,24 @@ fn values_equal(
         (Value::Float(a), ast::Value::Int(b)) => (*a - (*b as f64)).abs() < f64::EPSILON,
         (Value::Int(a), ast::Value::Float(b)) => ((*a as f64) - *b).abs() < f64::EPSILON,
         (Value::String(a), ast::Value::String(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Check if two values are equal using strict bitwise comparison (no type coercion, strict float bits)
+fn values_bit_equal(
+    db_val: &Value,
+    aql_val: &ast::Value,
+    variables: &HashMap<String, ast::Value>,
+) -> bool {
+    let resolved = resolve_if_variable(aql_val, variables);
+    match (db_val, resolved) {
+        (Value::Null, ast::Value::Null) => true,
+        (Value::Bool(a), ast::Value::Boolean(b)) => *a == *b,
+        (Value::Int(a), ast::Value::Int(b)) => *a == *b,
+        (Value::Float(a), ast::Value::Float(b)) => a.to_bits() == b.to_bits(),
+        (Value::String(a), ast::Value::String(b)) => a == b,
+        // No mixed type int/float comparison for bit equality
         _ => false,
     }
 }
@@ -2322,14 +2656,8 @@ fn resolve_value(
             if let Some(v) = variables.get(name) {
                 v.clone()
             } else {
-                // Should have been caught by validator, but return error or null if not found?
-                // For now preserve variable if missing (or return Null?)
-                // Validator ensures required vars are present.
-                // But validation might be skipped.
-                // Assuming it exists or let it fail later?
-                // Let's panic/error? No, just clone (will fail at type check or insert)
-                // Actually returning val.clone() preserves the error state.
-                val.clone()
+                // Variable not found - return Null
+                ast::Value::Null
             }
         }
         ast::Value::String(s) if s.starts_with('$') => {
@@ -2472,10 +2800,12 @@ mod tests {
         doc.data.insert("age".to_string(), Value::Int(25));
 
         let filter = AqlFilter::Eq("name".to_string(), ast::Value::String("Alice".to_string()));
-        assert!(matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &HashMap::new()));
 
         let filter = AqlFilter::Eq("name".to_string(), ast::Value::String("Bob".to_string()));
-        assert!(!matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(!matches_filter(&doc, &compiled, &HashMap::new()));
     }
 
     #[test]
@@ -2484,16 +2814,20 @@ mod tests {
         doc.data.insert("age".to_string(), Value::Int(25));
 
         let filter = AqlFilter::Gt("age".to_string(), ast::Value::Int(20));
-        assert!(matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &HashMap::new()));
 
         let filter = AqlFilter::Gt("age".to_string(), ast::Value::Int(30));
-        assert!(!matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(!matches_filter(&doc, &compiled, &HashMap::new()));
 
         let filter = AqlFilter::Gte("age".to_string(), ast::Value::Int(25));
-        assert!(matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &HashMap::new()));
 
         let filter = AqlFilter::Lt("age".to_string(), ast::Value::Int(30));
-        assert!(matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &HashMap::new()));
     }
 
     #[test]
@@ -2507,13 +2841,15 @@ mod tests {
             AqlFilter::Eq("name".to_string(), ast::Value::String("Alice".to_string())),
             AqlFilter::Gte("age".to_string(), ast::Value::Int(18)),
         ]);
-        assert!(matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &HashMap::new()));
 
         let filter = AqlFilter::Or(vec![
             AqlFilter::Eq("name".to_string(), ast::Value::String("Bob".to_string())),
             AqlFilter::Gte("age".to_string(), ast::Value::Int(18)),
         ]);
-        assert!(matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &HashMap::new()));
     }
 
     #[test]
@@ -2528,15 +2864,18 @@ mod tests {
             "email".to_string(),
             ast::Value::String("example".to_string()),
         );
-        assert!(matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &HashMap::new()));
 
         let filter =
             AqlFilter::StartsWith("email".to_string(), ast::Value::String("alice".to_string()));
-        assert!(matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &HashMap::new()));
 
         let filter =
             AqlFilter::EndsWith("email".to_string(), ast::Value::String(".com".to_string()));
-        assert!(matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &HashMap::new()));
     }
 
     #[test]
@@ -2552,13 +2891,15 @@ mod tests {
                 ast::Value::String("pending".to_string()),
             ]),
         );
-        assert!(matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &HashMap::new()));
 
         let filter = AqlFilter::In(
             "status".to_string(),
             ast::Value::Array(vec![ast::Value::String("inactive".to_string())]),
         );
-        assert!(!matches_filter(&doc, &filter, &HashMap::new()));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(!matches_filter(&doc, &compiled, &HashMap::new()));
     }
 
     #[test]
@@ -2649,7 +2990,60 @@ mod tests {
             "age".to_string(),
             ast::Value::Variable("minAge".to_string()),
         );
-        assert!(matches_filter(&doc, &filter, &variables));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &variables));
+    }
+
+    #[test]
+    fn test_values_bit_equal() {
+        let vars = HashMap::new();
+
+        // 1. Floats
+        let f1 = Value::Float(1.0);
+        let f1_copy = ast::Value::Float(1.0);
+        assert!(values_bit_equal(&f1, &f1_copy, &vars));
+
+        // 0.0 vs -0.0 (Should be DIFFERENT in bitwise)
+        let f_zero = Value::Float(0.0);
+        let f_neg_zero = ast::Value::Float(-0.0);
+        assert!(!values_bit_equal(&f_zero, &f_neg_zero, &vars));
+
+        // NaN vs NaN (Should be SAME in bitwise if same NaN struct, typically distinct NaNs differ)
+        // Standard == says NaN != NaN. Bitwise can say they are equal if bits match.
+        let nan = f64::NAN;
+        let v_nan = Value::Float(nan);
+        let a_nan = ast::Value::Float(nan);
+        // We expect bit equality to hold for the exact same NaN
+        assert!(values_bit_equal(&v_nan, &a_nan, &vars));
+
+        // 2. Int vs Float (No coercion)
+        let i1 = Value::Int(1);
+        let f1_as_val = ast::Value::Float(1.0);
+        assert!(!values_bit_equal(&i1, &f1_as_val, &vars));
+    }
+
+    #[test]
+    fn test_ne_filter_strictness() {
+        let mut doc = Document::new();
+        doc.data.insert("val".to_string(), Value::Float(0.0));
+        doc.data.insert("intVal".to_string(), Value::Int(1));
+
+        let vars = HashMap::new();
+
+        // Ne 0.0 should be FALSE for 0.0
+        let filter = AqlFilter::Ne("val".to_string(), ast::Value::Float(0.0));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(!matches_filter(&doc, &compiled, &vars));
+
+        // Ne -0.0 should be TRUE for 0.0 (bits differ)
+        let filter = AqlFilter::Ne("val".to_string(), ast::Value::Float(-0.0));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &vars));
+
+        // Ne 1.0 (float) should be TRUE for 1 (int) because types differ (no coercion)
+        let filter = AqlFilter::Ne("intVal".to_string(), ast::Value::Float(1.0));
+        let compiled = compile_filter(&filter).unwrap();
+        assert!(matches_filter(&doc, &compiled, &vars));
     }
 
     #[tokio::test]
@@ -3108,9 +3502,10 @@ mod tests {
             selection_set: vec![],
         };
 
-        let lookup_result = execute_lookup(&db, &user_doc, &lookup, &HashMap::new())
-            .await
-            .unwrap();
+        let lookup_result =
+            execute_lookup(&db, &user_doc, &lookup, &HashMap::new(), &HashMap::new())
+                .await
+                .unwrap();
         if let Value::Array(found_orders) = lookup_result {
             assert_eq!(found_orders.len(), 2, "Should find 2 orders for user1");
         } else {
