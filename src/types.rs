@@ -9,24 +9,78 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Archive, RkyvSerialize, RkyvDeserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Hash,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+)]
 #[archive(check_bytes)]
-pub enum FieldType {
+pub enum ScalarType {
     String,
     Int,
     Uuid,
     Bool,
     Float,
-    Array,
-    Object,
     Any,
+    Object,
+    Array,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FieldType {
+    Scalar(ScalarType),
+    Array(ScalarType),                             // Array of scalars
+    Object,                                        // Flat object (no schema validation)
+    Nested(Box<HashMap<String, FieldDefinition>>), // Deeply nested object with schema
+    Any,
+}
+
+impl Hash for FieldType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            FieldType::Scalar(s) => s.hash(state),
+            FieldType::Array(s) => s.hash(state),
+            FieldType::Object => {}
+            FieldType::Nested(map) => {
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                for (k, v) in entries {
+                    k.hash(state);
+                    v.hash(state);
+                }
+            }
+            FieldType::Any => {}
+        }
+    }
+}
+
+// Helpers for backward compatibility/ease of use
+#[allow(non_upper_case_globals)]
+impl FieldType {
+    pub const String: FieldType = FieldType::Scalar(ScalarType::String);
+    pub const Int: FieldType = FieldType::Scalar(ScalarType::Int);
+    pub const Uuid: FieldType = FieldType::Scalar(ScalarType::Uuid);
+    pub const Bool: FieldType = FieldType::Scalar(ScalarType::Bool);
+    pub const Float: FieldType = FieldType::Scalar(ScalarType::Float);
+    pub const Any: FieldType = FieldType::Scalar(ScalarType::Any);
+    pub const Object: FieldType = FieldType::Scalar(ScalarType::Object);
+    pub const Array: FieldType = FieldType::Scalar(ScalarType::Array);
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FieldDefinition {
     pub field_type: FieldType,
     pub unique: bool,
     pub indexed: bool,
+    pub nullable: bool, // Added #1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
