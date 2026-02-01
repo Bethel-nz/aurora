@@ -2,8 +2,6 @@ use aurora_db::{
     Aurora, Result,
     types::{AuroraConfig, FieldType, Value},
 };
-use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::test]
