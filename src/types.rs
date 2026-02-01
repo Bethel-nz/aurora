@@ -9,24 +9,82 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Archive, RkyvSerialize, RkyvDeserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Hash,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+)]
 #[archive(check_bytes)]
-pub enum FieldType {
+pub enum ScalarType {
     String,
     Int,
     Uuid,
     Bool,
     Float,
-    Array,
-    Object,
     Any,
+    Object,
+    Array,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FieldType {
+    Scalar(ScalarType),
+    Array(ScalarType),                             // Array of scalars
+    Object,                                        // Flat object (no schema validation)
+    Nested(Box<HashMap<String, FieldDefinition>>), // Deeply nested object with schema
+    Any,
+}
+
+impl Hash for FieldType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            FieldType::Scalar(s) => s.hash(state),
+            FieldType::Array(s) => s.hash(state),
+            FieldType::Object => {}
+            FieldType::Nested(map) => {
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                for (k, v) in entries {
+                    k.hash(state);
+                    v.hash(state);
+                }
+            }
+            FieldType::Any => {}
+        }
+    }
+}
+
+// Helpers for backward compatibility/ease of use
+#[allow(non_upper_case_globals)]
+impl FieldType {
+    pub const String: FieldType = FieldType::Scalar(ScalarType::String);
+    pub const Int: FieldType = FieldType::Scalar(ScalarType::Int);
+    pub const Uuid: FieldType = FieldType::Scalar(ScalarType::Uuid);
+    pub const Bool: FieldType = FieldType::Scalar(ScalarType::Bool);
+    pub const Float: FieldType = FieldType::Scalar(ScalarType::Float);
+    pub const Any: FieldType = FieldType::Scalar(ScalarType::Any);
+
+    // Renamed to avoid shadowing the Object and Array enum variants
+    /// Scalar object type (use `FieldType::Object` variant for flat objects without schema)
+    pub const SCALAR_OBJECT: FieldType = FieldType::Scalar(ScalarType::Object);
+    /// Scalar array type (use `FieldType::Array(T)` variant for typed arrays)
+    pub const SCALAR_ARRAY: FieldType = FieldType::Scalar(ScalarType::Array);
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FieldDefinition {
     pub field_type: FieldType,
     pub unique: bool,
     pub indexed: bool,
+    pub nullable: bool, // Added #1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,7 +256,8 @@ impl PartialOrd for Value {
 
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
+        self.partial_cmp(other)
+            .expect("Value::partial_cmp should always return Some for same-type values")
     }
 }
 
@@ -447,6 +506,9 @@ pub struct AuroraConfig {
     pub durability_mode: DurabilityMode, // Trade-off between performance and data safety
     pub enable_wal: bool,                // Enable write-ahead logging
     pub checkpoint_interval_ms: u64,     // Background checkpoint interval (flush + WAL truncate)
+
+    /// Optional path to audit log file. If None, audit logging is disabled.
+    pub audit_log_path: Option<PathBuf>,
 }
 
 /// Durability mode determines the trade-off between performance and data safety
@@ -475,11 +537,11 @@ impl Default for AuroraConfig {
             db_path: PathBuf::from("aurora.db"),
             create_dirs: true,
 
-            hot_cache_size_mb: 128,
-            hot_cache_cleanup_interval_secs: 30,
-            eviction_policy: crate::storage::EvictionPolicy::Hybrid,
+            hot_cache_size_mb: 64,
+            hot_cache_cleanup_interval_secs: 300,
+            eviction_policy: crate::storage::EvictionPolicy::LRU,
 
-            cold_cache_capacity_mb: 64,
+            cold_cache_capacity_mb: 128,
             cold_flush_interval_ms: Some(100),
             cold_mode: ColdStoreMode::HighThroughput,
 
@@ -490,12 +552,13 @@ impl Default for AuroraConfig {
 
             enable_write_buffering: true,
             write_buffer_size: 1000,
-            write_buffer_flush_interval_ms: 10,
+            write_buffer_flush_interval_ms: 100,
 
             // Use WAL mode by default for good balance of performance and durability
             durability_mode: DurabilityMode::WAL,
             enable_wal: true,
-            checkpoint_interval_ms: 100, // Checkpoint every 100ms
+            checkpoint_interval_ms: 5000, // Checkpoint every 100ms
+            audit_log_path: None,         // Disabled by default
         }
     }
 }

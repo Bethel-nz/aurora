@@ -192,55 +192,53 @@ impl EventFilter {
             EventFilter::Gte(field, val) => event.get_field(field).map_or(false, |v| v >= val),
             EventFilter::Lt(field, val) => event.get_field(field).map_or(false, |v| v < val),
             EventFilter::Lte(field, val) => event.get_field(field).map_or(false, |v| v <= val),
-            EventFilter::Ne(field, val) => event.get_field(field).map_or(true, |v| v != val), // Missing field != value is true usually? Or separate IsNotNull? Let's say missing != value is true unless value is Null.
+            EventFilter::Ne(field, val) => event.get_field(field).map_or(false, |v| v != val),
             EventFilter::In(field, val) => {
-                 if let Some(field_val) = event.get_field(field) {
-                     if let Value::Array(arr) = val {
-                         arr.contains(field_val)
-                     } else {
-                         false
-                     }
-                 } else {
-                     false
-                 }
-            },
+                if let Some(field_val) = event.get_field(field) {
+                    if let Value::Array(arr) = val {
+                        arr.contains(field_val)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
             EventFilter::NotIn(field, val) => {
-                 if let Some(field_val) = event.get_field(field) {
-                     if let Value::Array(arr) = val {
-                         !arr.contains(field_val)
-                     } else {
-                         true
-                     }
-                 } else {
-                     true
-                 }
-            },
+                if let Some(field_val) = event.get_field(field) {
+                    if let Value::Array(arr) = val {
+                        !arr.contains(field_val)
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
+            }
             EventFilter::Contains(field, val) => {
-                event.get_field(field).map_or(false, |v| {
-                    match (v, val) {
-                        (Value::String(s), Value::String(sub)) => s.contains(sub),
-                        _ => false,
-                    }
+                event.get_field(field).map_or(false, |v| match (v, val) {
+                    (Value::String(s), Value::String(sub)) => s.contains(sub),
+                    _ => false,
                 })
-            },
+            }
             EventFilter::StartsWith(field, val) => {
-                event.get_field(field).map_or(false, |v| {
-                    match (v, val) {
-                        (Value::String(s), Value::String(sub)) => s.starts_with(sub),
-                        _ => false,
-                    }
+                event.get_field(field).map_or(false, |v| match (v, val) {
+                    (Value::String(s), Value::String(sub)) => s.starts_with(sub),
+                    _ => false,
                 })
-            },
+            }
             EventFilter::EndsWith(field, val) => {
-                 event.get_field(field).map_or(false, |v| {
-                    match (v, val) {
-                        (Value::String(s), Value::String(sub)) => s.ends_with(sub),
-                        _ => false,
-                    }
+                event.get_field(field).map_or(false, |v| match (v, val) {
+                    (Value::String(s), Value::String(sub)) => s.ends_with(sub),
+                    _ => false,
                 })
-            },
-            EventFilter::IsNull(field) => event.get_field(field).map_or(true, |v| matches!(v, Value::Null)),
-            EventFilter::IsNotNull(field) => event.get_field(field).map_or(false, |v| !matches!(v, Value::Null)),
+            }
+            EventFilter::IsNull(field) => event
+                .get_field(field)
+                .map_or(true, |v| matches!(v, Value::Null)),
+            EventFilter::IsNotNull(field) => event
+                .get_field(field)
+                .map_or(false, |v| !matches!(v, Value::Null)),
         }
     }
 }

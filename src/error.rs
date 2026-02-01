@@ -20,6 +20,12 @@ pub enum ErrorCode {
     InvalidDefinition,
     QueryError,
     SchemaError,
+    TypeError,
+    UndefinedVariable,
+    ValidationError,
+    SecurityError,
+    Timeout,
+    FilterParseError,
 }
 
 #[derive(Debug)]
@@ -27,6 +33,8 @@ pub struct AqlError {
     pub code: ErrorCode,
     pub message: String,
     pub source: Option<Report>,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
 }
 
 impl AqlError {
@@ -35,7 +43,15 @@ impl AqlError {
             code,
             message: message.into(),
             source: None,
+            line: None,
+            column: None,
         }
+    }
+
+    pub fn with_location(mut self, line: usize, column: usize) -> Self {
+        self.line = Some(line);
+        self.column = Some(column);
+        self
     }
 
     pub fn from_error<E>(code: ErrorCode, message: impl Into<String>, err: E) -> Self
@@ -46,6 +62,8 @@ impl AqlError {
             code,
             message: message.into(),
             source: Some(err.into()),
+            line: None,
+            column: None,
         }
     }
 
@@ -61,7 +79,15 @@ impl AqlError {
 
 impl fmt::Display for AqlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{:?}] {}", self.code, self.message)
+        if let (Some(line), Some(col)) = (self.line, self.column) {
+            write!(
+                f,
+                "[{:?}] {} (line {}, col {})",
+                self.code, self.message, line, col
+            )
+        } else {
+            write!(f, "[{:?}] {}", self.code, self.message)
+        }
     }
 }
 

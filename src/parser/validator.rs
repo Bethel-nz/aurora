@@ -6,8 +6,8 @@
 //! - Filter operator validation
 //! - Collection and field existence checks
 
-use super::ast::{self, Document, Field, Filter, Mutation, Query, Subscription, Value};
-use crate::types::{Collection, FieldType};
+use super::ast::{self, Document, Field, Filter, Mutation, Query, Selection, Subscription, Value};
+use crate::types::{Collection, FieldType, ScalarType};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -18,6 +18,8 @@ pub enum ErrorCode {
     UnknownCollection,
     /// Referenced field does not exist in collection
     UnknownField,
+    /// Explicitly invalid input (e.g. null where not allowed)
+    InvalidInput,
     /// Value type doesn't match field type
     TypeMismatch,
     /// Required variable not provided
@@ -199,8 +201,12 @@ fn validate_query<S: SchemaProvider>(query: &Query, ctx: &mut ValidationContext<
     validate_variable_definitions(&query.variable_definitions, ctx);
 
     // Validate selection set
-    for field in &query.selection_set {
-        validate_field(field, ctx);
+    for selection in &query.selection_set {
+        if let Selection::Field(field) = selection {
+            validate_field(field, ctx);
+        } else if let Selection::InlineFragment(inline) = selection {
+            validate_inline_fragment(inline, ctx);
+        }
     }
 
     if query.name.is_some() {
@@ -229,6 +235,27 @@ fn validate_mutation<S: SchemaProvider>(mutation: &Mutation, ctx: &mut Validatio
     }
 }
 
+/// Validate an inline fragment
+fn validate_inline_fragment<S: SchemaProvider>(
+    inline: &ast::InlineFragment,
+    ctx: &mut ValidationContext<'_, S>,
+) {
+    // Check if type condition refers to a valid collection
+    if !ctx.schema.collection_exists(&inline.type_condition) {
+        ctx.add_error(
+            ErrorCode::UnknownCollection,
+            format!(
+                "Unknown collection '{}' in inline fragment",
+                inline.type_condition
+            ),
+        );
+        return;
+    }
+
+    // Validate inner selection set using the type condition as context
+    validate_selection_set(&inline.selection_set, &inline.type_condition, ctx);
+}
+
 /// Validate a subscription operation
 fn validate_subscription<S: SchemaProvider>(
     sub: &Subscription,
@@ -242,8 +269,10 @@ fn validate_subscription<S: SchemaProvider>(
     validate_variable_definitions(&sub.variable_definitions, ctx);
 
     // Validate selection set
-    for field in &sub.selection_set {
-        validate_field(field, ctx);
+    for selection in &sub.selection_set {
+        if let Selection::Field(field) = selection {
+            validate_field(field, ctx);
+        }
     }
 
     if sub.name.is_some() {
@@ -291,7 +320,7 @@ fn validate_field<S: SchemaProvider>(field: &Field, ctx: &mut ValidationContext<
         } else {
             // Validate nested fields against collection schema
             if let Some(collection) = ctx.schema.get_collection(collection_name) {
-                validate_selection_set(&field.selection_set, collection, ctx);
+                validate_selection_set(&field.selection_set, &collection.name, ctx);
             }
         }
 
@@ -312,36 +341,47 @@ fn validate_field<S: SchemaProvider>(field: &Field, ctx: &mut ValidationContext<
 
 /// Validate selection set against collection schema
 fn validate_selection_set<S: SchemaProvider>(
-    fields: &[Field],
-    collection: &Collection,
+    selections: &[Selection],
+    collection_name: &str,
     ctx: &mut ValidationContext<'_, S>,
 ) {
     let mut aliases_seen: HashMap<String, bool> = HashMap::new();
 
-    for field in fields {
-        let display_name = field.alias.as_ref().unwrap_or(&field.name);
+    for selection in selections {
+        // Only validate Fields for now, fragments skipped
+        if let Selection::Field(field) = selection {
+            let display_name = field.alias.as_ref().unwrap_or(&field.name);
 
-        // Check for duplicate aliases
-        if aliases_seen.contains_key(display_name) {
-            ctx.add_error(
-                ErrorCode::DuplicateAlias,
-                format!("Duplicate field/alias '{}' in selection", display_name),
-            );
-        }
-        aliases_seen.insert(display_name.clone(), true);
-
-        // Check if field exists in collection (skip special fields)
-        let field_name = &field.name;
-        if !field_name.starts_with("__") && field_name != "id" {
-            if !collection.fields.contains_key(field_name) {
+            // Check for duplicate aliases
+            if aliases_seen.contains_key(display_name) {
                 ctx.add_error(
-                    ErrorCode::UnknownField,
-                    format!(
-                        "Field '{}' does not exist in collection '{}'",
-                        field_name, collection.name
-                    ),
+                    ErrorCode::DuplicateAlias,
+                    format!("Duplicate field/alias '{}' in selection", display_name),
                 );
             }
+            aliases_seen.insert(display_name.clone(), true);
+
+            // Check if field exists in collection schema
+            // We need to look up the collection definition from the schema provider
+            if let Some(collection) = ctx.schema.get_collection(collection_name) {
+                let field_name = &field.name;
+                if !field_name.starts_with("__") && field_name != "id" {
+                    if !collection.fields.contains_key(field_name) {
+                        ctx.add_error(
+                            ErrorCode::UnknownField,
+                            format!(
+                                "Field '{}' does not exist in collection '{}'",
+                                field_name, collection.name
+                            ),
+                        );
+                    }
+                }
+
+                // Recursively validate nested selection
+                validate_field(field, ctx);
+            }
+        } else if let Selection::InlineFragment(inline) = selection {
+            validate_inline_fragment(inline, ctx);
         }
     }
 }
@@ -352,18 +392,45 @@ fn validate_mutation_operation<S: SchemaProvider>(
     ctx: &mut ValidationContext<'_, S>,
 ) {
     match &op.operation {
-        ast::MutationOp::Insert { collection, .. }
-        | ast::MutationOp::Update { collection, .. }
-        | ast::MutationOp::Upsert { collection, .. }
-        | ast::MutationOp::Delete { collection, .. } => {
-            if !ctx.schema.collection_exists(collection) {
+        ast::MutationOp::Insert { collection, data } => {
+            if let Some(col_def) = ctx.schema.get_collection(collection) {
+                validate_object_against_schema(data, col_def, ctx);
+            } else {
                 ctx.add_error(
                     ErrorCode::UnknownCollection,
                     format!("Collection '{}' does not exist", collection),
                 );
             }
         }
-        ast::MutationOp::InsertMany { collection, .. } => {
+        ast::MutationOp::InsertMany { collection, data } => {
+            if let Some(col_def) = ctx.schema.get_collection(collection) {
+                for item in data {
+                    validate_object_against_schema(item, col_def, ctx);
+                }
+            } else {
+                ctx.add_error(
+                    ErrorCode::UnknownCollection,
+                    format!("Collection '{}' does not exist", collection),
+                );
+            }
+        }
+        ast::MutationOp::Update {
+            collection, data, ..
+        }
+        | ast::MutationOp::Upsert {
+            collection, data, ..
+        } => {
+            if let Some(col_def) = ctx.schema.get_collection(collection) {
+                // Validate partial object for updates (skipping required checks)
+                validate_partial_object(data, col_def, ctx);
+            } else {
+                ctx.add_error(
+                    ErrorCode::UnknownCollection,
+                    format!("Collection '{}' does not exist", collection),
+                );
+            }
+        }
+        ast::MutationOp::Delete { collection, .. } => {
             if !ctx.schema.collection_exists(collection) {
                 ctx.add_error(
                     ErrorCode::UnknownCollection,
@@ -381,6 +448,187 @@ fn validate_mutation_operation<S: SchemaProvider>(
                 ctx.pop_path();
             }
         }
+    }
+}
+
+/// Validate an object value against a collection schema
+fn validate_object_against_schema<S: SchemaProvider>(
+    value: &Value,
+    collection: &Collection,
+    ctx: &mut ValidationContext<'_, S>,
+) {
+    match value {
+        Value::Object(map) => {
+            // 1. Check provided fields validity
+            for (key, val) in map {
+                if let Some(field_def) = collection.fields.get(key) {
+                    // Check if null is allowed
+                    if matches!(val, Value::Null) && !field_def.nullable {
+                        ctx.add_error(
+                            ErrorCode::InvalidInput,
+                            format!("Field '{}' cannot be null", key),
+                        );
+                    } else if !matches!(val, Value::Null)
+                        && !validate_value_against_type(val, &field_def.field_type)
+                    {
+                        ctx.add_error(
+                            ErrorCode::TypeMismatch,
+                            format!(
+                                "Type mismatch for field '{}': expected {:?}, got {:?}",
+                                key,
+                                field_def.field_type,
+                                value_type_name(val)
+                            ),
+                        );
+                    }
+                } else if key != "id" {
+                    ctx.add_error(
+                        ErrorCode::UnknownField,
+                        format!(
+                            "Field '{}' not defined in collection '{}'",
+                            key, collection.name
+                        ),
+                    );
+                }
+            }
+
+            // 2. Check for missing required fields
+            for (name, def) in &collection.fields {
+                if !def.nullable && !map.contains_key(name) {
+                    ctx.add_error(
+                        ErrorCode::InvalidInput,
+                        format!("Missing required field '{}'", name),
+                    );
+                }
+            }
+        }
+        _ => {
+            ctx.add_error(
+                ErrorCode::TypeMismatch,
+                format!(
+                    "Expected object for collection '{}', got {:?}",
+                    collection.name,
+                    value_type_name(value)
+                ),
+            );
+        }
+    }
+}
+
+/// Validate a partial object (field subset) against a collection schema
+/// Used for Update operations where missing required fields are allowed
+fn validate_partial_object<S: SchemaProvider>(
+    value: &Value,
+    collection: &Collection,
+    ctx: &mut ValidationContext<'_, S>,
+) {
+    match value {
+        Value::Object(map) => {
+            // Check provided fields validity
+            for (key, val) in map {
+                if let Some(field_def) = collection.fields.get(key) {
+                    // Check if null is allowed
+                    if matches!(val, Value::Null) && !field_def.nullable {
+                        ctx.add_error(
+                            ErrorCode::InvalidInput,
+                            format!("Field '{}' cannot be null", key),
+                        );
+                    } else if !matches!(val, Value::Null)
+                        && !validate_value_against_type(val, &field_def.field_type)
+                    {
+                        ctx.add_error(
+                            ErrorCode::TypeMismatch,
+                            format!(
+                                "Type mismatch for field '{}': expected {:?}, got {:?}",
+                                key,
+                                field_def.field_type,
+                                value_type_name(val)
+                            ),
+                        );
+                    }
+                } else if key != "id" {
+                    ctx.add_error(
+                        ErrorCode::UnknownField,
+                        format!(
+                            "Field '{}' not defined in collection '{}'",
+                            key, collection.name
+                        ),
+                    );
+                }
+            }
+        }
+        _ => {
+            ctx.add_error(
+                ErrorCode::TypeMismatch,
+                format!(
+                    "Expected object for collection '{}', got {:?}",
+                    collection.name,
+                    value_type_name(value)
+                ),
+            );
+        }
+    }
+}
+
+/// Recursively validate value against type
+fn validate_value_against_type(value: &Value, expected: &FieldType) -> bool {
+    use crate::types::ScalarType;
+    match (expected, value) {
+        // Handle Scalar Types
+        (FieldType::Scalar(ScalarType::Any), _) => true,
+        (_, Value::Null) => true,
+        (_, Value::Variable(_)) => true,
+
+        (FieldType::Scalar(ScalarType::String), Value::String(_)) => true,
+        (FieldType::Scalar(ScalarType::Int), Value::Int(_)) => true,
+        (FieldType::Scalar(ScalarType::Float), Value::Float(_)) => true,
+        (FieldType::Scalar(ScalarType::Float), Value::Int(_)) => true,
+        (FieldType::Scalar(ScalarType::Bool), Value::Boolean(_)) => true,
+        (FieldType::Scalar(ScalarType::Uuid), Value::String(_)) => true,
+
+        // Handle Array Types
+        (FieldType::Array(scalar_inner), Value::Array(items)) => {
+            // Check each item matches the scalar inner type
+            let inner_field_type = FieldType::Scalar(scalar_inner.clone());
+            items
+                .iter()
+                .all(|item| validate_value_against_type(item, &inner_field_type))
+        }
+
+        // Handle Objects
+        (FieldType::Object, Value::Object(_)) => true,
+        // Handle Nested Objects (deep validation)
+        (FieldType::Nested(schema), Value::Object(map)) => {
+            // 1. Check all provided fields exist in schema and match type
+            for (key, val) in map {
+                if let Some(def) = schema.get(key) {
+                    if matches!(val, Value::Null) {
+                        if !def.nullable {
+                            return false; // Null not allowed
+                        }
+                    } else if !validate_value_against_type(val, &def.field_type) {
+                        return false; // Type mismatch in nested field
+                    }
+                } else {
+                    return false; // Unknown field in nested object
+                }
+            }
+            // 2. Check all required fields are provided
+            for (key, def) in schema.iter() {
+                if !def.nullable && !map.contains_key(key) {
+                    return false; // Missing required nested field
+                }
+            }
+            true
+        }
+        (FieldType::Nested(_), _) => false, // Not an object
+
+        // Handle ScalarType::Object (e.g. inside Array<Object>)
+        (FieldType::Scalar(ScalarType::Object), Value::Object(_)) => true,
+        // Handle ScalarType::Array (e.g. inside Array<Array>)
+        (FieldType::Scalar(ScalarType::Array), Value::Array(_)) => true,
+
+        _ => false,
     }
 }
 
@@ -496,15 +744,18 @@ fn is_type_compatible(field_type: &FieldType, value: &Value) -> bool {
     match (field_type, value) {
         (_, Value::Null) => true,        // Null is compatible with any type
         (_, Value::Variable(_)) => true, // Variables are resolved later
-        (FieldType::String, Value::String(_)) => true,
-        (FieldType::Int, Value::Int(_)) => true,
-        (FieldType::Float, Value::Float(_)) => true,
-        (FieldType::Float, Value::Int(_)) => true, // Int can be used where Float expected
-        (FieldType::Bool, Value::Boolean(_)) => true,
-        (FieldType::Array, Value::Array(_)) => true,
+        (FieldType::Scalar(ScalarType::String), Value::String(_)) => true,
+        (FieldType::Scalar(ScalarType::Int), Value::Int(_)) => true,
+        (FieldType::Scalar(ScalarType::Float), Value::Float(_)) => true,
+        (FieldType::Scalar(ScalarType::Float), Value::Int(_)) => true, // Int can be used where Float expected
+        (FieldType::Scalar(ScalarType::Bool), Value::Boolean(_)) => true,
+        (FieldType::Array(_), Value::Array(_)) => true,
         (FieldType::Object, Value::Object(_)) => true,
-        (FieldType::Any, _) => true, // Any type accepts all values
-        (FieldType::Uuid, Value::String(_)) => true, // UUIDs are often passed as strings
+        (FieldType::Nested(_), Value::Object(_)) => true, // Structural compatibility for filters (deep check might be too expensive/complex here)
+        (FieldType::Scalar(ScalarType::Object), Value::Object(_)) => true, // Support for ScalarType::Object
+        (FieldType::Scalar(ScalarType::Array), Value::Array(_)) => true, // Support for ScalarType::Array
+        (FieldType::Scalar(ScalarType::Any), _) => true, // Any type accepts all values
+        (FieldType::Scalar(ScalarType::Uuid), Value::String(_)) => true, // UUIDs are often passed as strings
         _ => false,
     }
 }
@@ -629,16 +880,26 @@ pub fn resolve_variables(
 }
 
 fn resolve_in_fields(
-    fields: &mut [Field],
+    fields: &mut [Selection],
     variables: &HashMap<String, ast::Value>,
 ) -> Result<(), ValidationError> {
-    for field in fields {
-        // Resolve variables in arguments
-        for arg in &mut field.arguments {
-            resolve_in_value(&mut arg.value, variables)?;
+    for selection in fields {
+        match selection {
+            Selection::Field(field) => {
+                // Resolve variables in arguments
+                for arg in &mut field.arguments {
+                    resolve_in_value(&mut arg.value, variables)?;
+                }
+                // Recursively resolve in nested selection
+                resolve_in_fields(&mut field.selection_set, variables)?;
+            }
+            Selection::InlineFragment(inline) => {
+                resolve_in_fields(&mut inline.selection_set, variables)?;
+            }
+            Selection::FragmentSpread(_) => {
+                // Nothing to resolve in fragment spread itself (name)
+            }
         }
-        // Recursively resolve in nested selection
-        resolve_in_fields(&mut field.selection_set, variables)?;
     }
     Ok(())
 }
@@ -716,6 +977,7 @@ mod tests {
                 field_type: FieldType::String,
                 unique: false,
                 indexed: false,
+                nullable: false,
             },
         );
         users_fields.insert(
@@ -724,6 +986,7 @@ mod tests {
                 field_type: FieldType::String,
                 unique: true,
                 indexed: true,
+                nullable: false,
             },
         );
         users_fields.insert(
@@ -732,6 +995,7 @@ mod tests {
                 field_type: FieldType::Int,
                 unique: false,
                 indexed: false,
+                nullable: false,
             },
         );
         users_fields.insert(
@@ -740,6 +1004,7 @@ mod tests {
                 field_type: FieldType::Bool,
                 unique: false,
                 indexed: false,
+                nullable: false,
             },
         );
 
@@ -759,19 +1024,19 @@ mod tests {
                 name: None,
                 variable_definitions: vec![],
                 directives: vec![],
-                selection_set: vec![Field {
+                selection_set: vec![Selection::Field(Field {
                     alias: None,
                     name: "nonexistent".to_string(),
                     arguments: vec![],
                     directives: vec![],
-                    selection_set: vec![Field {
+                    selection_set: vec![Selection::Field(Field {
                         alias: None,
                         name: "id".to_string(),
                         arguments: vec![],
                         directives: vec![],
                         selection_set: vec![],
-                    }],
-                }],
+                    })],
+                })],
                 variables_values: HashMap::new(),
             })],
         };
@@ -794,19 +1059,19 @@ mod tests {
                 name: None,
                 variable_definitions: vec![],
                 directives: vec![],
-                selection_set: vec![Field {
+                selection_set: vec![Selection::Field(Field {
                     alias: None,
                     name: "users".to_string(),
                     arguments: vec![],
                     directives: vec![],
-                    selection_set: vec![Field {
+                    selection_set: vec![Selection::Field(Field {
                         alias: None,
                         name: "nonexistent_field".to_string(),
                         arguments: vec![],
                         directives: vec![],
                         selection_set: vec![],
-                    }],
-                }],
+                    })],
+                })],
                 variables_values: HashMap::new(),
             })],
         };
@@ -857,35 +1122,35 @@ mod tests {
                 name: Some("GetUsers".to_string()),
                 variable_definitions: vec![],
                 directives: vec![],
-                selection_set: vec![Field {
+                selection_set: vec![Selection::Field(Field {
                     alias: None,
                     name: "users".to_string(),
                     arguments: vec![],
                     directives: vec![],
                     selection_set: vec![
-                        Field {
+                        Selection::Field(Field {
                             alias: None,
                             name: "id".to_string(),
                             arguments: vec![],
                             directives: vec![],
                             selection_set: vec![],
-                        },
-                        Field {
+                        }),
+                        Selection::Field(Field {
                             alias: None,
                             name: "name".to_string(),
                             arguments: vec![],
                             directives: vec![],
                             selection_set: vec![],
-                        },
-                        Field {
+                        }),
+                        Selection::Field(Field {
                             alias: None,
                             name: "email".to_string(),
                             arguments: vec![],
                             directives: vec![],
                             selection_set: vec![],
-                        },
+                        }),
                     ],
-                }],
+                })],
                 variables_values: HashMap::new(),
             })],
         };
@@ -933,7 +1198,7 @@ mod tests {
                 name: None,
                 variable_definitions: vec![],
                 directives: vec![],
-                selection_set: vec![Field {
+                selection_set: vec![Selection::Field(Field {
                     alias: None,
                     name: "users".to_string(),
                     arguments: vec![ast::Argument {
@@ -942,7 +1207,7 @@ mod tests {
                     }],
                     directives: vec![],
                     selection_set: vec![],
-                }],
+                })],
                 variables_values: HashMap::new(),
             })],
         };
@@ -955,8 +1220,12 @@ mod tests {
 
         // Check that variable was resolved
         if let ast::Operation::Query(query) = &doc.operations[0] {
-            let arg = &query.selection_set[0].arguments[0];
-            assert!(matches!(arg.value, Value::Int(10)));
+            if let Selection::Field(user_field) = &query.selection_set[0] {
+                let arg = &user_field.arguments[0];
+                assert!(matches!(arg.value, Value::Int(10)));
+            } else {
+                panic!("Expected Selection::Field");
+            }
         } else {
             panic!("Expected Query operation");
         }

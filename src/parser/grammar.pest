@@ -317,7 +317,6 @@ filter_operator = {
     matches_operator |
     is_null_operator |
     is_not_null_operator |
-    is_not_null_operator |
     increment_operator |
     decrement_operator |
     push_operator |
@@ -572,10 +571,7 @@ directive_name = {
 
 // SPECIAL QUERIES
 
-// Aggregation
-aggregate_selection = {
-    "aggregate" ~ "{" ~ aggregate_field_list ~ "}"
-}
+
 
 aggregate_field_list = {
     aggregate_field ~ (","? ~ aggregate_field)*
@@ -928,13 +924,7 @@ literal = {
 
 // SPECIAL TOKENS
 
-// Special field names
-special_field = @{
-    ("nodes" | "edges" | "pageInfo" | "aggregate" | "groupBy" |
-    "affected" | "deletedIds" | "operation" | "jobId" | "jobIds" |
-    "totalCount" | "score" | "__schema" | "__versions" | "__all__") ~
-    !(ASCII_ALPHANUMERIC | "_")
-}
+
 
 // Reserved keywords
 keyword = @{
@@ -955,7 +945,4 @@ keyword = @{
     !(ASCII_ALPHANUMERIC | "_")
 }
 
-// Identifier that avoids keywords (for validation)
-identifier_not_keyword = @{
-    !keyword ~ identifier
-}
+

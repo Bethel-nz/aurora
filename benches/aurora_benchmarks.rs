@@ -2,7 +2,7 @@ use aurora_db::computed::{ComputedExpression, ComputedFields}; // Imports for co
 use aurora_db::error::ErrorCode;
 use aurora_db::{Aurora, Document, Result};
 use aurora_db::{FieldType, Value};
-use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -22,6 +22,7 @@ fn setup() -> Result<(Aurora, TempDir)> {
     config.db_path = db_path;
     config.enable_write_buffering = false; // Synchronous writes for accurate benchmarking
     config.enable_wal = false; // Disable WAL for pure performance measurement
+    config.auto_compact = false; // Disable background compaction (requires runtime)
 
     let db = Aurora::with_config(config)?;
     Ok((db, temp_dir))
@@ -33,11 +34,24 @@ fn bench_basic_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("basic_operations");
     group.measurement_time(Duration::from_secs(5));
 
+    // Create a collection for testing
+    rt.block_on(async {
+        db.new_collection(
+            "bench",
+            vec![
+                ("id", FieldType::String, true),
+                ("value", FieldType::String, false),
+            ],
+        )
+        .await
+        .unwrap();
+    });
+
     group.bench_function("single_put", |b| {
         b.iter(|| {
             rt.block_on(async {
                 db.put(
-                    black_box("test_key".to_string()),
+                    black_box("bench:test_key".to_string()),
                     black_box(b"test_value".to_vec()),
                     None,
                 )
@@ -48,7 +62,7 @@ fn bench_basic_operations(c: &mut Criterion) {
     });
 
     group.bench_function("single_get", |b| {
-        b.iter(|| db.get(black_box("test_key")).unwrap())
+        b.iter(|| db.get(black_box("bench:test_key")).unwrap())
     });
 
     group.bench_function("bulk_put_100", |b| {
@@ -56,7 +70,7 @@ fn bench_basic_operations(c: &mut Criterion) {
             rt.block_on(async {
                 for i in 0..BULK_SIZE {
                     db.put(
-                        format!("bulk_key_{}", i),
+                        format!("bench:bulk_key_{}", i),
                         format!("bulk_value_{}", i).into_bytes(),
                         None,
                     )
@@ -70,7 +84,7 @@ fn bench_basic_operations(c: &mut Criterion) {
     group.bench_function("bulk_get_100", |b| {
         b.iter(|| {
             for i in 0..BULK_SIZE {
-                db.get(&format!("bulk_key_{}", i)).unwrap();
+                db.get(&format!("bench:bulk_key_{}", i)).unwrap();
             }
         })
     });
@@ -79,7 +93,7 @@ fn bench_basic_operations(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 for i in 0..BULK_SIZE {
-                    let key = format!("mixed_key_{}", i);
+                    let key = format!("bench:mixed_key_{}", i);
                     db.put(key.clone(), format!("mixed_value_{}", i).into_bytes(), None)
                         .await
                         .unwrap();
@@ -163,12 +177,25 @@ fn bench_blob_operations(c: &mut Criterion) {
     let large_blob = vec![0u8; 10 * 1024 * 1024];
     let huge_blob = vec![0u8; 51 * 1024 * 1024];
 
+    // Create blobs collection
+    rt.block_on(async {
+        db.new_collection(
+            "blobs",
+            vec![
+                ("id", FieldType::String, true),
+                ("data", FieldType::Any, false),
+            ],
+        )
+        .await
+        .unwrap();
+    });
+
     group.bench_function("bulk_store_small_blobs_100", |b| {
         b.iter(|| {
             rt.block_on(async {
                 for _ in 0..BULK_SIZE {
                     db.put(
-                        format!("small_blob:{}", Uuid::new_v4()),
+                        format!("blobs:small_blob:{}", Uuid::new_v4()),
                         small_blob.clone(),
                         None,
                     )
@@ -182,9 +209,9 @@ fn bench_blob_operations(c: &mut Criterion) {
     group.bench_function("bulk_store_medium_blobs_10", |b| {
         b.iter(|| {
             rt.block_on(async {
-                for _ in 0..5 {
+                for _ in 0..10 {
                     db.put(
-                        format!("medium_blob:{}", Uuid::new_v4()),
+                        format!("blobs:medium_blob:{}", Uuid::new_v4()),
                         medium_blob.clone(),
                         None,
                     )
@@ -199,7 +226,7 @@ fn bench_blob_operations(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 db.put(
-                    format!("large_blob:{}", Uuid::new_v4()),
+                    format!("blobs:large_blob:{}", Uuid::new_v4()),
                     large_blob.clone(),
                     None,
                 )
@@ -213,7 +240,7 @@ fn bench_blob_operations(c: &mut Criterion) {
         b.iter(|| {
             let result = rt.block_on(async {
                 db.put(
-                    format!("huge_blob:{}", Uuid::new_v4()),
+                    format!("blobs:huge_blob:{}", Uuid::new_v4()),
                     huge_blob.clone(),
                     None,
                 )
