@@ -57,6 +57,10 @@ pub use types::{
     Value,
 };
 
+pub use crate::parser::validator::{
+    ErrorCode, InMemorySchema, SchemaProvider, ValidationError, ValidationResult, validate_document,
+};
+
 // Re-export commonly used storage types
 pub use storage::{EvictionPolicy, HotStore};
 
