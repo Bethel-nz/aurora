@@ -26,8 +26,15 @@ pub fn parse(input: &str) -> Result<Document> {
             pest::error::LineColLocation::Pos((l, c)) => (l, c),
             pest::error::LineColLocation::Span((l, c), _) => (l, c),
         };
-        AqlError::new(ErrorCode::ProtocolError, format!("Parse error: {}", e))
-            .with_location(line, col)
+
+        // Log full error details internally for debugging
+        #[cfg(debug_assertions)]
+        eprintln!("Parse error details: {}", e);
+
+        // Return sanitized error message to user (hide grammar internals)
+        let user_message = format!("Syntax error at line {}, column {}", line, col);
+
+        AqlError::new(ErrorCode::ProtocolError, user_message).with_location(line, col)
     })?;
 
     let mut operations = Vec::new();
@@ -429,9 +436,13 @@ fn parse_data_transform(pair: pest::iterators::Pair<Rule>) -> Result<DataTransfo
             Rule::expression => expression = inner.as_str().to_string(),
             Rule::filter_object => {
                 // Parse filter_object to Value then convert to Filter
-                if let Ok(filter_value) = parse_filter_object_to_value(inner) {
-                    filter = value_to_filter(filter_value).ok();
-                }
+                let filter_value = parse_filter_object_to_value(inner)?;
+                filter = Some(value_to_filter(filter_value).map_err(|e| {
+                    AqlError::new(
+                        ErrorCode::FilterParseError,
+                        format!("Failed to parse filter in data transform: {}", e),
+                    )
+                })?);
             }
             _ => {}
         }

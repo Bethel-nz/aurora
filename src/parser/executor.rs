@@ -111,14 +111,55 @@ fn resolve_boolean_arg(
             if let Some(val) = variables.get(name) {
                 match val {
                     ast::Value::Boolean(b) => Ok(*b),
-                    _ => Ok(false), // Default to false if var not boolean or found? Or Error?
+                    _ => Err(AqlError::new(
+                        ErrorCode::TypeError,
+                        format!("Variable '{}' is not a boolean, got {:?}", name, val),
+                    )),
                 }
             } else {
-                Ok(false)
+                Err(AqlError::new(
+                    ErrorCode::UndefinedVariable,
+                    format!("Variable '{}' is not defined", name),
+                ))
             }
         }
-        _ => Ok(false),
+        _ => Err(AqlError::new(
+            ErrorCode::TypeError,
+            format!("Expected boolean value, got {:?}", value),
+        )),
     }
+}
+
+/// Validate that all required variables are provided
+fn validate_required_variables(
+    variable_definitions: &[ast::VariableDefinition],
+    provided_variables: &HashMap<String, ast::Value>,
+) -> Result<()> {
+    for var_def in variable_definitions {
+        // Check if variable is required (has ! in type annotation)
+        if var_def.var_type.is_required {
+            // Check if variable is provided
+            if !provided_variables.contains_key(&var_def.name) {
+                // Check if there's a default value
+                if var_def.default_value.is_none() {
+                    return Err(AqlError::new(
+                        ErrorCode::UndefinedVariable,
+                        format!(
+                            "Required variable '{}' (type: {}{}) is not provided",
+                            var_def.name,
+                            var_def.var_type.name,
+                            if var_def.var_type.is_required {
+                                "!"
+                            } else {
+                                ""
+                            }
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Result of executing an AQL operation
@@ -237,49 +278,41 @@ pub async fn execute_document(
         ));
     }
 
-    if doc.operations.len() == 1 {
-        // Collect fragments from the document for reference
-        let fragments: HashMap<String, FragmentDef> = doc
-            .operations
-            .iter()
-            .filter_map(|op| {
-                if let Operation::FragmentDefinition(frag) = op {
-                    Some((frag.name.clone(), frag.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
+    // Collect fragments from the document for reference
+    let fragments: HashMap<String, FragmentDef> = doc
+        .operations
+        .iter()
+        .filter_map(|op| {
+            if let Operation::FragmentDefinition(frag) = op {
+                Some((frag.name.clone(), frag.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
 
-        execute_operation(db, &doc.operations[0], options, &fragments).await
+    // Execute only non-fragment operations
+    let executable_ops: Vec<&Operation> = doc
+        .operations
+        .iter()
+        .filter(|op| !matches!(op, Operation::FragmentDefinition(_)))
+        .collect();
+
+    if executable_ops.is_empty() {
+        return Err(AqlError::new(
+            ErrorCode::QueryError,
+            "No executable operations in document".to_string(),
+        ));
+    }
+
+    if executable_ops.len() == 1 {
+        execute_operation(db, executable_ops[0], options, &fragments).await
     } else {
-        // Collect fragments global to the doc (simplification: assuming global fragments for batch)
-        let fragments: HashMap<String, FragmentDef> = doc
-            .operations
-            .iter()
-            .filter_map(|op| {
-                if let Operation::FragmentDefinition(frag) = op {
-                    Some((frag.name.clone(), frag.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
         let mut results = Vec::new();
-        for op in &doc.operations {
-            // We can't reuse execute_operation easily because it consumes op and we need to filter fragments first
-            // Actually execute_operation handles it.
-            let result = execute_operation(db, op, options, &fragments).await?;
-            results.push(result);
+        for op in executable_ops {
+            results.push(execute_operation(db, op, options, &fragments).await?);
         }
-
-        // Flatten Batch results if possible or return Batch
-        if results.len() == 1 {
-            Ok(results.remove(0))
-        } else {
-            Ok(ExecutionResult::Batch(results))
-        }
+        Ok(ExecutionResult::Batch(results))
     }
 }
 
@@ -323,6 +356,9 @@ async fn execute_query(
     options: &ExecutionOptions,
     fragments: &HashMap<String, FragmentDef>,
 ) -> Result<ExecutionResult> {
+    // Validate required variables are provided
+    validate_required_variables(&query.variable_definitions, &query.variables_values)?;
+
     // Collect fields (flatten fragments)
     let root_fields = collect_fields(
         &query.selection_set,
@@ -1034,7 +1070,12 @@ pub fn validate_document(doc: &Document, rules: &[ast::ValidationRule]) -> Resul
                 }
                 ast::ValidationConstraint::Pattern(pattern) => {
                     if let Some(Value::String(s)) = field_value {
-                        match regex::Regex::new(pattern) {
+                        // Use RegexBuilder with size limits to prevent ReDoS attacks
+                        match regex::RegexBuilder::new(pattern)
+                            .size_limit(10_000_000) // 10MB compiled regex size limit
+                            .dfa_size_limit(2_000_000) // 2MB DFA size limit
+                            .build()
+                        {
                             Ok(re) => {
                                 if !re.is_match(s) {
                                     errors.push(format!(
@@ -1043,10 +1084,10 @@ pub fn validate_document(doc: &Document, rules: &[ast::ValidationRule]) -> Resul
                                     ));
                                 }
                             }
-                            Err(_) => {
+                            Err(e) => {
                                 errors.push(format!(
-                                    "{}: invalid regex pattern '{}'",
-                                    rule.field, pattern
+                                    "{}: regex pattern '{}' is too complex or invalid: {}",
+                                    rule.field, pattern, e
                                 ));
                             }
                         }
@@ -1213,6 +1254,9 @@ async fn execute_mutation(
     options: &ExecutionOptions,
     fragments: &HashMap<String, FragmentDef>,
 ) -> Result<ExecutionResult> {
+    // Validate required variables are provided
+    validate_required_variables(&mutation.variable_definitions, &mutation.variables_values)?;
+
     let mut results = Vec::new();
     let mut context: ExecutionContext = HashMap::new();
 
@@ -2656,7 +2700,16 @@ fn resolve_value(
             if let Some(v) = variables.get(name) {
                 v.clone()
             } else {
-                // Variable not found - return Null
+                // Variable not found - log warning and return Null
+                // This allows optional variables but provides visibility for debugging
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "Warning: Variable '{}' not found in resolve_value, defaulting to Null",
+                    name
+                );
+
+                // TODO: Consider making this an error in strict mode
+                // For now, returning Null maintains backward compatibility
                 ast::Value::Null
             }
         }

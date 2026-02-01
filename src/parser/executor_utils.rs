@@ -39,12 +39,20 @@ pub fn compile_filter(filter: &ast::Filter) -> Result<CompiledFilter> {
         ast::Filter::EndsWith(f, v) => Ok(CompiledFilter::EndsWith(f.clone(), v.clone())),
         ast::Filter::Matches(f, v) => {
             if let ast::Value::String(pattern) = v {
-                let re = regex::Regex::new(pattern).map_err(|e| {
-                    AqlError::new(
-                        ErrorCode::InvalidInput,
-                        format!("Invalid regex pattern '{}': {}", pattern, e),
-                    )
-                })?;
+                // Use RegexBuilder with size limits to prevent ReDoS attacks
+                let re = regex::RegexBuilder::new(pattern)
+                    .size_limit(10_000_000) // 10MB compiled regex size limit
+                    .dfa_size_limit(2_000_000) // 2MB DFA size limit
+                    .build()
+                    .map_err(|e| {
+                        AqlError::new(
+                            ErrorCode::SecurityError,
+                            format!(
+                                "Regex pattern '{}' is too complex or invalid: {}",
+                                pattern, e
+                            ),
+                        )
+                    })?;
                 Ok(CompiledFilter::Matches(f.clone(), re))
             } else {
                 Err(AqlError::new(
