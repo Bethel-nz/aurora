@@ -1837,6 +1837,7 @@ impl Aurora {
                     field_type,
                     unique,
                     indexed: unique, // Auto-index unique fields
+                    nullable: true,
                 },
             );
         }
@@ -3567,17 +3568,21 @@ impl Aurora {
 
     /// Validate that a JSON value matches the expected field type
     fn validate_field_value(&self, value: &JsonValue, field_type: &FieldType) -> bool {
+        use crate::types::ScalarType;
         match field_type {
-            FieldType::String => value.is_string(),
-            FieldType::Int => value.is_i64() || value.is_u64(),
-            FieldType::Float => value.is_number(),
-            FieldType::Bool => value.is_boolean(),
-            FieldType::Array => value.is_array(),
-            FieldType::Object => value.is_object(),
-            FieldType::Uuid => {
+            FieldType::Scalar(ScalarType::String) => value.is_string(),
+            FieldType::Scalar(ScalarType::Int) => value.is_i64() || value.is_u64(),
+            FieldType::Scalar(ScalarType::Float) => value.is_number(),
+            FieldType::Scalar(ScalarType::Bool) => value.is_boolean(),
+            FieldType::Scalar(ScalarType::Uuid) => {
                 value.is_string() && Uuid::parse_str(value.as_str().unwrap_or("")).is_ok()
             }
-            FieldType::Any => true,
+            FieldType::Scalar(ScalarType::Any) => true,
+
+            FieldType::Array(_) => value.is_array(),
+            FieldType::Object => value.is_object(),
+            // Legacy/Duplicate catches just in case
+            _ => true,
         }
     }
 
