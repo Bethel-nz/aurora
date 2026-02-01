@@ -3066,9 +3066,9 @@ mod tests {
         db.new_collection(
             "users",
             vec![
-                ("name", crate::FieldType::String, false),
-                ("age", crate::FieldType::Int, false),
-                ("active", crate::FieldType::Bool, false),
+                ("name".to_string(), crate::FieldType::String, false),
+                ("age".to_string(), crate::FieldType::Int, false),
+                ("active".to_string(), crate::FieldType::Bool, false),
             ],
         )
         .await
