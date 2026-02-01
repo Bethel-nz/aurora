@@ -20,6 +20,12 @@ pub enum ErrorCode {
     InvalidDefinition,
     QueryError,
     SchemaError,
+    TypeError,
+    UndefinedVariable,
+    ValidationError,
+    SecurityError,
+    Timeout,
+    FilterParseError,
 }
 
 #[derive(Debug)]

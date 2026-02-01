@@ -74,6 +74,7 @@ pub use workers::{Job, JobPriority, JobStatus};
 pub use transaction::{TransactionBuffer, TransactionId};
 
 // Module declarations
+pub mod audit;
 pub mod client;
 pub mod computed;
 pub mod db;

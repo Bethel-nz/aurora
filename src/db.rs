@@ -521,7 +521,8 @@ impl Aurora {
         };
 
         // --- FIX: Initialize Background WAL Writer ---
-        let wal_writer = if enable_wal {
+        // Only enable WAL writer if WAL was successfully initialized
+        let wal_writer = if enable_wal && wal.is_some() {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let wal_clone = wal.clone();
 
@@ -2501,29 +2502,20 @@ impl Aurora {
     /// - **Memory cost**: ~100-200 bytes per document per index
     /// - **Write slowdown**: ~20-30% longer insert/update times
     /// - **Build time**: ~5,000 docs/sec for initial indexing
+    /// Create a new collection with the given schema
     ///
     /// # Arguments
-    /// * `collection` - Name of the collection to index
-    /// * `field` - Name of the field to index
+    /// * `name` - Collection name
+    /// * `fields` - Field definitions as tuples of (name, type, unique)
+    ///   - The boolean indicates whether the field has a **unique constraint**
+    ///   - Unique fields are automatically indexed
+    ///   - Non-unique fields can be indexed separately using `create_index()`
     ///
     /// # Examples
-    ///
-    /// ```
-    /// use aurora_db::Aurora;
-    ///
-    /// let db = Aurora::open("mydb.db")?;
+    /// ```no_run
+    /// # use aurora_db::{Aurora, types::FieldType};
+    /// # async fn example(db: &Aurora) {
     /// db.new_collection("users", vec![
-    ///     ("email", FieldType::String),
-    ///     ("age", FieldType::Int),
-    ///     ("active", FieldType::Bool),
-    /// ])?;
-    ///
-    /// // Index email - frequently queried, high cardinality
-    /// db.create_index("users", "email").await?;
-    ///
-    /// // Now this query is FAST (O(1) instead of O(n))
-    /// let user = db.query("users")
-    ///     .filter(|f| f.eq("email", "alice@example.com"))
     ///     .first_one()
     ///     .await?;
     ///
@@ -3614,6 +3606,7 @@ impl Aurora {
 
             FieldType::Array(_) => value.is_array(),
             FieldType::Object => value.is_object(),
+            FieldType::Nested(_) => value.is_object(), // Nested fields must be objects
             // Legacy/Duplicate catches just in case
             _ => true,
         }
@@ -4985,20 +4978,23 @@ impl Aurora {
         let doc: Document = serde_json::from_slice(&existing)?;
 
         // Append to WAL for durability
-        if let Some(wal_writer) = &self.wal_writer {
-            // Use async writer if available
-            let op = WalOperation::Delete { key: key.clone() };
-            wal_writer.send(op).map_err(|_| {
-                AqlError::new(
-                    ErrorCode::InternalError,
-                    "Failed to send to WAL writer".to_string(),
-                )
-            })?;
-        } else if let Some(wal) = &self.wal {
-            // Fallback to blocking write if async writer not set (should be rare/legacy)
-            wal.write()
-                .map_err(|e| AqlError::new(ErrorCode::InternalError, e.to_string()))?
-                .append(crate::wal::Operation::Delete, &key, None)?;
+        // Write to WAL if enabled and not in None durability mode
+        if self.config.durability_mode != DurabilityMode::None {
+            if let Some(wal_writer) = &self.wal_writer {
+                // Use async writer if available
+                let op = WalOperation::Delete { key: key.clone() };
+                wal_writer.send(op).map_err(|_| {
+                    AqlError::new(
+                        ErrorCode::InternalError,
+                        "Failed to send to WAL writer".to_string(),
+                    )
+                })?;
+            } else if let Some(wal) = &self.wal {
+                // Fallback to blocking write if async writer not set (should be rare/legacy)
+                wal.write()
+                    .map_err(|e| AqlError::new(ErrorCode::InternalError, e.to_string()))?
+                    .append(crate::wal::Operation::Delete, &key, None)?;
+            }
         }
 
         // Delete from storage

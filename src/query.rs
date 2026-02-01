@@ -832,6 +832,29 @@ impl<'a> QueryBuilder<'a> {
     ///     .delete()
     ///     .await?;
     /// ```
+    /// Delete documents matching the query
+    ///
+    /// # Returns
+    /// The number of documents deleted
+    ///
+    /// # Note
+    /// Deletions are not atomic. If an error occurs during deletion,
+    /// some documents may have been deleted while others remain.
+    /// For atomic batch operations, consider using transactions.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use aurora_db::{Aurora, Result};
+    /// # async fn example(db: &Aurora) -> Result<()> {
+    /// // Delete all inactive users
+    /// let deleted = db.query("users")
+    ///     .filter(|f| f.eq("status", "inactive"))
+    ///     .delete()
+    ///     .await?;
+    /// println!("Deleted {} users", deleted);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn delete(self) -> Result<usize> {
         // Store reference to db and collection before consuming self
         let db = self.db;

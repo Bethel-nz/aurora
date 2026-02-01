@@ -71,8 +71,12 @@ impl FieldType {
     pub const Bool: FieldType = FieldType::Scalar(ScalarType::Bool);
     pub const Float: FieldType = FieldType::Scalar(ScalarType::Float);
     pub const Any: FieldType = FieldType::Scalar(ScalarType::Any);
-    pub const Object: FieldType = FieldType::Scalar(ScalarType::Object);
-    pub const Array: FieldType = FieldType::Scalar(ScalarType::Array);
+
+    // Renamed to avoid shadowing the Object and Array enum variants
+    /// Scalar object type (use `FieldType::Object` variant for flat objects without schema)
+    pub const SCALAR_OBJECT: FieldType = FieldType::Scalar(ScalarType::Object);
+    /// Scalar array type (use `FieldType::Array(T)` variant for typed arrays)
+    pub const SCALAR_ARRAY: FieldType = FieldType::Scalar(ScalarType::Array);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -252,7 +256,8 @@ impl PartialOrd for Value {
 
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
+        self.partial_cmp(other)
+            .expect("Value::partial_cmp should always return Some for same-type values")
     }
 }
 
@@ -501,6 +506,9 @@ pub struct AuroraConfig {
     pub durability_mode: DurabilityMode, // Trade-off between performance and data safety
     pub enable_wal: bool,                // Enable write-ahead logging
     pub checkpoint_interval_ms: u64,     // Background checkpoint interval (flush + WAL truncate)
+
+    /// Optional path to audit log file. If None, audit logging is disabled.
+    pub audit_log_path: Option<PathBuf>,
 }
 
 /// Durability mode determines the trade-off between performance and data safety
@@ -529,11 +537,11 @@ impl Default for AuroraConfig {
             db_path: PathBuf::from("aurora.db"),
             create_dirs: true,
 
-            hot_cache_size_mb: 128,
-            hot_cache_cleanup_interval_secs: 30,
-            eviction_policy: crate::storage::EvictionPolicy::Hybrid,
+            hot_cache_size_mb: 64,
+            hot_cache_cleanup_interval_secs: 300,
+            eviction_policy: crate::storage::EvictionPolicy::LRU,
 
-            cold_cache_capacity_mb: 64,
+            cold_cache_capacity_mb: 128,
             cold_flush_interval_ms: Some(100),
             cold_mode: ColdStoreMode::HighThroughput,
 
@@ -544,12 +552,13 @@ impl Default for AuroraConfig {
 
             enable_write_buffering: true,
             write_buffer_size: 1000,
-            write_buffer_flush_interval_ms: 10,
+            write_buffer_flush_interval_ms: 100,
 
             // Use WAL mode by default for good balance of performance and durability
             durability_mode: DurabilityMode::WAL,
             enable_wal: true,
-            checkpoint_interval_ms: 100, // Checkpoint every 100ms
+            checkpoint_interval_ms: 5000, // Checkpoint every 100ms
+            audit_log_path: None,         // Disabled by default
         }
     }
 }
