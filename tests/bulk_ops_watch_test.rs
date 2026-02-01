@@ -108,6 +108,7 @@ async fn test_watch_initial_set_and_debounce() -> Result<()> {
         vec![
             ("level", Value::String("critical".into())),
             ("msg", Value::String("Initial critical".into())),
+            ("val", Value::Int(0)),
         ],
     )
     .await?;
@@ -117,6 +118,7 @@ async fn test_watch_initial_set_and_debounce() -> Result<()> {
         vec![
             ("level", Value::String("info".into())),
             ("msg", Value::String("Just info".into())),
+            ("val", Value::Int(0)),
         ],
     )
     .await?;
