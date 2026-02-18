@@ -6,7 +6,9 @@
 //! - Filter operator validation
 //! - Collection and field existence checks
 
-use super::ast::{self, Document, Field, Filter, Mutation, Query, Selection, Subscription, Value};
+use super::ast::{
+    self, Document, Field, Filter, FragmentDef, Mutation, Query, Selection, Subscription, Value,
+};
 use crate::types::{Collection, FieldType, ScalarType};
 use std::collections::HashMap;
 use std::fmt;
@@ -34,6 +36,8 @@ pub enum ErrorCode {
     InvalidArgument,
     /// Unknown directive
     UnknownDirective,
+    /// Unknown fragment
+    UnknownFragment,
 }
 
 /// Validation error with context
@@ -111,6 +115,7 @@ impl SchemaProvider for InMemorySchema {
 pub struct ValidationContext<'a, S: SchemaProvider> {
     pub schema: &'a S,
     pub variables: HashMap<String, ast::Value>,
+    pub fragments: HashMap<String, &'a FragmentDef>,
     pub errors: Vec<ValidationError>,
     current_path: Vec<String>,
 }
@@ -120,6 +125,7 @@ impl<'a, S: SchemaProvider> ValidationContext<'a, S> {
         Self {
             schema,
             variables: HashMap::new(),
+            fragments: HashMap::new(),
             errors: Vec::new(),
             current_path: Vec::new(),
         }
@@ -173,6 +179,13 @@ pub fn validate_document<S: SchemaProvider>(
 ) -> ValidationResult {
     let mut ctx = ValidationContext::new(schema).with_variables(variables);
 
+    // First pass: Collect fragment definitions
+    for op in &doc.operations {
+        if let ast::Operation::FragmentDefinition(frag) = op {
+            ctx.fragments.insert(frag.name.clone(), frag);
+        }
+    }
+
     for (i, op) in doc.operations.iter().enumerate() {
         ctx.push_path(&format!("operation[{}]", i));
         match op {
@@ -202,10 +215,25 @@ fn validate_query<S: SchemaProvider>(query: &Query, ctx: &mut ValidationContext<
 
     // Validate selection set
     for selection in &query.selection_set {
-        if let Selection::Field(field) = selection {
-            validate_field(field, ctx);
-        } else if let Selection::InlineFragment(inline) = selection {
-            validate_inline_fragment(inline, ctx);
+        match selection {
+            Selection::Field(field) => {
+                validate_field(field, None, ctx);
+            }
+            Selection::InlineFragment(inline) => {
+                validate_inline_fragment(inline, ctx);
+            }
+            Selection::FragmentSpread(fragment_name) => {
+                // Top-level fragment spreads are tricky because we don't know the collection
+                // But Fragment definitions have a type_condition
+                if let Some(fragment) = ctx.fragments.get(fragment_name) {
+                    validate_fragment_spread(fragment_name, &fragment.type_condition, ctx);
+                } else {
+                    ctx.add_error(
+                        ErrorCode::UnknownFragment,
+                        format!("Fragment '{}' is not defined", fragment_name),
+                    );
+                }
+            }
         }
     }
 
@@ -253,7 +281,9 @@ fn validate_inline_fragment<S: SchemaProvider>(
     }
 
     // Validate inner selection set using the type condition as context
-    validate_selection_set(&inline.selection_set, &inline.type_condition, ctx);
+    if let Some(collection) = ctx.schema.get_collection(&inline.type_condition) {
+        validate_selection_set(&inline.selection_set, collection, ctx);
+    }
 }
 
 /// Validate a subscription operation
@@ -270,8 +300,23 @@ fn validate_subscription<S: SchemaProvider>(
 
     // Validate selection set
     for selection in &sub.selection_set {
-        if let Selection::Field(field) = selection {
-            validate_field(field, ctx);
+        match selection {
+            Selection::Field(field) => {
+                validate_field(field, None, ctx);
+            }
+            Selection::InlineFragment(inline) => {
+                validate_inline_fragment(inline, ctx);
+            }
+            Selection::FragmentSpread(fragment_name) => {
+                if let Some(fragment) = ctx.fragments.get(fragment_name) {
+                    validate_fragment_spread(fragment_name, &fragment.type_condition, ctx);
+                } else {
+                    ctx.add_error(
+                        ErrorCode::UnknownFragment,
+                        format!("Fragment '{}' is not defined", fragment_name),
+                    );
+                }
+            }
         }
     }
 
@@ -301,37 +346,73 @@ fn validate_variable_definitions<S: SchemaProvider>(
 }
 
 /// Validate a field selection
-fn validate_field<S: SchemaProvider>(field: &Field, ctx: &mut ValidationContext<'_, S>) {
+///
+/// * `parent_collection` - If Some, this field is within a collection and we check field types.
+///                         If None, this is a top-level field that should be a collection reference.
+fn validate_field<S: SchemaProvider>(
+    field: &Field,
+    parent_collection: Option<&Collection>,
+    ctx: &mut ValidationContext<'_, S>,
+) {
     let field_name = field.alias.as_ref().unwrap_or(&field.name);
     ctx.push_path(field_name);
 
-    // Check for collection reference (top-level field)
     if field.selection_set.is_empty() {
-        // Leaf field - no further validation needed for now
+        // Leaf field - no further validation needed
     } else {
-        // This is a collection query
-        let collection_name = &field.name;
+        // Field has a selection set - determine if it's a collection or nested object
+        match parent_collection {
+            None => {
+                // Top-level field - should be a collection reference
+                let collection_name = &field.name;
+                if !ctx.schema.collection_exists(collection_name) {
+                    ctx.add_error(
+                        ErrorCode::UnknownCollection,
+                        format!("Collection '{}' does not exist", collection_name),
+                    );
+                } else if let Some(collection) = ctx.schema.get_collection(collection_name) {
+                    // Validate nested fields against collection schema
+                    validate_selection_set(&field.selection_set, collection, ctx);
 
-        if !ctx.schema.collection_exists(collection_name) {
-            ctx.add_error(
-                ErrorCode::UnknownCollection,
-                format!("Collection '{}' does not exist", collection_name),
-            );
-        } else {
-            // Validate nested fields against collection schema
-            if let Some(collection) = ctx.schema.get_collection(collection_name) {
-                validate_selection_set(&field.selection_set, &collection.name, ctx);
-            }
-        }
-
-        // Validate filter if present
-        for arg in &field.arguments {
-            if arg.name == "where" || arg.name == "filter" {
-                if let Some(filter) = extract_filter_from_value(&arg.value) {
-                    if let Some(collection) = ctx.schema.get_collection(collection_name) {
-                        validate_filter(&filter, collection, ctx);
+                    // Validate filter if present
+                    for arg in &field.arguments {
+                        if arg.name == "where" || arg.name == "filter" {
+                            if let Some(filter) = extract_filter_from_value(&arg.value) {
+                                validate_filter(&filter, collection, ctx);
+                            }
+                        }
                     }
                 }
+            }
+            Some(collection) => {
+                // Nested field within a collection - check if it's a Nested/Object type
+                if let Some(field_def) = collection.fields.get(&field.name) {
+                    match &field_def.field_type {
+                        FieldType::Nested(nested_schema) => {
+                            // Validate selection set against nested schema
+                            validate_nested_selection_set(&field.selection_set, nested_schema, ctx);
+                        }
+                        FieldType::Object | FieldType::Any => {
+                            // Object/Any type - selection set is valid but we can't validate fields
+                            // (no schema to validate against - schemaless/dynamic data)
+                        }
+                        FieldType::Scalar(ScalarType::Object)
+                        | FieldType::Scalar(ScalarType::Any) => {
+                            // Scalar Object/Any - also allow selection sets without validation
+                        }
+                        _ => {
+                            // Non-object type with selection set - this is an error
+                            ctx.add_error(
+                                ErrorCode::TypeMismatch,
+                                format!(
+                                    "Field '{}' is not an object type but has a selection set",
+                                    field.name
+                                ),
+                            );
+                        }
+                    }
+                }
+                // If field doesn't exist, the error is already reported by validate_selection_set
             }
         }
     }
@@ -342,28 +423,27 @@ fn validate_field<S: SchemaProvider>(field: &Field, ctx: &mut ValidationContext<
 /// Validate selection set against collection schema
 fn validate_selection_set<S: SchemaProvider>(
     selections: &[Selection],
-    collection_name: &str,
+    collection: &Collection,
     ctx: &mut ValidationContext<'_, S>,
 ) {
     let mut aliases_seen: HashMap<String, bool> = HashMap::new();
 
     for selection in selections {
-        // Only validate Fields for now, fragments skipped
-        if let Selection::Field(field) = selection {
-            let display_name = field.alias.as_ref().unwrap_or(&field.name);
+        // Validate based on selection type
+        match selection {
+            Selection::Field(field) => {
+                let display_name = field.alias.as_ref().unwrap_or(&field.name);
 
-            // Check for duplicate aliases
-            if aliases_seen.contains_key(display_name) {
-                ctx.add_error(
-                    ErrorCode::DuplicateAlias,
-                    format!("Duplicate field/alias '{}' in selection", display_name),
-                );
-            }
-            aliases_seen.insert(display_name.clone(), true);
+                // Check for duplicate aliases
+                if aliases_seen.contains_key(display_name) {
+                    ctx.add_error(
+                        ErrorCode::DuplicateAlias,
+                        format!("Duplicate field/alias '{}' in selection", display_name),
+                    );
+                }
+                aliases_seen.insert(display_name.clone(), true);
 
-            // Check if field exists in collection schema
-            // We need to look up the collection definition from the schema provider
-            if let Some(collection) = ctx.schema.get_collection(collection_name) {
+                // Check if field exists in collection schema
                 let field_name = &field.name;
                 if !field_name.starts_with("__") && field_name != "id" {
                     if !collection.fields.contains_key(field_name) {
@@ -377,12 +457,127 @@ fn validate_selection_set<S: SchemaProvider>(
                     }
                 }
 
-                // Recursively validate nested selection
-                validate_field(field, ctx);
+                // Recursively validate nested selection with parent context
+                validate_field(field, Some(collection), ctx);
             }
-        } else if let Selection::InlineFragment(inline) = selection {
-            validate_inline_fragment(inline, ctx);
+            Selection::InlineFragment(inline) => {
+                validate_inline_fragment(inline, ctx);
+            }
+            Selection::FragmentSpread(fragment_name) => {
+                validate_fragment_spread(fragment_name, &collection.name, ctx);
+            }
         }
+    }
+}
+
+/// Validate selection set against a nested object schema
+fn validate_nested_selection_set<S: SchemaProvider>(
+    selections: &[Selection],
+    nested_schema: &HashMap<String, crate::types::FieldDefinition>,
+    ctx: &mut ValidationContext<'_, S>,
+) {
+    let mut aliases_seen: HashMap<String, bool> = HashMap::new();
+
+    for selection in selections {
+        match selection {
+            Selection::Field(field) => {
+                let display_name = field.alias.as_ref().unwrap_or(&field.name);
+
+                // Check for duplicate aliases
+                if aliases_seen.contains_key(display_name) {
+                    ctx.add_error(
+                        ErrorCode::DuplicateAlias,
+                        format!("Duplicate field/alias '{}' in selection", display_name),
+                    );
+                }
+                aliases_seen.insert(display_name.clone(), true);
+
+                // Check if field exists in nested schema
+                let field_name = &field.name;
+                if !field_name.starts_with("__") {
+                    if !nested_schema.contains_key(field_name) {
+                        ctx.add_error(
+                            ErrorCode::UnknownField,
+                            format!("Field '{}' does not exist in nested object", field_name),
+                        );
+                    } else if !field.selection_set.is_empty() {
+                        // Validate further nesting
+                        if let Some(field_def) = nested_schema.get(field_name) {
+                            match &field_def.field_type {
+                                FieldType::Nested(deeper_schema) => {
+                                    ctx.push_path(field_name);
+                                    validate_nested_selection_set(
+                                        &field.selection_set,
+                                        deeper_schema,
+                                        ctx,
+                                    );
+                                    ctx.pop_path();
+                                }
+                                FieldType::Object | FieldType::Any => {
+                                    // Object/Any type - allow selection but can't validate
+                                }
+                                FieldType::Scalar(ScalarType::Object)
+                                | FieldType::Scalar(ScalarType::Any) => {
+                                    // Scalar Object/Any - allow selection but can't validate
+                                }
+                                _ => {
+                                    ctx.add_error(
+                                        ErrorCode::TypeMismatch,
+                                        format!(
+                                            "Field '{}' is not an object type but has a selection set",
+                                            field_name
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Selection::InlineFragment(_) | Selection::FragmentSpread(_) => {
+                // Fragments in nested objects not supported for now
+                ctx.add_error(
+                    ErrorCode::InvalidInput,
+                    "Fragments are not supported in nested object selections".to_string(),
+                );
+            }
+        }
+    }
+}
+
+/// Validate a fragment spread
+fn validate_fragment_spread<S: SchemaProvider>(
+    fragment_name: &str,
+    expected_collection: &str,
+    ctx: &mut ValidationContext<'_, S>,
+) {
+    // 1. Check if fragment exists
+    let fragment_opt = ctx.fragments.get(fragment_name).cloned();
+
+    if let Some(fragment) = fragment_opt {
+        // 2. Check type condition matches
+        if fragment.type_condition != expected_collection {
+            ctx.add_error(
+                ErrorCode::TypeMismatch,
+                format!(
+                    "Fragment '{}' is defined on '{}' but used on '{}'",
+                    fragment_name, fragment.type_condition, expected_collection
+                ),
+            );
+            return;
+        }
+
+        // 3. Validate fragment's selection set against the collection
+        if let Some(collection) = ctx.schema.get_collection(expected_collection) {
+            ctx.push_path(&format!("...{}", fragment_name));
+            validate_selection_set(&fragment.selection_set, collection, ctx);
+            ctx.pop_path();
+        }
+    } else {
+        ctx.add_error(
+            ErrorCode::UnknownFragment,
+            format!("Fragment '{}' is not defined", fragment_name),
+        );
     }
 }
 
@@ -663,7 +858,7 @@ fn validate_filter<S: SchemaProvider>(
         | Filter::Matches(field, _) => {
             // String operations - check field is a string type
             if let Some(field_def) = collection.fields.get(field) {
-                if field_def.field_type != FieldType::String {
+                if field_def.field_type != FieldType::SCALAR_STRING {
                     ctx.add_error(
                         ErrorCode::InvalidFilterOperator,
                         format!("String operator on non-string field '{}'", field),
@@ -974,7 +1169,7 @@ mod tests {
         users_fields.insert(
             "name".to_string(),
             FieldDefinition {
-                field_type: FieldType::String,
+                field_type: FieldType::SCALAR_STRING,
                 unique: false,
                 indexed: false,
                 nullable: false,
@@ -983,7 +1178,7 @@ mod tests {
         users_fields.insert(
             "email".to_string(),
             FieldDefinition {
-                field_type: FieldType::String,
+                field_type: FieldType::SCALAR_STRING,
                 unique: true,
                 indexed: true,
                 nullable: false,
@@ -992,7 +1187,7 @@ mod tests {
         users_fields.insert(
             "age".to_string(),
             FieldDefinition {
-                field_type: FieldType::Int,
+                field_type: FieldType::SCALAR_INT,
                 unique: false,
                 indexed: false,
                 nullable: false,
@@ -1001,7 +1196,7 @@ mod tests {
         users_fields.insert(
             "active".to_string(),
             FieldDefinition {
-                field_type: FieldType::Bool,
+                field_type: FieldType::SCALAR_BOOL,
                 unique: false,
                 indexed: false,
                 nullable: false,

@@ -19,6 +19,110 @@ use ast::*;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
+/// Reserved keywords that cannot be used as field/collection names
+const RESERVED_KEYWORDS: &[&str] = &[
+    "query",
+    "mutation",
+    "subscription",
+    "fragment",
+    "on",
+    "transaction",
+    "schema",
+    "collection",
+    "type",
+    "enum",
+    "scalar",
+    "insertInto",
+    "insertMany",
+    "update",
+    "upsert",
+    "deleteFrom",
+    "enqueueJob",
+    "enqueueJobs",
+    "import",
+    "export",
+    "where",
+    "orderBy",
+    "limit",
+    "offset",
+    "first",
+    "last",
+    "after",
+    "before",
+    "search",
+    "validate",
+    "lookup",
+    "aggregate",
+    "groupBy",
+    "windowFunc",
+    "downsample",
+    "and",
+    "or",
+    "not",
+    "eq",
+    "ne",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "in",
+    "nin",
+    "contains",
+    "containsAny",
+    "containsAll",
+    "startsWith",
+    "endsWith",
+    "matches",
+    "isNull",
+    "isNotNull",
+    "near",
+    "within",
+    "true",
+    "false",
+    "null",
+    "ASC",
+    "DESC",
+];
+
+/// Generate a helpful error message, with specific detection for reserved keywords
+fn get_helpful_error_message(input: &str, line: usize, col: usize) -> String {
+    // Try to extract the token at the error location
+    if let Some(line_content) = input.lines().nth(line.saturating_sub(1)) {
+        // Extract the word at or near the column position
+        let chars: Vec<char> = line_content.chars().collect();
+        if col > 0 && col <= chars.len() {
+            // Find word boundaries around the column
+            let start = (0..col.saturating_sub(1))
+                .rev()
+                .find(|&i| !chars[i].is_alphanumeric() && chars[i] != '_')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+
+            let end = (col.saturating_sub(1)..chars.len())
+                .find(|&i| !chars[i].is_alphanumeric() && chars[i] != '_')
+                .unwrap_or(chars.len());
+
+            let word: String = chars[start..end].iter().collect();
+
+            // Check if the word is a reserved keyword
+            if RESERVED_KEYWORDS.contains(&word.as_str()) {
+                return format!(
+                    "Syntax error at line {}, column {}: '{}' is a reserved keyword and cannot be used as a field name. \
+                    Consider using a different name like '{}_value' or '{}Type'.",
+                    line,
+                    col,
+                    word,
+                    word.to_lowercase(),
+                    word.to_lowercase()
+                );
+            }
+        }
+    }
+
+    // Default message if no reserved keyword detected
+    format!("Syntax error at line {}, column {}", line, col)
+}
+
 /// Parse an AQL query string into an AST Document
 pub fn parse(input: &str) -> Result<Document> {
     let pairs = AQLParser::parse(Rule::document, input).map_err(|e| {
@@ -31,8 +135,8 @@ pub fn parse(input: &str) -> Result<Document> {
         #[cfg(debug_assertions)]
         eprintln!("Parse error details: {}", e);
 
-        // Return sanitized error message to user (hide grammar internals)
-        let user_message = format!("Syntax error at line {}, column {}", line, col);
+        // Try to extract the problematic token from the error location
+        let user_message = get_helpful_error_message(input, line, col);
 
         AqlError::new(ErrorCode::ProtocolError, user_message).with_location(line, col)
     })?;
