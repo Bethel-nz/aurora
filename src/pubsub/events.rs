@@ -174,6 +174,8 @@ pub enum EventFilter {
     IsNull(String),
     /// Is Not Null
     IsNotNull(String),
+    /// Match regex pattern
+    Matches(String, Value),
 }
 
 impl EventFilter {
@@ -239,6 +241,16 @@ impl EventFilter {
             EventFilter::IsNotNull(field) => event
                 .get_field(field)
                 .map_or(false, |v| !matches!(v, Value::Null)),
+            EventFilter::Matches(field, val) => {
+                if let (Some(field_val), Value::String(pattern)) = (event.get_field(field), val) {
+                    if let Value::String(s) = field_val {
+                        if let Ok(re) = regex::Regex::new(pattern) {
+                            return re.is_match(s);
+                        }
+                    }
+                }
+                false
+            }
         }
     }
 }
