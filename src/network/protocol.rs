@@ -1,4 +1,3 @@
-use crate::query::SimpleQueryBuilder;
 use crate::types::{Document, FieldType, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -57,7 +56,7 @@ pub enum Request {
     /// Get a document from a collection by ID.
     GetDocument { collection: String, id: String },
     /// Query a collection.
-    Query(SimpleQueryBuilder),
+    Query(crate::query::SimpleQueryBuilder),
     /// Begin a transaction.
     BeginTransaction,
     /// Commit a transaction.

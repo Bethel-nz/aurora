@@ -100,7 +100,7 @@ mod http_impl {
 
     pub async fn run_http_server(db: Arc<Aurora>, addr: &str) -> std::io::Result<()> {
         let db_data = web::Data::new(db);
-        println!("🚀 Starting HTTP server at http://{}", addr);
+        println!(" Starting HTTP server at http://{}", addr);
 
         HttpServer::new(move || {
             App::new()
