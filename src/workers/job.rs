@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 /// Job status tracking the lifecycle of a background job
 ///
-/// Jobs progress through states: Pending → Running → Completed/Failed → DeadLetter
+/// Jobs progress through states: Pending -> Running -> Completed/Failed -> DeadLetter
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum JobStatus {
     /// Job is queued and waiting to be processed

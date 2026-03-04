@@ -100,6 +100,15 @@ impl WorkerSystem {
         Ok(Self { queue, executor })
     }
 
+    /// Register a job handler
+    pub async fn register_handler<F, Fut>(&self, job_type: impl Into<String>, handler: F)
+    where
+        F: Fn(Job) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+    {
+        self.executor.read().await.register_handler(job_type, handler).await
+    }
+
     /// Start the worker system
     ///
     /// Begins processing jobs from the queue. Jobs are executed concurrently
