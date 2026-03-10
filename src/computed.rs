@@ -168,6 +168,7 @@ fn value_to_dynamic(value: &Value) -> Dynamic {
         Value::Float(f) => Dynamic::from(*f),
         Value::String(s) => Dynamic::from(s.clone()),
         Value::Uuid(u) => Dynamic::from(u.to_string()),
+        Value::DateTime(dt) => Dynamic::from(dt.to_rfc3339()),
         Value::Array(arr) => {
             let vec: Vec<Dynamic> = arr.iter().map(value_to_dynamic).collect();
             Dynamic::from(vec)
