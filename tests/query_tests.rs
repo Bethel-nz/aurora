@@ -7,7 +7,7 @@ use tempfile::tempdir;
 async fn test_any_type_and_nested_query() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("test_db");
-    let db = Aurora::open(path).unwrap();
+    let db = Aurora::open(path).await.unwrap();
 
     // 1. Test schema validation for Any type
     // Should not allow unique (and by extension, indexed) Any fields
@@ -23,8 +23,8 @@ async fn test_any_type_and_nested_query() {
     db.new_collection(
         "test_collection",
         vec![
-            ("name", FieldType::String, false),
-            ("meta", FieldType::Any, false),
+            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("meta", aurora_db::types::FieldDefinition { field_type: FieldType::Any, unique: false, indexed: false, nullable: false }),
         ],
     )
     .await
@@ -52,7 +52,7 @@ async fn test_any_type_and_nested_query() {
     // Test nested eq
     let results = db
         .query("test_collection")
-        .filter(|f| f.eq("meta.author", "John Doe"))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("meta.author", "John Doe"))
         .collect()
         .await
         .unwrap();
@@ -65,7 +65,7 @@ async fn test_any_type_and_nested_query() {
     // Test nested gt
     let results = db
         .query("test_collection")
-        .filter(|f| f.gt("meta.visits", 100))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.gt("meta.visits", 100))
         .collect()
         .await
         .unwrap();
@@ -74,7 +74,7 @@ async fn test_any_type_and_nested_query() {
     // Test nested lt (for a non-matching case)
     let results = db
         .query("test_collection")
-        .filter(|f| f.lt("meta.visits", 100))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.lt("meta.visits", 100))
         .collect()
         .await
         .unwrap();
@@ -83,7 +83,7 @@ async fn test_any_type_and_nested_query() {
     // Test query on non-Any field to ensure that still works
     let results = db
         .query("test_collection")
-        .filter(|f| f.eq("name", "My Document"))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("name", "My Document"))
         .collect()
         .await
         .unwrap();
@@ -94,14 +94,14 @@ async fn test_any_type_and_nested_query() {
 async fn test_any_field_caching() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("test_db_caching");
-    let db = Aurora::open(path).unwrap();
+    let db = Aurora::open(path).await.unwrap();
 
     // 1. Collection with an 'Any' field
     db.new_collection(
         "any_collection",
         vec![
-            ("name", FieldType::String, false),
-            ("data", FieldType::Any, false),
+            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("data", aurora_db::types::FieldDefinition { field_type: FieldType::Any, unique: false, indexed: false, nullable: false }),
         ],
     )
     .await
@@ -137,7 +137,7 @@ async fn test_any_field_caching() {
     // 2. Collection without an 'Any' field
     db.new_collection(
         "normal_collection",
-        vec![("name", FieldType::String, false)],
+        vec![("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true })],
     )
     .await
     .unwrap();

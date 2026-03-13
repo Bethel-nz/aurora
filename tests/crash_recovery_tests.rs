@@ -13,14 +13,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Helper to create a test database with WAL enabled
-fn create_test_db(path: PathBuf) -> Result<Aurora, aurora_db::AqlError> {
+async fn create_test_db(path: PathBuf) -> Result<Aurora, aurora_db::AqlError> {
     let mut config = AuroraConfig::default();
     config.db_path = path;
     config.enable_wal = true;
     config.enable_write_buffering = true;
     config.checkpoint_interval_ms = 1000; // 1 second checkpoint
 
-    Aurora::with_config(config)
+    Aurora::with_config(config).await
 }
 
 #[tokio::test]
@@ -32,11 +32,11 @@ async fn test_crash_recovery_basic() {
 
     // Phase 1: Write data and simulate crash by dropping DB
     {
-        let db = create_test_db(db_path.clone()).unwrap();
+        let db = create_test_db(db_path.clone()).await.unwrap();
 
         db.new_collection("users", vec![
-            ("name", FieldType::String, false),
-            ("age", FieldType::Int, false),
+            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ]).await.unwrap();
 
         // Insert some data
@@ -61,7 +61,7 @@ async fn test_crash_recovery_basic() {
     // Phase 2: Reopen database and verify data recovery
     {
         println!("Reopening database and verifying recovery...");
-        let db = create_test_db(db_path).unwrap();
+        let db = create_test_db(db_path).await.unwrap();
 
         // Query all documents
         let results = db.query("users").collect().await.unwrap();
@@ -75,7 +75,7 @@ async fn test_crash_recovery_basic() {
         });
         assert!(doc.is_some(), "Should find user_0");
 
-        println!("✓ Basic crash recovery successful");
+        println!("SUCCESS: Basic crash recovery successful");
     }
 }
 
@@ -88,11 +88,11 @@ async fn test_crash_during_writes() {
 
     // Phase 1: Start writing data and crash at random point
     {
-        let db = Arc::new(create_test_db(db_path.clone()).unwrap());
+        let db = Arc::new(create_test_db(db_path.clone()).await.unwrap());
 
         db.new_collection("transactions", vec![
-            ("tx_id", FieldType::String, false),
-            ("amount", FieldType::Int, false),
+            ("tx_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("amount", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ]).await.unwrap();
 
         // Insert data concurrently and crash suddenly
@@ -127,7 +127,7 @@ async fn test_crash_during_writes() {
     // Phase 2: Recover and verify consistency
     {
         println!("Recovering after mid-write crash...");
-        let db = create_test_db(db_path).unwrap();
+        let db = create_test_db(db_path).await.unwrap();
 
         let results = db.query("transactions").collect().await.unwrap();
         println!("Recovered {} transactions", results.len());
@@ -144,8 +144,8 @@ async fn test_crash_during_writes() {
             }
         }
 
-        println!("✓ All recovered transactions are valid (recovered {} of 500)", results.len());
-        println!("✓ No data corruption detected");
+        println!("SUCCESS: All recovered transactions are valid (recovered {} of 500)", results.len());
+        println!("SUCCESS: No data corruption detected");
     }
 }
 
@@ -158,11 +158,11 @@ async fn test_wal_replay_idempotency() {
 
     // Phase 1: Write known dataset
     {
-        let db = create_test_db(db_path.clone()).unwrap();
+        let db = create_test_db(db_path.clone()).await.unwrap();
 
         db.new_collection("items", vec![
-            ("item_id", FieldType::String, true), // unique
-            ("count", FieldType::Int, false),
+            ("item_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }), // unique
+            ("count", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ]).await.unwrap();
 
         // Insert specific items
@@ -185,7 +185,7 @@ async fn test_wal_replay_idempotency() {
     for attempt in 1..=3 {
         println!("\nReopening database (attempt {})...", attempt);
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let db = create_test_db(db_path.clone()).unwrap();
+        let db = create_test_db(db_path.clone()).await.unwrap();
 
         let results = db.query("items").collect().await.unwrap();
         assert_eq!(results.len(), 50, "Should always have exactly 50 items after replay");
@@ -208,7 +208,7 @@ async fn test_wal_replay_idempotency() {
         drop(db);
     }
 
-    println!("✓ WAL replay is idempotent - no duplicates across multiple recoveries");
+    println!("SUCCESS: WAL replay is idempotent - no duplicates across multiple recoveries");
 }
 
 #[tokio::test]
@@ -220,11 +220,11 @@ async fn test_partial_write_crash_recovery() {
 
     // Phase 1: Write data in batches and crash mid-batch
     {
-        let db = Arc::new(create_test_db(db_path.clone()).unwrap());
+        let db = Arc::new(create_test_db(db_path.clone()).await.unwrap());
 
         db.new_collection("batches", vec![
-            ("batch_id", FieldType::Int, false),
-            ("item_id", FieldType::Int, false),
+            ("batch_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+            ("item_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ]).await.unwrap();
 
         // Write first batch completely
@@ -255,7 +255,7 @@ async fn test_partial_write_crash_recovery() {
 
     // Phase 2: Verify at least first batch is recovered
     {
-        let db = create_test_db(db_path).unwrap();
+        let db = create_test_db(db_path).await.unwrap();
 
         let results = db.query("batches").collect().await.unwrap();
         println!("Recovered {} documents", results.len());
@@ -275,7 +275,7 @@ async fn test_partial_write_crash_recovery() {
         println!("  Batch 1 (flushed): {} items", batch1_count);
         println!("  Batch 2 (unflushed): {} items", batch2_count);
 
-        println!("✓ Durable data recovered correctly");
+        println!("SUCCESS: Durable data recovered correctly");
     }
 }
 
@@ -292,13 +292,13 @@ async fn test_multiple_crash_cycles() {
     for cycle in 0..crash_cycles {
         println!("\n--- Crash Cycle {} ---", cycle + 1);
 
-        let db = create_test_db(db_path.clone()).unwrap();
+        let db = create_test_db(db_path.clone()).await.unwrap();
 
         // Create collection on first cycle
         if cycle == 0 {
             db.new_collection("resilient", vec![
-                ("data", FieldType::String, false),
-                ("cycle", FieldType::Int, false),
+                ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+                ("cycle", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
             ]).await.unwrap();
         }
 
@@ -333,7 +333,7 @@ async fn test_multiple_crash_cycles() {
     // Final verification
     {
         println!("\n--- Final Verification ---");
-        let db = create_test_db(db_path).unwrap();
+        let db = create_test_db(db_path).await.unwrap();
 
         let final_results = db.query("resilient").collect().await.unwrap();
         println!("Total documents after {} crash cycles: {}", crash_cycles, final_results.len());
@@ -353,7 +353,7 @@ async fn test_multiple_crash_cycles() {
                        "Should have {} docs from cycle {}", docs_per_cycle, cycle);
         }
 
-        println!("✓ All data survived {} crash/recovery cycles", crash_cycles);
+        println!("SUCCESS: All data survived {} crash/recovery cycles", crash_cycles);
     }
 }
 
@@ -366,11 +366,11 @@ async fn test_crash_with_large_documents() {
 
     // Phase 1: Insert large documents
     {
-        let db = create_test_db(db_path.clone()).unwrap();
+        let db = create_test_db(db_path.clone()).await.unwrap();
 
         db.new_collection("large_docs", vec![
-            ("doc_id", FieldType::String, false),
-            ("large_data", FieldType::String, false),
+            ("doc_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("large_data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
         ]).await.unwrap();
 
         // Create large documents (100KB each)
@@ -393,7 +393,7 @@ async fn test_crash_with_large_documents() {
 
     // Phase 2: Verify large documents are recovered correctly
     {
-        let db = create_test_db(db_path).unwrap();
+        let db = create_test_db(db_path).await.unwrap();
 
         let results = db.query("large_docs").collect().await.unwrap();
         assert_eq!(results.len(), 10, "Should recover all large documents");
@@ -405,7 +405,7 @@ async fn test_crash_with_large_documents() {
             }
         }
 
-        println!("✓ All large documents recovered with correct size");
+        println!("SUCCESS: All large documents recovered with correct size");
     }
 }
 
@@ -418,10 +418,10 @@ async fn test_checkpoint_after_crash() {
 
     // Phase 1: Write data, trigger checkpoint, then crash
     {
-        let db = Arc::new(create_test_db(db_path.clone()).unwrap());
+        let db = Arc::new(create_test_db(db_path.clone()).await.unwrap());
 
         db.new_collection("checkpointed", vec![
-            ("value", FieldType::Int, false),
+            ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ]).await.unwrap();
 
         // Insert data
@@ -453,7 +453,7 @@ async fn test_checkpoint_after_crash() {
 
     // Phase 2: Verify all data is recovered
     {
-        let db = create_test_db(db_path).unwrap();
+        let db = create_test_db(db_path).await.unwrap();
 
         let results = db.query("checkpointed").collect().await.unwrap();
         println!("Recovered {} documents", results.len());
@@ -462,6 +462,6 @@ async fn test_checkpoint_after_crash() {
         // Data after checkpoint (100-149) may or may not be present depending on flush timing
         assert!(results.len() >= 100, "Should recover at least checkpointed data");
 
-        println!("✓ Checkpoint recovery successful");
+        println!("SUCCESS: Checkpoint recovery successful");
     }
 }

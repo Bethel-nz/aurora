@@ -13,7 +13,7 @@ async fn test_subscription_flow() -> aurora_db::error::Result<()> {
         db_path,
         ..Default::default()
     };
-    let db = Aurora::with_config(config)?;
+    let db = Aurora::with_config(config).await?;
     let db = Arc::new(db);
 
     // Create schema
@@ -83,7 +83,7 @@ async fn test_subscription_filter() -> aurora_db::error::Result<()> {
         db_path,
         ..Default::default()
     };
-    let db = Aurora::with_config(config)?;
+    let db = Aurora::with_config(config).await?;
     let db = Arc::new(db);
 
     // Create schema
@@ -158,7 +158,7 @@ async fn test_subscription_string_filter() -> aurora_db::error::Result<()> {
         db_path,
         ..Default::default()
     };
-    let db = Aurora::with_config(config)?;
+    let db = Aurora::with_config(config).await?;
     let db = Arc::new(db);
 
     // Create schema (No commas!)

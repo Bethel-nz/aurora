@@ -13,7 +13,7 @@ async fn test_execute_api() -> Result<()> {
         durability_mode: aurora_db::DurabilityMode::Synchronous,
         ..Default::default()
     };
-    let db = Aurora::with_config(config)?;
+    let db = Aurora::with_config(config).await?;
 
     // Create collection via execute
     let schema_res = db.execute(r#"

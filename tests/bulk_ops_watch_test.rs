@@ -12,14 +12,14 @@ async fn test_filtered_bulk_delete() -> Result<()> {
         db_path,
         ..Default::default()
     };
-    let db = Aurora::with_config(config)?;
+    let db = Aurora::with_config(config).await?;
 
     // Create collection
     db.new_collection(
         "items",
         vec![
-            ("status", FieldType::String, false),
-            ("value", FieldType::Int, false),
+            ("status", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ],
     )
     .await?;
@@ -51,7 +51,7 @@ async fn test_filtered_bulk_delete() -> Result<()> {
     // Delete filtered (active only)
     let deleted = db
         .query("items")
-        .filter(|f| f.eq("status", "active"))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("status", "active"))
         .delete() // This is the new method we added
         .await?;
 
@@ -89,15 +89,15 @@ async fn test_watch_initial_set_and_debounce() -> Result<()> {
         db_path,
         ..Default::default()
     };
-    let db = Aurora::with_config(config)?;
+    let db = Aurora::with_config(config).await?;
     let db = Box::leak(Box::new(db)); // Leak to satisfy 'static requirement for watch()
 
     db.new_collection(
         "alerts",
         vec![
-            ("level", FieldType::String, false),
-            ("msg", FieldType::String, false),
-            ("val", FieldType::Int, false),
+            ("level", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("msg", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("val", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ],
     )
     .await?;
@@ -127,7 +127,7 @@ async fn test_watch_initial_set_and_debounce() -> Result<()> {
     // We define a filtered query (critical only)
     let mut watcher = db
         .query("alerts")
-        .filter(|f| f.eq("level", "critical"))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("level", "critical"))
         .debounce(Duration::from_millis(50)) // Set debounce
         .watch()
         .await?;

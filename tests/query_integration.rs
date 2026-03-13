@@ -5,16 +5,16 @@ use tempfile::TempDir;
 #[tokio::test]
 async fn test_platform_style_query_chain() {
     let temp_dir = TempDir::new().unwrap();
-    let db = Aurora::open(temp_dir.path().to_str().unwrap()).unwrap();
+    let db = Aurora::open(temp_dir.path().to_str().unwrap()).await.unwrap();
 
     // Create collection schema first (required by Aurora's design)
     db.new_collection(
         "users",
         vec![
-            ("name", FieldType::String, false),
-            ("role", FieldType::String, false),
-            ("tier", FieldType::String, false),
-        ],
+            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("role", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("tier", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+        ] ,
     )
     .await
     .unwrap();
@@ -59,8 +59,8 @@ async fn test_platform_style_query_chain() {
     // "Find all Gold Tier users who are not Admins"
     let target_users = db
         .query("users")
-        .filter(|f| f.eq("tier", "gold"))
-        .filter(|f| !f.eq("role", "admin")) // Negation logic
+        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("tier", "gold"))
+        .filter(|f: &aurora_db::query::FilterBuilder| !f.eq("role", "admin")) // Negation logic
         .collect()
         .await
         .unwrap();
@@ -72,15 +72,15 @@ async fn test_platform_style_query_chain() {
 #[tokio::test]
 async fn test_computed_fields_integration() {
     let temp_dir = TempDir::new().unwrap();
-    let db = Aurora::open(temp_dir.path().to_str().unwrap()).unwrap();
+    let db = Aurora::open(temp_dir.path().to_str().unwrap()).await.unwrap();
 
     // Create collection schema first (required by Aurora's design)
     db.new_collection(
         "cart_items",
         vec![
-            ("item", FieldType::String, false),
-            ("price", FieldType::Int, false),
-            ("qty", FieldType::Int, false),
+            ("item", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("price", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+            ("qty", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ],
     )
     .await
@@ -110,7 +110,7 @@ async fn test_computed_fields_integration() {
     // Retrieve and verify computed field
     let item = db
         .query("cart_items")
-        .filter(|f| f.eq("item", "Apple"))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("item", "Apple"))
         .collect()
         .await
         .unwrap();

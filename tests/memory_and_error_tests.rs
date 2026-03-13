@@ -15,13 +15,13 @@ async fn test_memory_usage_growth() {
     config.enable_wal = true;
     config.hot_cache_size_mb = 128; // Limit hot cache
 
-    let db = Arc::new(Aurora::with_config(config).unwrap());
+    let db = Arc::new(Aurora::with_config(config).await.unwrap());
 
     db.new_collection(
         "memory_test",
         vec![
-            ("data", FieldType::String, false),
-            ("index", FieldType::Int, false),
+            ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("index", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ],
     )
     .await
@@ -121,9 +121,9 @@ async fn test_hot_cache_eviction() {
     config.hot_cache_size_mb = 10; // Very small cache to force evictions
     config.enable_write_buffering = false; // Direct writes for testing
 
-    let db = Arc::new(Aurora::with_config(config).unwrap());
+    let db = Arc::new(Aurora::with_config(config).await.unwrap());
 
-    db.new_collection("cache_test", vec![("data", FieldType::String, false)])
+    db.new_collection("cache_test", vec![("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true })])
         .await
         .unwrap();
 
@@ -156,7 +156,7 @@ async fn test_hot_cache_eviction() {
     let start = Instant::now();
     let doc2 = db
         .query("cache_test")
-        .filter(|f| {
+        .filter(|f: &aurora_db::query::FilterBuilder| {
             f.eq(
                 "data",
                 "Document 9999 with some padding text to increase size",
@@ -175,7 +175,7 @@ async fn test_hot_cache_eviction() {
         "Should be able to retrieve evicted documents from cold storage"
     );
 
-    println!("✓ Hot cache eviction working correctly");
+    println!("SUCCESS: Hot cache eviction working correctly");
 }
 
 #[tokio::test]
@@ -188,9 +188,9 @@ async fn test_error_disk_full_simulation() {
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("disk_test.aurora");
 
-    let db = Arc::new(Aurora::open(db_path.to_str().unwrap()).unwrap());
+    let db = Arc::new(Aurora::open(db_path.to_str().unwrap()).await.unwrap());
 
-    db.new_collection("disk_test", vec![("data", FieldType::String, false)])
+    db.new_collection("disk_test", vec![("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true })])
         .await
         .unwrap();
 
@@ -221,7 +221,7 @@ async fn test_error_disk_full_simulation() {
     }
 
     println!("Success: {}, Errors: {}", success_count, error_count);
-    println!("✓ Database handles large writes without panicking");
+    println!("SUCCESS: Database handles large writes without panicking");
 }
 
 #[tokio::test]
@@ -230,7 +230,7 @@ async fn test_concurrent_collection_creation() {
 
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("concurrent_collections.aurora");
-    let db = Arc::new(Aurora::open(db_path.to_str().unwrap()).unwrap());
+    let db = Arc::new(Aurora::open(db_path.to_str().unwrap()).await.unwrap());
 
     let mut tasks = vec![];
 
@@ -241,7 +241,7 @@ async fn test_concurrent_collection_creation() {
             db_clone
                 .new_collection(
                     &format!("collection_{}", i),
-                    vec![("field", FieldType::String, false)],
+                    vec![("field", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true })],
                 )
                 .await
         }));
@@ -269,9 +269,9 @@ async fn test_rapid_flush_calls() {
     config.db_path = db_path;
     config.enable_write_buffering = true;
 
-    let db = Arc::new(Aurora::with_config(config).unwrap());
+    let db = Arc::new(Aurora::with_config(config).await.unwrap());
 
-    db.new_collection("flush_test", vec![("data", FieldType::String, false)])
+    db.new_collection("flush_test", vec![("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true })])
         .await
         .unwrap();
 
@@ -294,7 +294,7 @@ async fn test_rapid_flush_calls() {
     let duration = start.elapsed();
 
     println!("All flushes completed in {:?}", duration);
-    println!("✓ Rapid flush calls don't cause deadlocks or panics");
+    println!("SUCCESS: Rapid flush calls don't cause deadlocks or panics");
 
     // Verify data integrity
     let count = db.query("flush_test").collect().await.unwrap().len();
@@ -319,6 +319,21 @@ fn get_process_rss_mb(pid: u32) -> i64 {
         }
     }
 
-    // Fallback for non-Linux or if reading fails
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let output = Command::new("ps")
+            .args(&["-o", "rss=", "-p", &pid.to_string()])
+            .output();
+
+        if let Ok(output) = output {
+            let s = String::from_utf8_lossy(&output.stdout);
+            if let Ok(kb) = s.trim().parse::<i64>() {
+                return kb / 1024;
+            }
+        }
+    }
+
+    // Fallback for non-Linux/macOS or if reading fails
     0
 }

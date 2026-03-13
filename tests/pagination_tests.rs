@@ -13,14 +13,14 @@ async fn setup_pagination_db() -> (Aurora, tempfile::TempDir) {
         ..Default::default()
     };
     
-    let db = Aurora::with_config(config).unwrap();
+    let db = Aurora::with_config(config).await.unwrap();
 
     // Create collection
     db.new_collection(
         "items",
         vec![
-            ("name", FieldType::String, false),
-            ("value", FieldType::Int, false),
+            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ],
     )
     .await.unwrap();
@@ -60,34 +60,20 @@ async fn test_pagination_first() {
 
     let result = db.execute(query).await.unwrap();
     if let aurora_db::parser::executor::ExecutionResult::Query(res) = result {
-        // We expect a single "document" which wraps the connection result if it's treated as a single field
-        // But likely implemented as: the 'items' field returns the connection object directly.
-        // Wait, execute_collection_query returns QueryResult with `documents: Vec<Document>`.
-        // If we switch to connection mode, `documents` will contain one Document representing the connection?
-        // OR `documents` will be the edges? 
-        // Standard GraphQL: `items` returns a Connection Object.
-        // Aurora implementation plan says: "Return a wrapper Document { edges: [...], pageInfo: { ... } }"
-        // So `res.documents` should have 1 element, which is the Connection object.
-        
+        // Connection is returned as a single document wrapping edges and pageInfo
         assert_eq!(res.documents.len(), 1);
         let connection = &res.documents[0];
         
-        // internal id check?
-        
-        let edges = if let Value::Array(arr) = connection.data.get("edges").unwrap() {
-            arr
-        } else {
-            panic!("Expected edges array");
+        let edges = match connection.data.get("edges").unwrap() {
+            Value::Array(arr) => arr,
+            _ => panic!("Expected edges array"),
         };
-        
         assert_eq!(edges.len(), 2);
         
-        let page_info = if let Value::Object(obj) = connection.data.get("pageInfo").unwrap() {
-            obj
-        } else {
-            panic!("Expected pageInfo object");
+        let page_info = match connection.data.get("pageInfo").unwrap() {
+            Value::Object(obj) => obj,
+            _ => panic!("Expected pageInfo object"),
         };
-        
         assert_eq!(page_info.get("hasNextPage"), Some(&Value::Bool(true)));
     } else {
         panic!("Expected Query result");
@@ -111,9 +97,16 @@ async fn test_pagination_next_page() {
     
     let result1 = db.execute(query1).await.unwrap();
     let cursor = if let aurora_db::parser::executor::ExecutionResult::Query(res) = result1 {
+        assert_eq!(res.documents.len(), 1);
         let conn = &res.documents[0];
-        let pi = if let Value::Object(o) = conn.data.get("pageInfo").unwrap() { o } else { panic!() };
-        if let Value::String(s) = pi.get("endCursor").unwrap() { s.clone() } else { panic!() }
+        let pi = match conn.data.get("pageInfo").unwrap() {
+            Value::Object(o) => o,
+            _ => panic!("Expected pageInfo object"),
+        };
+        match pi.get("endCursor").unwrap() {
+            Value::String(s) => s.clone(),
+            _ => panic!("Expected endCursor string"),
+        }
     } else {
         panic!("Failed first query");
     };
@@ -136,23 +129,32 @@ async fn test_pagination_next_page() {
 
     let result2 = db.execute(query2.as_str()).await.unwrap();
     if let aurora_db::parser::executor::ExecutionResult::Query(res) = result2 {
+        assert_eq!(res.documents.len(), 1);
         let conn = &res.documents[0];
-        let edges = if let Value::Array(arr) = conn.data.get("edges").unwrap() { arr } else { panic!() };
+        let edges = match conn.data.get("edges").unwrap() {
+            Value::Array(arr) => arr,
+            _ => panic!("Expected edges array"),
+        };
         assert_eq!(edges.len(), 2);
         
-        // Should be item 3 and 4 (UUIDv7 preserves insertion order)
-        let node1 = if let Value::Object(edge) = &edges[0] {
-             if let Value::Object(node) = edge.get("node").unwrap() { node } else { panic!() }
-        } else { panic!() };
+        let node1 = match &edges[0] {
+            Value::Object(edge) => match edge.get("node").unwrap() {
+                Value::Object(node) => node,
+                _ => panic!("Expected node object"),
+            },
+            _ => panic!("Expected edge object"),
+        };
         
-        // With UUIDv7, documents are ordered by creation time
-        // Page 1: items 1, 2
-        // Page 2: items 3, 4
+        // Items are inserted sequentially, and UUIDv7 preserves this order.
+        // Item 1, 2 (Page 1)
+        // Item 3, 4 (Page 2)
         assert_eq!(node1.get("value"), Some(&Value::Int(3)));
         
-        let pi = if let Value::Object(o) = conn.data.get("pageInfo").unwrap() { o } else { panic!() };
-        // hasNextPage should be true since there's still 1 item remaining after page 2
-        assert_eq!(pi.get("hasNextPage"), Some(&Value::Bool(true))); // Item 5 remains
+        let pi = match conn.data.get("pageInfo").unwrap() {
+            Value::Object(o) => o,
+            _ => panic!("Expected pageInfo object"),
+        };
+        assert_eq!(pi.get("hasNextPage"), Some(&Value::Bool(true))); 
     } else {
         panic!("Failed second query");
     }

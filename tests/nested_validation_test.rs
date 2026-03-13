@@ -10,7 +10,7 @@ fn test_nested_object_validation() {
     address_fields.insert(
         "street".to_string(),
         FieldDefinition {
-            field_type: FieldType::String,
+            field_type: FieldType::SCALAR_STRING,
             unique: false,
             indexed: false,
             nullable: false,
@@ -19,7 +19,7 @@ fn test_nested_object_validation() {
     address_fields.insert(
         "zip".to_string(),
         FieldDefinition {
-            field_type: FieldType::Int,
+            field_type: FieldType::SCALAR_INT,
             unique: false,
             indexed: false,
             nullable: true,
@@ -30,7 +30,7 @@ fn test_nested_object_validation() {
     user_fields.insert(
         "name".to_string(),
         FieldDefinition {
-            field_type: FieldType::String,
+            field_type: FieldType::SCALAR_STRING,
             unique: false,
             indexed: false,
             nullable: false,
