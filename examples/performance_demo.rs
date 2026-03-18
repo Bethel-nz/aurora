@@ -45,17 +45,17 @@ async fn test_config(
     // Set unique path for each test
     config.db_path = format!("./test_perf_{}.db", name.to_lowercase()).into();
 
-    let db = Aurora::with_config(config)?;
+    let db = Aurora::with_config(config).await?;
 
     // Create test collection
     db.new_collection(
         "users",
         vec![
-            ("id", FieldType::String, true),
-            ("name", FieldType::String, false),
-            ("email", FieldType::String, true),
-            ("age", FieldType::Int, false),
-            ("active", FieldType::Bool, false),
+            ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),
+            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("email", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),
+            ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+            ("active", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_BOOL, unique: false, indexed: false, nullable: true }),
         ],
     ).await?;
 
@@ -115,7 +115,7 @@ async fn test_config(
 
     let active_users = db
         .query("users")
-        .filter(|f| f.eq("active", Value::Bool(true)))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("active", Value::Bool(true)))
         .collect()
         .await?;
 

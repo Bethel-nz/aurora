@@ -27,35 +27,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let scales = vec![1, 10, 100, 1000, 10_000, 100_000, 1_000_000];
 
+    // Shared data structure to collect metrics for CSV
+    let mut benchmark_metrics = Vec::new();
+
     for scale in scales {
         println!("\n{}", "=".repeat(80));
         println!("Testing with {} documents", format_number(scale));
         println!("{}", "=".repeat(80));
 
-        let result = benchmark_scale(scale).await?;
-        output.push_str(&result);
+        let (result_text, metrics) = benchmark_scale(scale).await?;
+        output.push_str(&result_text);
         output.push_str("\n");
+        benchmark_metrics.push(metrics);
 
         // Clean up between runs
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
-    // Write results to file
-    let filename = format!(
-        "aurora_baseline_{}.txt",
-        chrono::Local::now().format("%Y%m%d_%H%M%S")
-    );
+    // Write results to text file
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let filename = format!("aurora_baseline_{}.txt", timestamp);
     let mut file = File::create(&filename)?;
     file.write_all(output.as_bytes())?;
 
+    // Save as CSV
+    let csv_filename = format!("aurora_bench_{}.csv", timestamp);
+    let mut csv_file = File::create(&csv_filename)?;
+    writeln!(csv_file, "Scale,WriteThroughput,HotReadThroughput,MixedReadThroughput,RssMB,DiskMB")?;
+    
+    for m in benchmark_metrics {
+        writeln!(csv_file, "{},{},{},{},{},{}", 
+            m.scale, m.write_tput, m.hot_read_tput, m.mixed_read_tput, m.rss_mb, m.disk_mb)?;
+    }
+    
     println!("\n{}", "=".repeat(80));
-    println!("Results saved to: {}", filename);
+    println!("Results saved to: {} and {}", filename, csv_filename);
     println!("{}", "=".repeat(80));
 
     Ok(())
 }
 
-async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::Error>> {
+struct ScaleMetrics {
+    scale: usize,
+    write_tput: f64,
+    hot_read_tput: f64,
+    mixed_read_tput: f64,
+    rss_mb: i64,
+    disk_mb: i64,
+}
+
+async fn benchmark_scale(num_docs: usize) -> Result<(String, ScaleMetrics), Box<dyn std::error::Error>> {
     let mut output = String::new();
 
     // Create temp directory
@@ -70,21 +91,21 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
         ..Default::default()
     };
 
-    let db = Arc::new(Aurora::with_config(config)?);
+    let db = Arc::new(Aurora::with_config(config).await?);
 
     // Create collection
     db.new_collection(
         "bench",
         vec![
-            ("id", FieldType::String, false),
-            ("data", FieldType::String, false),
-            ("index", FieldType::Int, false),
-            ("timestamp", FieldType::String, false),
+            ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("index", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+            ("timestamp", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
         ],
     )
     .await?;
 
-    // Get initial memory
+    // Get initial process info
     let pid = std::process::id();
     let initial_rss = get_process_rss_mb(pid);
 
@@ -122,6 +143,7 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
     }
 
     let write_duration = write_start.elapsed();
+    let write_tput = num_docs as f64 / write_duration.as_secs_f64();
 
     // Flush to ensure all data is written
     db.flush()?;
@@ -129,13 +151,6 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
 
     let after_write_rss = get_process_rss_mb(pid);
     let write_memory_growth = after_write_rss - initial_rss;
-
-    // Calculate average document size
-    let avg_doc_size_bytes = if num_docs > 0 {
-        (write_memory_growth as f64 * 1024.0 * 1024.0) / num_docs as f64
-    } else {
-        0.0
-    };
 
     output.push_str(&format!(
         "After writes RSS: {} MB (growth: {} MB)\n",
@@ -147,132 +162,55 @@ async fn benchmark_scale(num_docs: usize) -> Result<String, Box<dyn std::error::
     ));
     output.push_str(&format!(
         "Write throughput: {:.0} docs/sec\n",
-        num_docs as f64 / write_duration.as_secs_f64()
-    ));
-    output.push_str(&format!(
-        "Avg memory per doc: {:.0} bytes\n",
-        avg_doc_size_bytes
+        write_tput
     ));
 
-    // READ TEST - Hot Cache (warm-up phase)
-    // First, populate hot cache with a subset of documents
-    let hot_set_size = (num_docs / 10).max(100).min(10_000); // 10% of docs, capped
-
-    output.push_str("\n--- Hot Cache Warm-up ---\n");
+    // READ TEST - Hot Cache
+    let hot_set_size = (num_docs / 10).max(10).min(5_000);
     for i in 0..hot_set_size {
         let key = format!("bench:doc_{:08}", i);
-        let _ = db.get(&key)?; // This populates the hot cache
-    }
-
-    // Now measure hot reads (should be very fast)
-    let hot_read_count = hot_set_size.min(5_000);
-    let hot_read_start = Instant::now();
-
-    for i in 0..hot_read_count {
-        let key = format!("bench:doc_{:08}", i);
-        let _ = db.get(&key)?; // Should hit hot cache
-    }
-
-    let hot_read_duration = hot_read_start.elapsed();
-    let hot_read_throughput = hot_read_count as f64 / hot_read_duration.as_secs_f64();
-
-    output.push_str(&format!(
-        "Hot reads: {} in {:.3}s ({:.0} reads/sec)\n",
-        format_number(hot_read_count),
-        hot_read_duration.as_secs_f64(),
-        hot_read_throughput
-    ));
-
-    // READ TEST - Cold Cache (uncached reads)
-    // Access documents that are NOT in the hot cache
-    let cold_read_count = num_docs.min(5_000);
-    let cold_read_start = Instant::now();
-
-    for i in 0..cold_read_count {
-        // Access documents from the end of the dataset (not in hot cache)
-        let idx = num_docs.saturating_sub(cold_read_count) + i;
-        let key = format!("bench:doc_{:08}", idx);
-        let _ = db.get(&key)?; // Should hit cold storage
-    }
-
-    let cold_read_duration = cold_read_start.elapsed();
-    let cold_read_throughput = cold_read_count as f64 / cold_read_duration.as_secs_f64();
-
-    output.push_str(&format!(
-        "Cold reads: {} in {:.3}s ({:.0} reads/sec)\n",
-        format_number(cold_read_count),
-        cold_read_duration.as_secs_f64(),
-        cold_read_throughput
-    ));
-
-    // READ TEST - Mixed (realistic workload)
-    let mixed_read_count = num_docs.min(10_000);
-    let mixed_read_start = Instant::now();
-
-    for i in 0..mixed_read_count {
-        // 70% hot (likely cached), 30% cold (likely uncached)
-        let idx = if i % 10 < 7 {
-            i % hot_set_size // Access hot set
-        } else {
-            let cold_range = num_docs.saturating_sub(hot_set_size).max(1);
-            hot_set_size + (i % cold_range) // Access cold set
-        };
-        let key = format!("bench:doc_{:08}", idx);
         let _ = db.get(&key)?;
     }
 
+    let hot_read_count = hot_set_size;
+    let hot_read_start = Instant::now();
+    for i in 0..hot_read_count {
+        let key = format!("bench:doc_{:08}", i);
+        let _ = db.get(&key)?;
+    }
+    let hot_read_duration = hot_read_start.elapsed();
+    let hot_read_tput = hot_read_count as f64 / hot_read_duration.as_secs_f64();
+
+    // READ TEST - Mixed
+    let mixed_read_count = num_docs.min(5_000);
+    let mixed_read_start = Instant::now();
+    for i in 0..mixed_read_count {
+        let idx = if i % 10 < 7 { i % hot_set_size } else { i % num_docs };
+        let key = format!("bench:doc_{:08}", idx);
+        let _ = db.get(&key)?;
+    }
     let mixed_read_duration = mixed_read_start.elapsed();
-    let mixed_read_throughput = mixed_read_count as f64 / mixed_read_duration.as_secs_f64();
-
-    output.push_str(&format!(
-        "Mixed reads (70/30 hot/cold): {} in {:.3}s ({:.0} reads/sec)\n",
-        format_number(mixed_read_count),
-        mixed_read_duration.as_secs_f64(),
-        mixed_read_throughput
-    ));
-
-    // QUERY TEST
-    let query_start = Instant::now();
-    let results = db
-        .query("bench")
-        .filter(|f| f.gt("index", Value::Int(num_docs as i64 / 2)))
-        .limit(100)
-        .collect()
-        .await?;
-    let query_duration = query_start.elapsed();
-
-    output.push_str(&format!(
-        "Query test: {} results in {:.3}s\n",
-        results.len(),
-        query_duration.as_secs_f64()
-    ));
+    let mixed_read_tput = mixed_read_count as f64 / mixed_read_duration.as_secs_f64();
 
     // Get database size on disk
     let db_size = get_dir_size_mb(temp_dir.path());
-    let compression_ratio = if db_size > 0 {
-        write_memory_growth as f64 / db_size as f64
-    } else {
-        0.0
+
+    let metrics = ScaleMetrics {
+        scale: num_docs,
+        write_tput,
+        hot_read_tput,
+        mixed_read_tput,
+        rss_mb: after_write_rss,
+        disk_mb: db_size,
     };
 
     output.push_str(&format!("Disk size: {} MB\n", db_size));
-    output.push_str(&format!("Memory/Disk ratio: {:.2}x\n", compression_ratio));
-
-    // Cache stats
-    let cache_stats = db.get_cache_stats();
-    output.push_str(&format!(
-        "Cache: {} items, {:.2} MB, {:.1}% hit rate\n",
-        cache_stats.item_count,
-        cache_stats.memory_usage as f64 / (1024.0 * 1024.0),
-        cache_stats.hit_ratio * 100.0
-    ));
-
     output.push_str(&"-".repeat(80));
     output.push_str("\n");
 
     println!("{}", output);
 
-    Ok(output)
+    Ok((output, metrics))
 }
 
 fn get_process_rss_mb(pid: u32) -> i64 {
@@ -289,59 +227,26 @@ fn get_process_rss_mb(pid: u32) -> i64 {
                 }
             }
         }
-        0
+        return 0;
     }
     
-    #[cfg(target_os = "windows")]
+    #[cfg(target_os = "macos")]
     {
-        use std::mem::MaybeUninit;
-        
-        // Use Windows API to get process memory info
-        #[repr(C)]
-        #[allow(non_snake_case)]
-        struct PROCESS_MEMORY_COUNTERS {
-            cb: u32,
-            PageFaultCount: u32,
-            PeakWorkingSetSize: usize,
-            WorkingSetSize: usize,
-            QuotaPeakPagedPoolUsage: usize,
-            QuotaPagedPoolUsage: usize,
-            QuotaPeakNonPagedPoolUsage: usize,
-            QuotaNonPagedPoolUsage: usize,
-            PagefileUsage: usize,
-            PeakPagefileUsage: usize,
-        }
-        
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn GetCurrentProcess() -> *mut std::ffi::c_void;
-        }
-        
-        #[link(name = "psapi")]
-        unsafe extern "system" {
-            fn GetProcessMemoryInfo(
-                process: *mut std::ffi::c_void,
-                ppsmemCounters: *mut PROCESS_MEMORY_COUNTERS,
-                cb: u32,
-            ) -> i32;
-        }
-        
-        unsafe {
-            let _ = pid; // We use GetCurrentProcess() instead
-            let mut pmc = MaybeUninit::<PROCESS_MEMORY_COUNTERS>::zeroed();
-            let pmc_ptr = pmc.as_mut_ptr();
-            (*pmc_ptr).cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
-            
-            let handle = GetCurrentProcess();
-            if GetProcessMemoryInfo(handle, pmc_ptr, (*pmc_ptr).cb) != 0 {
-                let pmc = pmc.assume_init();
-                return (pmc.WorkingSetSize / (1024 * 1024)) as i64;
+        use std::process::Command;
+        let output = Command::new("ps")
+            .args(&["-o", "rss=", "-p", &pid.to_string()])
+            .output();
+
+        if let Ok(output) = output {
+            let s = String::from_utf8_lossy(&output.stdout);
+            if let Ok(kb) = s.trim().parse::<i64>() {
+                return kb / 1024;
             }
         }
-        0
+        return 0;
     }
-    
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = pid;
         0
@@ -365,7 +270,6 @@ fn get_dir_size_mb(path: &std::path::Path) -> i64 {
         }
         total
     }
-    
     (dir_size(path) / (1024 * 1024)) as i64
 }
 
@@ -373,7 +277,6 @@ fn format_number(n: usize) -> String {
     let s = n.to_string();
     let mut result = String::new();
     let mut count = 0;
-
     for c in s.chars().rev() {
         if count > 0 && count % 3 == 0 {
             result.push(',');
@@ -381,6 +284,5 @@ fn format_number(n: usize) -> String {
         result.push(c);
         count += 1;
     }
-
     result.chars().rev().collect()
 }

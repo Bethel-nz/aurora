@@ -9,23 +9,23 @@ use std::time::Duration;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Aurora PubSub Demo - Real-time Change Notifications\n");
 
-    let db = Aurora::with_config(AuroraConfig::realtime())?;
+    let db = Aurora::with_config(AuroraConfig::realtime()).await?;
 
     // Create collection
     db.new_collection(
         "users",
         vec![
-            ("id", FieldType::String, true),
-            ("name", FieldType::String, false),
-            ("email", FieldType::String, true),
-            ("active", FieldType::Bool, false),
+            ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),
+            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("email", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),
+            ("active", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_BOOL, unique: false, indexed: false, nullable: true }),
         ],
     ).await?;
 
     // ==========================================
     // Demo 1: Basic LISTEN/NOTIFY
     // ==========================================
-    println!("📡 Demo 1: Basic LISTEN/NOTIFY Pattern");
+    println!(" Demo 1: Basic LISTEN/NOTIFY Pattern");
     println!("----------------------------------------");
 
     // Start listening for changes on "users" collection
@@ -33,11 +33,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Spawn a task to listen for events
     let listener_task = tokio::spawn(async move {
-        println!("👂 Listener: Waiting for changes...");
+        println!(" Listener: Waiting for changes...");
 
         for i in 0..3 {
             if let Ok(event) = listener.recv().await {
-                println!("  ✨ Listener received event #{}", i + 1);
+                println!("  Listener received event #{}", i + 1);
                 println!("     Collection: {}", event.collection);
                 println!("     Type: {:?}", event.change_type);
                 println!("     ID: {}", event.id);
@@ -112,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Spawn filtered listener
     let filtered_task = tokio::spawn(async move {
-        println!("👂 Active Users Listener: Waiting for active users only...");
+        println!(" Active Users Listener: Waiting for active users only...");
 
         if let Ok(event) = active_listener.recv().await {
             println!("  Received active user event!");
@@ -172,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let task1 = tokio::spawn(async move {
         if let Ok(event) = listener1.recv().await {
-            println!("  👂 Listener 1 received: {}", event.id);
+            println!("   Listener 1 received: {}", event.id);
         }
     });
 
@@ -211,16 +211,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.new_collection(
         "posts",
         vec![
-            ("id", FieldType::String, true),
-            ("title", FieldType::String, false),
-            ("user_id", FieldType::String, false),
+            ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),
+            ("title", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("user_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
         ],
     ).await?;
 
     let mut global_listener = db.listen_all();
 
     let global_task = tokio::spawn(async move {
-        println!("👂 Global Listener: Waiting for changes from ANY collection...");
+        println!(" Global Listener: Waiting for changes from ANY collection...");
 
         for i in 0..2 {
             if let Ok(event) = global_listener.recv().await {

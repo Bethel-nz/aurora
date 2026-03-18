@@ -12,7 +12,7 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
 
     // Open database with a 'static Arc wrapper for watch() to work
     // We leak the Arc to get a 'static reference
-    let db: &'static Aurora = Box::leak(Box::new(Aurora::open("reactive_demo.db")?));
+    let db: &'static Aurora = Box::leak(Box::new(Aurora::open("reactive_demo.db").await?));
 
     // Clean up any existing data
     let _ = db.delete_collection("tasks").await;
@@ -21,13 +21,13 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     db.new_collection(
         "tasks",
         vec![
-            ("title", FieldType::String, false),
-            ("completed", FieldType::Bool, false),
-            ("priority", FieldType::Int, false),
+            ("title", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("completed", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_BOOL, unique: false, indexed: false, nullable: true }),
+            ("priority", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ],
     ).await?;
 
-    println!("✓ Created 'tasks' collection\n");
+    println!("- Created 'tasks' collection\n");
 
     // Insert some initial tasks
     db.insert_into(
@@ -50,7 +50,7 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Inserted initial tasks\n");
+    println!("- Inserted initial tasks\n");
 
     // Spawn a background task that will modify data
     let writer_handle = tokio::spawn(async move {
@@ -101,11 +101,11 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create a reactive query that watches for high-priority incomplete tasks
-    println!("📡 Watching for high-priority tasks (priority >= 2)...\n");
+    println!(" Watching for high-priority tasks (priority >= 2)...\n");
 
     let mut watcher = db
         .query("tasks")
-        .filter(|f| f.gte("priority", 2) && f.eq("completed", false))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.gte("priority", 2) & f.eq("completed", false))
         .watch()
         .await?;
 
@@ -128,7 +128,7 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
                         .get("priority")
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
-                    println!("  ✅ ADDED: '{}' (priority: {})", title, priority);
+                    println!("   ADDED: '{}' (priority: {})", title, priority);
                 }
                 aurora_db::reactive::QueryUpdate::Removed(doc) => {
                     let title = doc
@@ -136,7 +136,7 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
                         .get("title")
                         .and_then(|v| v.as_str())
                         .unwrap_or("Unknown");
-                    println!("  ❌ REMOVED: '{}'", title);
+                    println!("   REMOVED: '{}'", title);
                 }
                 aurora_db::reactive::QueryUpdate::Modified { old, new } => {
                     let old_title = old
@@ -149,13 +149,13 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
                         .get("title")
                         .and_then(|v| v.as_str())
                         .unwrap_or("Unknown");
-                    println!("  🔄 MODIFIED: '{}' -> '{}'", old_title, new_title);
+                    println!("   MODIFIED: '{}' -> '{}'", old_title, new_title);
                 }
             }
 
             // Stop after receiving a few updates (for demo purposes)
             if update_count >= 3 {
-                println!("\n📊 Received {} updates, stopping watcher", update_count);
+                println!("\n Received {} updates, stopping watcher", update_count);
                 break;
             }
         }
@@ -170,12 +170,12 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     // Cleanup
     watcher_handle.abort();
 
-    println!("\n✨ Demo complete!");
+    println!("\n Demo complete!");
     println!("\nKey takeaways:");
-    println!("  • Reactive queries watch for real-time data changes");
-    println!("  • Filters are applied automatically to incoming events");
-    println!("  • Updates show Added/Removed/Modified changes");
-    println!("  • Perfect for building real-time UIs and dashboards");
+    println!("  * Reactive queries watch for real-time data changes");
+    println!("  * Filters are applied automatically to incoming events");
+    println!("  * Updates show Added/Removed/Modified changes");
+    println!("  * Perfect for building real-time UIs and dashboards");
 
     Ok(())
 }

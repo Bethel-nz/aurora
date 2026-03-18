@@ -5,16 +5,16 @@ use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 Aurora AQL Complete Showcase");
+    println!(" Aurora AQL Complete Showcase");
     println!("=================================");
 
     // Initialize with real-time config (showcasing your optimizations)
-    let db = Aurora::with_config(AuroraConfig::realtime())?;
+    let db = Aurora::with_config(AuroraConfig::realtime()).await?;
 
     // ==========================================
     // 1. SCHEMA DEFINITION
     // ==========================================
-    println!("\n📝 1. Defining Schemas...");
+    println!("\n 1. Defining Schemas...");
 
     db.execute(
         r#"
@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================
     // 2. REACTIVE QUERIES (Your New Feature!)
     // ==========================================
-    println!("\n📡 2. Setting up Reactive Queries...");
+    println!("\n 2. Setting up Reactive Queries...");
 
     // Watch for new posts
     let db_clone = db.clone();
@@ -75,23 +75,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         let mut post_watcher = match static_db
             .query("posts")
-            .filter(|f| f.eq("published", true))
+            .filter(|f: &aurora_db::query::FilterBuilder| f.eq("published", true))
             .watch()
             .await
         {
             Ok(w) => w,
             Err(e) => {
-                println!("   ❌ Failed to setup post watcher: {}", e);
+                println!("   Failed to setup post watcher: {}", e);
                 return;
             }
         };
 
-        println!("   👀 Watching for published posts...");
+        println!("    Watching for published posts...");
         while let Some(update) = post_watcher.next().await {
             match update {
                 aurora_db::reactive::QueryUpdate::Added(doc) => {
                     println!(
-                        "   🆕 New published post: {}",
+                        "    New published post: {}",
                         doc.data
                             .get("title")
                             .and_then(|v| v.as_str())
@@ -100,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 aurora_db::reactive::QueryUpdate::Modified { old: _, new } => {
                     println!(
-                        "   ✏️  Post updated: {}",
+                        "   Post updated: {}",
                         new.data
                             .get("title")
                             .and_then(|v| v.as_str())
@@ -109,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 aurora_db::reactive::QueryUpdate::Removed(doc) => {
                     println!(
-                        "   🗑️  Post removed: {}",
+                        "   Post removed: {}",
                         doc.data
                             .get("title")
                             .and_then(|v| v.as_str())
@@ -126,22 +126,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         let mut order_watcher = match static_db2
             .query("orders")
-            .filter(|f| f.gt("amount", 100.0))
+            .filter(|f: &aurora_db::query::FilterBuilder| f.gt("amount", 100.0))
             .watch()
             .await
         {
             Ok(w) => w,
             Err(e) => {
-                println!("   ❌ Failed to setup order watcher: {}", e);
+                println!("   Failed to setup order watcher: {}", e);
                 return;
             }
         };
 
-        println!("   💰 Watching for high-value orders...");
+        println!("    Watching for high-value orders...");
         while let Some(update) = order_watcher.next().await {
             if let aurora_db::reactive::QueryUpdate::Added(order) = update {
                 println!(
-                    "   💸 High-value order: ${}",
+                    "    High-value order: ${}",
                     order
                         .data
                         .get("amount")
@@ -157,7 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================
     // 3. DATA SEEDING WITH BULK OPERATIONS
     // ==========================================
-    println!("\n💾 3. Seeding Data...");
+    println!("\n 3. Seeding Data...");
 
     // Insert users
     let users = vec![
@@ -193,7 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .await?;
     }
-    println!("   ✅ Inserted {} users", users.len());
+    println!("   Inserted {} users", users.len());
 
     // Insert posts
     let posts = vec![
@@ -271,7 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .await?;
     }
-    println!("   ✅ Inserted {} posts", posts.len());
+    println!("   Inserted {} posts", posts.len());
 
     // Insert orders
     let orders = vec![
@@ -308,12 +308,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .await?;
     }
-    println!("   ✅ Inserted {} orders", orders.len());
+    println!("   Inserted {} orders", orders.len());
 
     // ==========================================
     // 4. COMPLEX QUERIES
     // ==========================================
-    println!("\n🔍 4. Complex Queries...");
+    println!("\n 4. Complex Queries...");
 
     // Find active admins over 25
     println!("   > Active admins over 25:");
@@ -367,7 +367,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================
     // 5. AGGREGATION QUERIES (Your Fix!)
     // ==========================================
-    println!("\n📊 5. Aggregation Queries...");
+    println!("\n 5. Aggregation Queries...");
 
     // Count users by role
     println!("   > User count by role:");
@@ -415,7 +415,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================
     // 6. WORKERS/JOBS (Your New Feature!)
     // ==========================================
-    println!("\n⚙️  6. Background Jobs...");
+    println!("\n 6. Background Jobs...");
 
     // Email notification job
     let job_result = db
@@ -434,7 +434,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     "#,
         )
         .await?;
-    println!("   📧 Email job enqueued: {:?}", job_result);
+    println!("    Email job enqueued: {:?}", job_result);
 
     // Bulk data processing job
     let bulk_job = db
@@ -453,12 +453,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     "#,
         )
         .await?;
-    println!("   📦 Bulk export job enqueued: {:?}", bulk_job);
+    println!("    Bulk export job enqueued: {:?}", bulk_job);
 
     // ==========================================
     // 7. REAL-TIME DEMONSTRATION
     // ==========================================
-    println!("\n🔴 7. Real-time Updates Demo...");
+    println!("\n 7. Real-time Updates Demo...");
 
     // Trigger some updates to show reactive queries in action
     println!("   Adding a new post...");
@@ -502,7 +502,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================
     // 8. UPDATES AND DELETES
     // ==========================================
-    println!("\n✏️  8. Updates & Deletes...");
+    println!("\n 8. Updates & Deletes...");
 
     // Update post views
     let update_result = db
@@ -521,7 +521,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     "#,
         )
         .await?;
-    println!("   ✅ Updated post views: {:?}", update_result);
+    println!("   Updated post views: {:?}", update_result);
 
     // Delete cancelled orders
     let delete_result = db
@@ -539,12 +539,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     "#,
         )
         .await?;
-    println!("   🗑️  Deleted cancelled orders: {:?}", delete_result);
+    println!("   Deleted cancelled orders: {:?}", delete_result);
 
     // ==========================================
     // 9. SUBSCRIPTION DEMO (AQL Style)
     // ==========================================
-    println!("\n📡 9. AQL Subscriptions...");
+    println!("\n 9. AQL Subscriptions...");
 
     let subscription_result = db
         .execute(
@@ -565,17 +565,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let ExecutionResult::Subscription(sub) = subscription_result {
         if let Some(mut stream) = sub.stream {
-            println!("   👂 Listening for subscription events...");
+            println!("    Listening for subscription events...");
 
             // Listen for a few events
             for i in 0..3 {
                 match tokio::time::timeout(Duration::from_secs(2), stream.recv()).await {
                     Ok(Ok(event)) => {
-                        println!("   🔔 Event {}: {:?}", i + 1, event);
+                        println!("    Event {}: {:?}", i + 1, event);
                     }
                     Ok(Err(_)) => break,
                     Err(_) => {
-                        println!("   ⏰ No more events within timeout");
+                        println!("   No more events within timeout");
                         break;
                     }
                 }
@@ -586,9 +586,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for background tasks
     sleep(Duration::from_secs(2)).await;
 
-    println!("\n✅ Aurora AQL Showcase Complete!");
+    println!("\n Aurora AQL Showcase Complete!");
     println!("=================================");
-    println!("🚀 Your optimized storage + reactive features = Amazing performance!");
+    println!(" Your optimized storage + reactive features = Amazing performance!");
 
     Ok(())
 }

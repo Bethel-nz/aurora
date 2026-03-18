@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
         std::fs::remove_dir_all(db_path)?;
     }
 
-    let db = time_operation!("Database initialization", Aurora::open(db_path))?;
+    let db = time_operation!("Database initialization", Aurora::open(db_path)).await?;
 
     // 1. Basic Key-Value Operations
     println!("\n=== 1. Basic Key-Value Operations ===");
@@ -46,10 +46,10 @@ async fn main() -> Result<()> {
         db.new_collection(
             collection_name,
             vec![
-                ("name".to_string(), FieldType::String, false),
-                ("email".to_string(), FieldType::String, true),
-                ("age".to_string(), FieldType::Int, false),
-                ("premium".to_string(), FieldType::Bool, false),
+                ("name".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+                ("email".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),
+                ("age".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+                ("premium".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_BOOL, unique: false, indexed: false, nullable: true }),
             ]
         )
     )
@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
     let adult_users = time_operation!(
         "Query (age > 21)",
         db.query(collection_name)
-            .filter(|f| f.gt("age", Value::Int(21)))
+            .filter(|f: &aurora_db::query::FilterBuilder| f.gt("age", Value::Int(21)))
             .collect()
             .await
     )?;
@@ -124,8 +124,8 @@ async fn main() -> Result<()> {
     db.new_collection(
         articles_collection,
         vec![
-            ("title".to_string(), FieldType::String, false),
-            ("content".to_string(), FieldType::String, false),
+            ("title".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("content".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
         ],
     )
     .await?;
@@ -155,14 +155,14 @@ async fn main() -> Result<()> {
     println!("-> Articles indexed.");
 
     println!("Searching for articles about 'database'...");
-    let search_results = time_operation!(
+    let search_results: Vec<aurora_db::types::Document> = time_operation!(
         "Search",
         db.search(articles_collection)
             .field("content")
             .matching("database")
             .collect()
             .await
-    )?;
+    ).expect("Search failed");
     assert_eq!(search_results.len(), 1);
     println!("Found {} search result(s).", search_results.len());
     for article in &search_results {

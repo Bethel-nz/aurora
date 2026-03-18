@@ -7,17 +7,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test 1: Collection with ONLY unique field indexed
     {
-        let db = Aurora::open("indexing_test1.db")?;
+        let db = Aurora::open("indexing_test1.db").await?;
         let _ = db.delete_collection("users");
 
         db.new_collection(
             "users",
             vec![
-                ("id", FieldType::String, true),       // indexed (unique)
-                ("name", FieldType::String, false),    // NOT indexed
-                ("email", FieldType::String, false),   // NOT indexed
-                ("age", FieldType::Int, false),        // NOT indexed
-                ("address", FieldType::String, false), // NOT indexed
+                ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),       // indexed (unique)
+                ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),    // NOT indexed
+                ("email", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),   // NOT indexed
+                ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),        // NOT indexed
+                ("address", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }), // NOT indexed
             ],
         ).await?;
 
@@ -48,18 +48,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test 2: Collection with MULTIPLE fields indexed
     {
-        let db = Aurora::open("indexing_test2.db")?;
+        let db = Aurora::open("indexing_test2.db").await?;
         let _ = db.delete_collection("products");
 
         db.new_collection(
             "products",
             vec![
-                ("id", FieldType::String, true),        // indexed
-                ("sku", FieldType::String, true),       // indexed
-                ("name", FieldType::String, false),     // NOT indexed
-                ("price", FieldType::Float, false),     // NOT indexed
-                ("category", FieldType::String, false), // NOT indexed
-                ("stock", FieldType::Int, false),       // NOT indexed
+                ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),        // indexed
+                ("sku", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),       // indexed
+                ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),     // NOT indexed
+                ("price", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true }),     // NOT indexed
+                ("category", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }), // NOT indexed
+                ("stock", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),       // NOT indexed
             ],
         ).await?;
 
@@ -91,22 +91,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test 3: Many fields, none indexed (except auto-indexed id)
     {
-        let db = Aurora::open("indexing_test3.db")?;
+        let db = Aurora::open("indexing_test3.db").await?;
         let _ = db.delete_collection("logs");
 
         db.new_collection(
             "logs",
             vec![
-                ("id", FieldType::String, true), // auto-indexed
-                ("timestamp", FieldType::String, false),
-                ("level", FieldType::String, false),
-                ("message", FieldType::String, false),
-                ("source", FieldType::String, false),
-                ("user", FieldType::String, false),
-                ("ip", FieldType::String, false),
-                ("duration_ms", FieldType::Int, false),
-                ("status", FieldType::Int, false),
-                ("metadata", FieldType::String, false),
+                ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }), // auto-indexed
+                ("timestamp", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+                ("level", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+                ("message", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+                ("source", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+                ("user", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+                ("ip", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+                ("duration_ms", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+                ("status", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+                ("metadata", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
             ],
         ).await?;
 

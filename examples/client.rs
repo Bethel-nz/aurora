@@ -15,9 +15,9 @@ async fn main() -> anyhow::Result<()> {
         .new_collection(
             "products",
             vec![
-                ("name".to_string(), FieldType::String, false),
-                ("price".to_string(), FieldType::Float, false),
-                ("in_stock".to_string(), FieldType::Bool, false),
+                ("name".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+                ("price".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true }),
+                ("in_stock".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_BOOL, unique: false, indexed: false, nullable: true }),
             ],
         )
         .await?;
