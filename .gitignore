@@ -13,6 +13,8 @@ pubsub_fanout_report.txt
 memory_benchmark_report.txt
 broken_test.txt
 aurora_query_stats.log
+aurora_full_benchmark.log
+aurora_baseline_*.txt
 
 # Cargo check logs
 cargo_check*.log

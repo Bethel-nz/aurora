@@ -374,6 +374,404 @@ ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
 
+
+
+==========================================================
+AURORA FULL SYSTEM PERFORMANCE REPORT
+Timestamp: 2026-03-21 17:48:48
+==========================================================
+
+>>> RUNNING: Core Stress & Scaling
+----------------------------------------------------------
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 20.69s
+     Running tests/core_stress_bench.rs (target/release/deps/core_stress_bench-b5c270c95eb02009)
+
+running 3 tests
+
+=== BENCHMARK: Worker Queue Throughput ===
+
+=== BENCHMARK: Needle in a Haystack (Lookup Scaling) ===
+
+=== BENCHMARK: Computed Fields CPU Load ===
+Enqueuing 10000 jobs...
+
+Scale: 10,000 documents
+Ingesting 100,000 documents...
+  Enqueue time: 192.711875ms
+  Throughput:   51891 jobs/sec
+Starting 4 workers to clear queue...
+  Ingestion time: 381.894834ms
+  Indexed Lookup:  87.334µs
+  Full Table Scan: 75.736125ms
+
+Scale: 100,000 documents
+  Execution time: 724.3275ms
+  Throughput:     13806 jobs/sec
+test test_worker_queue_throughput ... ok
+Executing AQL with complex projections on 100k docs...
+  AQL Execution time: 509.639834ms
+  Throughput:         196217 docs/sec
+  Starvation check progress: 0/100
+  Ingestion time: 4.487569875s
+  Indexed Lookup:  27.458µs
+test test_computed_fields_cpu_load ... ok
+  Full Table Scan: 397.04175ms
+
+Scale: 1,000,000 documents
+  Ingestion time: 34.705234542s
+  Indexed Lookup:  22µs
+  Full Table Scan: 5.0206505s
+test test_needle_in_haystack_scaling ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 48.34s
+
+
+
+>>> RUNNING: Reactive Performance
+----------------------------------------------------------
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 3.87s
+     Running tests/reactive_performance_test.rs (target/release/deps/reactive_performance_test-cd2d37fa3b5446e8)
+
+running 1 test
+
+=== AURORA REACTIVE PERFORMANCE TEST ===
+Watcher established. Starting high-frequency writes...
+
+==================================================
+AURORA REACTIVE PERFORMANCE REPORT
+Timestamp: 2026-03-21 17:50:05
+==================================================
+
+Total Reactive Events: 5000
+Overall Test Time:     75.40ms
+Write Throughput:      77764 events/sec
+Reactive Throughput:   66316 matches/sec
+Avg Latency:           15.08µs (End-to-End)
+
+Architectural Advantage: Push-based delta matching
+
+Report saved to: reactive_benchmark_report.txt
+test test_reactive_latency_and_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+
+
+>>> RUNNING: Reactive Extreme Scaling
+----------------------------------------------------------
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 5.73s
+     Running tests/reactive_extreme_test.rs (target/release/deps/reactive_extreme_test-24a31fc0943f8520)
+
+running 1 test
+================================================================================
+AURORA REACTIVE PERFORMANCE BENCHMARK
+Scenario: High-Frequency Data Ingestion + Live Query Watcher
+Timestamp: 2026-03-21 17:50:14
+================================================================================
+
+
+
+================================================================================
+Testing Reactive Scale: 1 updates
+================================================================================
+Scale: 1 updates
+Total matches processed: 1
+Processing time: 324.63µs
+Reactive throughput: 3080 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Testing Reactive Scale: 10 updates
+================================================================================
+Scale: 10 updates
+Total matches processed: 10
+Processing time: 465.00µs
+Reactive throughput: 21505 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Testing Reactive Scale: 100 updates
+================================================================================
+Scale: 100 updates
+Total matches processed: 100
+Processing time: 3.34ms
+Reactive throughput: 29944 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Testing Reactive Scale: 1,000 updates
+================================================================================
+Scale: 1,000 updates
+Total matches processed: 1000
+Processing time: 27.63ms
+Reactive throughput: 36188 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Testing Reactive Scale: 10,000 updates
+================================================================================
+Scale: 10,000 updates
+Total matches processed: 10000
+Processing time: 92.64ms
+Reactive throughput: 107943 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Testing Reactive Scale: 100,000 updates
+================================================================================
+WARNING: Watcher for 'live_data' lagged by 24 events. Applying 100ms backoff...
+WARNING: Watcher for 'live_data' lagged by 9 events. Applying 100ms backoff...
+Scale: 100,000 updates
+Total matches processed: 100000
+Processing time: 3.16s
+Reactive throughput: 31686 matches/sec
+--------------------------------------------------------------------------------
+
+================================================================================
+Results saved to: reactive_benchmark_20260321_175021.txt and reactive_benchmark_20260321_175021.csv
+================================================================================
+test test_reactive_extreme_benchmark ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.39s
+
+
+
+>>> RUNNING: PubSub Fan-out
+----------------------------------------------------------
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 2.75s
+     Running tests/pubsub_fanout_test.rs (target/release/deps/pubsub_fanout_test-cb209b4026b07be8)
+
+running 1 test
+
+=== AURORA PUBSUB REAL-WORLD FAN-OUT TEST ===
+Spawning 100 subscribers...
+Sending 1000 messages to 100 users...
+
+=== RESULTS ===
+Subscribers:         100
+Messages Sent:       1000
+Total Deliveries:    100000
+Total Time:          50.36ms
+Delivery Throughput: 1985521 msgs/sec (Fan-out)
+test test_pubsub_real_world_fanout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+
+
+>>> RUNNING: Memory & 1M Ingestion
+----------------------------------------------------------
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 3.16s
+     Running tests/memory_1m_test.rs (target/release/deps/memory_1m_test-4ec5162cb9ad9455)
+
+running 1 test
+
+=== 1 MILLION RECORDS MEMORY TEST ===
+Initial RSS: 14 MB
+Starting 1 million record insert...
+
+Batch  1/20: Inserted:   50000 | RSS:  143 MB | Growth:  129 MB | Tput: 38182 docs/sec
+Batch  2/20: Inserted:  100000 | RSS:  216 MB | Growth:  202 MB | Tput: 32461 docs/sec
+Batch  3/20: Inserted:  150000 | RSS:  283 MB | Growth:  269 MB | Tput: 30733 docs/sec
+Batch  4/20: Inserted:  200000 | RSS:  347 MB | Growth:  333 MB | Tput: 30702 docs/sec
+Batch  5/20: Inserted:  250000 | RSS:  421 MB | Growth:  407 MB | Tput: 32578 docs/sec
+Batch  6/20: Inserted:  300000 | RSS:  483 MB | Growth:  469 MB | Tput: 37128 docs/sec
+Batch  7/20: Inserted:  350000 | RSS:  545 MB | Growth:  531 MB | Tput: 31717 docs/sec
+Batch  8/20: Inserted:  400000 | RSS:  612 MB | Growth:  598 MB | Tput: 30382 docs/sec
+Batch  9/20: Inserted:  450000 | RSS:  675 MB | Growth:  661 MB | Tput: 32302 docs/sec
+Batch 10/20: Inserted:  500000 | RSS:  753 MB | Growth:  739 MB | Tput: 31655 docs/sec
+Batch 11/20: Inserted:  550000 | RSS:  816 MB | Growth:  802 MB | Tput: 36141 docs/sec
+Batch 12/20: Inserted:  600000 | RSS:  878 MB | Growth:  864 MB | Tput: 32070 docs/sec
+Batch 13/20: Inserted:  650000 | RSS:  940 MB | Growth:  926 MB | Tput: 31705 docs/sec
+Batch 14/20: Inserted:  700000 | RSS: 1002 MB | Growth:  988 MB | Tput: 31699 docs/sec
+Batch 15/20: Inserted:  750000 | RSS: 1072 MB | Growth: 1058 MB | Tput: 27543 docs/sec
+Batch 16/20: Inserted:  800000 | RSS: 1140 MB | Growth: 1126 MB | Tput: 35816 docs/sec
+Batch 17/20: Inserted:  850000 | RSS: 1202 MB | Growth: 1188 MB | Tput: 32074 docs/sec
+Batch 18/20: Inserted:  900000 | RSS: 1264 MB | Growth: 1250 MB | Tput: 32185 docs/sec
+Batch 19/20: Inserted:  950000 | RSS: 1393 MB | Growth: 1379 MB | Tput: 30611 docs/sec
+Batch 20/20: Inserted: 1000000 | RSS: 1456 MB | Growth: 1442 MB | Tput: 31673 docs/sec
+
+=== SUMMARY ===
+Total Documents: 1,000,000
+Total Time:      31.89s
+Avg Throughput:  31355 docs/sec
+Final RSS:       1459 MB
+Total Growth:    1445 MB
+Avg Growth/100k: 144.50 MB
+
+Results saved to:
+  - TEXT: memory_benchmark_report.txt
+  - CSV:  memory_benchmark_batches.csv
+test test_1_million_records_memory ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.41s
+
+
+
+>>> RUNNING: Deep Pagination Stress
+----------------------------------------------------------
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 6.30s
+     Running tests/pagination_stress_test.rs (target/release/deps/pagination_stress_test-79318b6825cb917c)
+
+running 1 test
+
+=== STRESS TEST: Deep Pagination & Projections (1M Docs) ===
+Ingesting 1,000,000 documents...
+  Processed 100,000 docs...
+  Processed 200,000 docs...
+  Processed 300,000 docs...
+  Processed 400,000 docs...
+  Processed 500,000 docs...
+  Processed 600,000 docs...
+  Processed 700,000 docs...
+  Processed 800,000 docs...
+  Processed 900,000 docs...
+  Processed 1,000,000 docs...
+Ingestion finished in 36.753574667s
+
+Testing Deep Pagination (Offset: 999,990, Limit: 10)...
+  Deep Offset Query took: 10.602800334s
+
+Testing Cursor Pagination (After 500,000)...
+  Cursor Query (Jump to 500k) took: 231.208µs
+
+Testing Projections...
+  Document keys: ["index", "tag", "id"]
+  Projection: SUCCESS
+Testing Empty Projection (Return All)...
+  Empty Projection: SUCCESS
+
+=== ALL PAGINATION AND PROJECTION TESTS PASSED ===
+
+test test_deep_pagination_and_projections ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 51.63s
+
+
+
+>>> RUNNING: AQL Overhead Comparison
+----------------------------------------------------------
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 5.97s
+     Running tests/performance_comparison.rs (target/release/deps/performance_comparison-81de958e4c420ff1)
+
+running 1 test
+
+=== OPTIMIZED PERFORMANCE: Fluent API vs AQL (Variable Caching) ===
+
+Ingestion (1,000 Inserts):
+  Fluent API:  15.1075ms
+  AQL (Cached): 3.13790075s
+
+Query (1,000 Index Lookups):
+  Fluent API:  4.083375ms
+  AQL (Cached): 5.369541ms
+
+Summary:
+  AQL overhead for Ingestion: 207.7x (was 4.0x)
+  AQL overhead for Query:     1.3x (was 1.1x)
+==========================================================
+
+test test_fluent_vs_aql_optimized ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.18s
+
+
+
+>>> RUNNING: Internal Subsystem Benchmarks
+----------------------------------------------------------
+   Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
+    Finished `release` profile [optimized] target(s) in 20.12s
+     Running unittests src/lib.rs (target/release/deps/aurora_db-1b2e1ab32768a71d)
+
+running 72 tests
+test computed::tests::test_concat_expression ... ok
+test computed::tests::test_average_expression ... ok
+test computed::tests::test_sum_expression ... ok
+test computed::tests::test_template_expression ... ok
+test computed::tests::test_computed_fields_registry ... ok
+test computed::tests::test_rhai_null_handling ... ok
+test computed::tests::test_rhai_simple_expression ... ok
+test computed::tests::test_rhai_string_concat ... ok
+test computed::tests::test_computed_engine_builtin_functions ... ok
+test computed::tests::test_rhai_conditional ... ok
+test db::tests::test_basic_operations ... ok
+test db::tests::test_nullable_field_definition ... ok
+test db::tests::test_blob_operations ... ok
+test parser::tests::test_parse_aggregate_with_alias ... ok
+test parser::tests::test_parse_alter_collection ... ok
+test parser::tests::test_parse_fragment_with_query ... ok
+test parser::tests::test_parse_fragment_definition ... ok
+test parser::tests::test_parse_introspection ... ok
+test parser::tests::test_parse_lookup_selection ... ok
+test parser::tests::test_parse_lookup_with_filter ... ok
+test parser::tests::test_parse_mutation ... ok
+test parser::tests::test_parse_query_with_filter ... ok
+test parser::tests::test_parse_simple_query ... ok
+test parser::validator::tests::test_resolve_variables ... ok
+test parser::validator::tests::test_validate_filter_string_operator_on_int ... ok
+test parser::validator::tests::test_validate_filter_type_mismatch ... ok
+test parser::validator::tests::test_validate_missing_required_variable ... ok
+test parser::validator::tests::test_validate_unknown_collection ... ok
+test parser::validator::tests::test_validate_unknown_field ... ok
+test parser::validator::tests::test_validate_valid_query ... ok
+test pubsub::events::tests::test_change_event_field_changed ... ok
+test pubsub::events::tests::test_change_event_insert ... ok
+test pubsub::events::tests::test_event_filter ... ok
+test pubsub::listener::tests::test_listener_field_filter ... ok
+test pubsub::listener::tests::test_listener_filter ... ok
+test pubsub::tests::test_pubsub_basic ... ok
+test pubsub::tests::test_pubsub_global_listener ... ok
+test pubsub::tests::test_pubsub_multiple_listeners ... ok
+test reactive::tests::test_reactive_state_add_if_matches ... ok
+test reactive::tests::test_reactive_state_filter ... ok
+test reactive::tests::test_reactive_state_update_transitions ... ok
+test reactive::updates::tests::test_query_update_types ... ok
+test search::tests::test_document_removal ... ok
+test search::tests::test_enhanced_search ... ok
+test search::tests::test_fuzzy_search ... ok
+test db::tests::test_query_operations ... ok
+test search::tests::test_highlight_matches ... ok
+test search::tests::test_levenshtein_distance ... ok
+test search::tests::test_stop_words ... ok
+test storage::hot::tests::test_async_operations ... ok
+test storage::hot::tests::test_basic_get_set ... ok
+test storage::hot::tests::test_cache_miss ... ok
+test db::tests::test_async_wal_integration ... ok
+test storage::hot::tests::test_is_hot ... ok
+test transaction::tests::test_transaction_isolation ... ok
+test wal::log::tests::test_invalid_path ... ok
+test db::tests::test_unique_constraints ... ok
+test db::tests::test_transactions ... ok
+test wal::log::tests::test_log_operations ... ok
+test wal::log::tests::test_large_values ... ok
+test wal::log::tests::test_rollback_operation ... ok
+test workers::job::tests::test_exponential_backoff ... ok
+test workers::job::tests::test_job_creation ... ok
+test storage::write_buffer::tests::test_write_buffer ... ok
+test wal::log::tests::test_transaction_operations ... ok
+test workers::job::tests::test_job_should_run ... ok
+test workers::job::tests::test_job_retry_logic ... ok
+test db::tests::test_blob_size_limit ... ok
+test wal::log::tests::test_truncate ... ok
+test parser::executor::tests::test_executor_integration ... ok
+test reactive::watcher::tests::test_query_watcher_insert ... ok
+test storage::write_buffer::tests::test_write_buffer_batch_flush ... ok
+
+test result: ok. 72 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.73s
+
+
+
+==========================================================
+ALL BENCHMARKS COMPLETED
+==========================================================
+
 aurora on  master [!?] is 📦 v0.5.0 via 🐍 v3.14.2 via 🦀 v1.92.0
 ❯ cargo bench --bench baseline_benchmark
    Compiling aurora-db v0.5.0 (/Users/APPLE/Documents/aurora)
