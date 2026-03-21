@@ -1050,16 +1050,25 @@ fn report_unknown_filter_ops<S: SchemaProvider>(
                 "not" => report_unknown_filter_ops(val, ctx),
                 field => {
                     if let Value::Object(ops) = val {
-                        for op in ops.keys() {
-                            if !KNOWN_OPS.contains(&op.as_str()) {
-                                ctx.add_error(
-                                    ErrorCode::InvalidArgument,
-                                    format!(
-                                        "Unknown filter operator '{}' on field '{}'",
-                                        op, field
-                                    ),
-                                );
+                        // Only flag unknown keys when at least one recognized operator
+                        // is present — otherwise this is a nested-field reference and
+                        // we should recurse rather than flag every key as an unknown op.
+                        let has_known_op = ops.keys().any(|k| KNOWN_OPS.contains(&k.as_str()));
+                        if has_known_op {
+                            for op in ops.keys() {
+                                if !KNOWN_OPS.contains(&op.as_str()) {
+                                    ctx.add_error(
+                                        ErrorCode::InvalidArgument,
+                                        format!(
+                                            "Unknown filter operator '{}' on field '{}'",
+                                            op, field
+                                        ),
+                                    );
+                                }
                             }
+                        } else {
+                            // Nested field reference — recurse into it
+                            report_unknown_filter_ops(val, ctx);
                         }
                     }
                 }

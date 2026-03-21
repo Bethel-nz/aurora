@@ -215,8 +215,10 @@ impl<'a> QueryBuilder<'a> {
                 if let Some(ref b) = candidate_bitmap {
                     if b.is_empty() {
                         let in_transaction = crate::transaction::ACTIVE_TRANSACTION_ID
-                            .try_with(|_| ())
-                            .is_ok();
+                            .try_with(|id| *id)
+                            .ok()
+                            .and_then(|id| self.db.transaction_manager.active_transactions.get(&id))
+                            .is_some();
                         if !in_transaction {
                             return Ok(vec![]);
                         }
