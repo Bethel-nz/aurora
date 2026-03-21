@@ -10,7 +10,7 @@ use super::ast::{
     self, Document, Field, Filter, FragmentDef, Mutation, Query, Selection, Subscription, Value,
 };
 use crate::types::{Collection, FieldType, ScalarType};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// Error codes for validation failures
@@ -136,6 +136,7 @@ pub struct ValidationContext<'a, S: SchemaProvider> {
     pub fragments: HashMap<String, &'a FragmentDef>,
     pub errors: Vec<ValidationError>,
     current_path: Vec<String>,
+    validating_fragments: HashSet<String>,
 }
 
 impl<'a, S: SchemaProvider> ValidationContext<'a, S> {
@@ -146,6 +147,7 @@ impl<'a, S: SchemaProvider> ValidationContext<'a, S> {
             fragments: HashMap::new(),
             errors: Vec::new(),
             current_path: Vec::new(),
+            validating_fragments: HashSet::new(),
         }
     }
 
@@ -200,7 +202,12 @@ pub fn validate_document<S: SchemaProvider>(
     // First pass: Collect fragment definitions
     for op in &doc.operations {
         if let ast::Operation::FragmentDefinition(frag) = op {
-            ctx.fragments.insert(frag.name.clone(), frag);
+            if ctx.fragments.insert(frag.name.clone(), frag).is_some() {
+                ctx.add_error(
+                    ErrorCode::InvalidInput,
+                    format!("Duplicate fragment definition '{}'", frag.name),
+                );
+            }
         }
     }
 
@@ -375,20 +382,17 @@ fn validate_field<S: SchemaProvider>(
     let field_name = field.alias.as_ref().unwrap_or(&field.name);
     ctx.push_path(field_name);
 
-    if field.selection_set.is_empty() {
-        // Leaf field - no further validation needed
-    } else {
-        // Field has a selection set - determine if it's a collection or nested object
-        match parent_collection {
-            None => {
-                // Top-level field - should be a collection reference
-                let collection_name = &field.name;
-                if !ctx.schema.collection_exists(collection_name) {
-                    ctx.add_error(
-                        ErrorCode::UnknownCollection,
-                        format!("Collection '{}' does not exist", collection_name),
-                    );
-                } else if let Some(collection) = ctx.schema.get_collection(collection_name) {
+    match parent_collection {
+        None => {
+            // Top-level field - always validate collection existence (even for leaf fields)
+            let collection_name = &field.name;
+            if !ctx.schema.collection_exists(collection_name) {
+                ctx.add_error(
+                    ErrorCode::UnknownCollection,
+                    format!("Collection '{}' does not exist", collection_name),
+                );
+            } else if !field.selection_set.is_empty() {
+                if let Some(collection) = ctx.schema.get_collection(collection_name) {
                     // Validate nested fields against collection schema
                     validate_selection_set(&field.selection_set, collection, ctx);
 
@@ -402,8 +406,10 @@ fn validate_field<S: SchemaProvider>(
                     }
                 }
             }
-            Some(collection) => {
-                // Nested field within a collection - check if it's a Nested/Object type
+        }
+        Some(collection) => {
+            // Nested field within a collection - only check selection set if non-empty
+            if !field.selection_set.is_empty() {
                 if let Some(field_def) = collection.fields.get(&field.name) {
                     match &field_def.field_type {
                         FieldType::Nested(nested_schema) => {
@@ -569,6 +575,15 @@ fn validate_fragment_spread<S: SchemaProvider>(
     expected_collection: &str,
     ctx: &mut ValidationContext<'_, S>,
 ) {
+    // 0. Check for cycles
+    if ctx.validating_fragments.contains(fragment_name) {
+        ctx.add_error(
+            ErrorCode::InvalidInput,
+            format!("Fragment '{}' contains a cyclic reference", fragment_name),
+        );
+        return;
+    }
+
     // 1. Check if fragment exists
     let fragment_opt = ctx.fragments.get(fragment_name).cloned();
 
@@ -588,7 +603,9 @@ fn validate_fragment_spread<S: SchemaProvider>(
         // 3. Validate fragment's selection set against the collection
         if let Some(collection) = ctx.schema.get_collection(expected_collection) {
             ctx.push_path(&format!("...{}", fragment_name));
+            ctx.validating_fragments.insert(fragment_name.to_string());
             validate_selection_set(&fragment.selection_set, collection, ctx);
+            ctx.validating_fragments.remove(fragment_name);
             ctx.pop_path();
         }
     } else {

@@ -18,7 +18,11 @@ fn val(opt: Option<&Value>) -> String {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Aurora AQL Showcase ===\n");
 
-    let db = Aurora::with_config(AuroraConfig::default()).await?;
+    let tmp = tempfile::tempdir()?;
+    let db = Aurora::with_config(AuroraConfig {
+        db_path: tmp.path().join("aurora_showcase"),
+        ..Default::default()
+    }).await?;
 
     // ─────────────────────────────────────────────────────────────────────────
     // 1. SCHEMA
@@ -70,6 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ─────────────────────────────────────────────────────────────────────────
     println!("2. Setting up reactive watcher...");
 
+    let (watcher_ready_tx, watcher_ready_rx) = tokio::sync::oneshot::channel::<()>();
     let watch_db = db.clone();
     tokio::spawn(async move {
         let mut watcher = match watch_db
@@ -81,6 +86,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(w) => w,
             Err(e) => { eprintln!("  watcher setup failed: {e}"); return; }
         };
+
+        let _ = watcher_ready_tx.send(());
 
         while let Some(update) = watcher.next().await {
             match update {
@@ -97,7 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    sleep(Duration::from_millis(50)).await;
+    let _ = watcher_ready_rx.await;
 
     // ─────────────────────────────────────────────────────────────────────────
     // 3. INSERTS
@@ -331,7 +338,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let cursor_id = &cursor_doc.id;
             let aql = format!(r#"
                 query {{
-                    users(first: 3, after: "{cursor_id}") {{
+                    users(first: 3, after: "{cursor_id}", orderBy: {{ age: ASC }}) {{
                         edges {{
                             node {{ username age }}
                         }}
@@ -438,7 +445,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match tokio::time::timeout(Duration::from_secs(2), stream.recv()).await {
                 Ok(Ok(event)) => println!("  Received event:\n{}", event),
-                _ => println!("  No event within timeout"),
+                Ok(Err(_)) => println!("  Subscription channel closed"),
+                Err(_) => println!("  No event within timeout (2s)"),
             }
         }
     }
