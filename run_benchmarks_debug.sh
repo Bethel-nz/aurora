@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 cargo test \
   --test core_stress_bench \
   --test performance_comparison \

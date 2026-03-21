@@ -1,25 +1,26 @@
 #!/bin/bash
+set -euo pipefail
 
 # Configuration
 LOG_FILE="aurora_full_benchmark.log"
 TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
 
 # Clear old log and start fresh
-echo "==========================================================" > $LOG_FILE
-echo "AURORA FULL SYSTEM PERFORMANCE REPORT" >> $LOG_FILE
-echo "Timestamp: $TIMESTAMP" >> $LOG_FILE
-echo "==========================================================" >> $LOG_FILE
-echo "" >> $LOG_FILE
+echo "==========================================================" > "$LOG_FILE"
+echo "AURORA FULL SYSTEM PERFORMANCE REPORT" >> "$LOG_FILE"
+echo "Timestamp: $TIMESTAMP" >> "$LOG_FILE"
+echo "==========================================================" >> "$LOG_FILE"
+echo "" >> "$LOG_FILE"
 
 # Helper function to run a test and log output
 run_benchmark() {
     local test_name=$1
     local test_command=$2
     
-    echo ">>> RUNNING: $test_name" | tee -a $LOG_FILE
-    echo "----------------------------------------------------------" >> $LOG_FILE
-    $test_command --release -- --nocapture 2>&1 | tee -a $LOG_FILE
-    echo -e "\n" >> $LOG_FILE
+    echo ">>> RUNNING: $test_name" | tee -a "$LOG_FILE"
+    echo "----------------------------------------------------------" >> "$LOG_FILE"
+    $test_command --release -- --nocapture 2>&1 | tee -a "$LOG_FILE"
+    echo -e "\n" >> "$LOG_FILE"
 }
 
 echo "Starting full benchmark suite... this may take several minutes."
@@ -48,7 +49,7 @@ run_benchmark "AQL Overhead Comparison" "cargo test --test performance_compariso
 # 8. Library Unit Performance (Internal subsystems)
 run_benchmark "Internal Subsystem Benchmarks" "cargo test --lib"
 
-echo "==========================================================" | tee -a $LOG_FILE
-echo "ALL BENCHMARKS COMPLETED" | tee -a $LOG_FILE
-echo "Full report saved to: $LOG_FILE" | tee -a $LOG_FILE
-echo "==========================================================" | tee -a $LOG_FILE
+echo "==========================================================" | tee -a "$LOG_FILE"
+echo "ALL BENCHMARKS COMPLETED" | tee -a "$LOG_FILE"
+echo "Full report saved to: "$LOG_FILE"" | tee -a "$LOG_FILE"
+echo "==========================================================" | tee -a "$LOG_FILE"
