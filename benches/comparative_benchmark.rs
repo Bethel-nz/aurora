@@ -414,25 +414,24 @@ fn bench_reactive_subscription(c: &mut Criterion) {
             .unwrap();
         });
 
+        // Create the subscription once — we benchmark notification delivery, not setup cost
+        let _listener = rt.block_on(
+            db.stream(
+                r#"
+                subscription {
+                    events {
+                        id
+                        event_type
+                        payload
+                    }
+                }
+            "#,
+            )
+        ).unwrap();
+
         b.iter(|| {
             rt.block_on(async {
-                // Create listener via AQL subscription
-                let _listener = db
-                    .stream(
-                        r#"
-                    subscription {
-                        events {
-                            id
-                            event_type
-                            payload
-                        }
-                    }
-                "#,
-                    )
-                    .await
-                    .unwrap();
-
-                // Insert triggers notification (via AQL)
+                // Each iteration only measures insert + notification delivery
                 db.execute(
                     r#"
                     mutation {

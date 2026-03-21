@@ -93,18 +93,18 @@ fn bench_pure_insert(c: &mut Criterion) {
     });
 
     group.bench_function("aurora_fluent_insert_1000", |b| {
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         b.iter(|| {
-            rt.block_on(async {
-                for i in 0..INSERT_COUNT {
-                    // Manual document construction to bypass AQL parsing
+            let counter = counter.clone();
+            rt.block_on(async move {
+                for _ in 0..INSERT_COUNT {
+                    let id = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let doc = vec![
-                        ("name", Value::String(format!("User {}", i))),
-                        ("email", Value::String(format!("user{}@example.com", i))),
-                        ("age", Value::Int(20 + (i % 50) as i64)),
-                        ("active", Value::Bool(i % 2 == 0)),
+                        ("name", Value::String(format!("User {}", id))),
+                        ("email", Value::String(format!("user{}@example.com", id))),
+                        ("age", Value::Int(20 + (id % 50) as i64)),
+                        ("active", Value::Bool(id % 2 == 0)),
                     ];
-
-                    // Direct internal insert
                     aurora_db.insert_into("users", doc).await.unwrap();
                 }
             })
