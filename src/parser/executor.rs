@@ -1543,15 +1543,200 @@ fn map_ast_type(anno: &ast::TypeAnnotation) -> FieldType {
 }
 
 async fn execute_migration(
-    _db: &Aurora,
-    _migration: &ast::Migration,
+    db: &Aurora,
+    migration: &ast::Migration,
     _options: &ExecutionOptions,
 ) -> Result<ExecutionResult> {
+    let mut steps_applied = 0;
+    let mut last_version = String::new();
+
+    for step in &migration.steps {
+        last_version = step.version.clone();
+
+        if db.is_migration_applied(&step.version).await? {
+            eprintln!(
+                "[migration] version '{}' already applied — skipping",
+                step.version
+            );
+            continue;
+        }
+
+        eprintln!("[migration] applying version '{}'", step.version);
+
+        for action in &step.actions {
+            match action {
+                ast::MigrationAction::Schema(schema_op) => {
+                    execute_single_schema_op(db, schema_op).await?;
+                }
+                ast::MigrationAction::DataMigration(dm) => {
+                    execute_data_migration(db, dm).await?;
+                }
+            }
+        }
+
+        db.mark_migration_applied(&step.version).await?;
+        steps_applied += 1;
+        eprintln!("[migration] version '{}' applied", step.version);
+    }
+
+    let status = if steps_applied > 0 {
+        "applied".to_string()
+    } else {
+        "skipped".to_string()
+    };
+
     Ok(ExecutionResult::Migration(MigrationResult {
-        version: "1.0".to_string(),
-        steps_applied: 0,
-        status: "applied".to_string(),
+        version: last_version,
+        steps_applied,
+        status,
     }))
+}
+
+/// Execute a single SchemaOp — shared by execute_schema and execute_migration.
+async fn execute_single_schema_op(db: &Aurora, op: &ast::SchemaOp) -> Result<()> {
+    match op {
+        ast::SchemaOp::DefineCollection {
+            name,
+            fields,
+            if_not_exists,
+            ..
+        } => {
+            if *if_not_exists && db.get_collection_definition(name).is_ok() {
+                return Ok(());
+            }
+            let field_defs: Vec<(&str, FieldDefinition)> = fields
+                .iter()
+                .map(|f| {
+                    let field_type = map_ast_type(&f.field_type);
+                    let mut indexed = false;
+                    let mut unique = false;
+                    for d in &f.directives {
+                        match d.name.as_str() {
+                            "indexed" | "index" => indexed = true,
+                            "unique" => unique = true,
+                            "primary" => { indexed = true; unique = true; }
+                            _ => {}
+                        }
+                    }
+                    (
+                        f.name.as_str(),
+                        FieldDefinition {
+                            field_type,
+                            unique,
+                            indexed,
+                            nullable: !f.field_type.is_required,
+                        },
+                    )
+                })
+                .collect();
+            db.new_collection(name, field_defs).await?;
+        }
+        ast::SchemaOp::AlterCollection { name, actions } => {
+            for action in actions {
+                match action {
+                    ast::AlterAction::AddField(field) => {
+                        let field_type = map_ast_type(&field.field_type);
+                        let mut indexed = false;
+                        let mut unique = false;
+                        for d in &field.directives {
+                            match d.name.as_str() {
+                                "indexed" | "index" => indexed = true,
+                                "unique" => unique = true,
+                                _ => {}
+                            }
+                        }
+                        db.add_field_to_schema(
+                            name,
+                            field.name.clone(),
+                            FieldDefinition { field_type, unique, indexed, nullable: !field.field_type.is_required },
+                        )
+                        .await?;
+                    }
+                    ast::AlterAction::DropField(field_name) => {
+                        db.drop_field_from_schema(name, field_name.clone()).await?;
+                    }
+                    ast::AlterAction::RenameField { from, to } => {
+                        db.rename_field_in_schema(name, from.clone(), to.clone()).await?;
+                    }
+                    ast::AlterAction::ModifyField(field) => {
+                        let field_type = map_ast_type(&field.field_type);
+                        let mut indexed = false;
+                        let mut unique = false;
+                        for d in &field.directives {
+                            match d.name.as_str() {
+                                "indexed" | "index" => indexed = true,
+                                "unique" => unique = true,
+                                _ => {}
+                            }
+                        }
+                        db.modify_field_in_schema(
+                            name,
+                            field.name.clone(),
+                            FieldDefinition { field_type, unique, indexed, nullable: !field.field_type.is_required },
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
+        ast::SchemaOp::DropCollection { name, if_exists } => {
+            if *if_exists && db.get_collection_definition(name).is_err() {
+                return Ok(());
+            }
+            db.drop_collection_schema(name).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Apply a `migrate data in <collection> { set field = expr where { ... } }` block.
+async fn execute_data_migration(db: &Aurora, dm: &ast::DataMigration) -> Result<()> {
+    let docs = db.get_all_collection(&dm.collection).await?;
+
+    for doc in docs {
+        for transform in &dm.transforms {
+            let matches = match &transform.filter {
+                Some(filter) => {
+                    let compiled = compile_filter(filter)?;
+                    matches_filter(&doc, &compiled, &HashMap::new())
+                }
+                None => true,
+            };
+
+            if matches {
+                let new_value = eval_migration_expr(&transform.expression, &doc);
+                let mut updates = HashMap::new();
+                updates.insert(transform.field.clone(), new_value);
+                db.aql_update_document(&dm.collection, &doc.id, updates).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Evaluate a migration expression string to a `Value`.
+///
+/// Supported forms (evaluated in order):
+/// - String literal:  `"hello"` → `Value::String("hello")`
+/// - Boolean:         `true` / `false`
+/// - Null:            `null`
+/// - Integer:         `42`
+/// - Float:           `3.14`
+/// - Field reference: `field_name` (looks up the field in the current document)
+fn eval_migration_expr(expr: &str, doc: &Document) -> Value {
+    let expr = expr.trim();
+
+    if expr.starts_with('"') && expr.ends_with('"') && expr.len() >= 2 {
+        return Value::String(expr[1..expr.len() - 1].to_string());
+    }
+    if expr == "true" { return Value::Bool(true); }
+    if expr == "false" { return Value::Bool(false); }
+    if expr == "null" { return Value::Null; }
+    if let Ok(n) = expr.parse::<i64>() { return Value::Int(n); }
+    if let Ok(f) = expr.parse::<f64>() { return Value::Float(f); }
+    if let Some(v) = doc.data.get(expr) { return v.clone(); }
+
+    Value::Null
 }
 
 fn extract_filter_from_args(args: &[ast::Argument]) -> Result<Option<AqlFilter>> {
