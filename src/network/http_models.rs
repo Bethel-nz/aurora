@@ -111,6 +111,8 @@ pub fn json_to_value(json_value: &JsonValue) -> Result<Value> {
         JsonValue::String(s) => {
             if let Ok(uuid) = Uuid::parse_str(s) {
                 Ok(Value::Uuid(uuid))
+            } else if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+                Ok(Value::DateTime(dt.with_timezone(&chrono::Utc)))
             } else {
                 Ok(Value::String(s.clone()))
             }

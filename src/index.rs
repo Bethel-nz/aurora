@@ -52,29 +52,24 @@ impl Index {
         let key = self.extract_key(doc)?;
         let doc_id = doc.id.clone();
 
-        // Check unique constraint first if necessary
-        if self.definition.unique {
-            if let Some(entry) = self.data.get(&key) {
-                if !entry.value().is_empty() {
-                    return Err(crate::error::AqlError::invalid_operation(
-                        "Unique constraint violation".to_string(),
-                    ));
-                }
-            }
+        // Get or create the SkipSet for this key atomically, then insert the doc ID.
+        // For unique fields we check *after* inserting: if the set now contains more
+        // than one ID another writer slipped in concurrently, so we roll back and
+        // return an error. This avoids the TOCTOU race of a pre-insert read.
+        let id_set = self
+            .data
+            .get_or_insert(key.clone(), Arc::new(SkipSet::new()))
+            .value()
+            .clone();
+
+        id_set.insert(doc_id.clone());
+
+        if self.definition.unique && id_set.len() > 1 {
+            id_set.remove(&doc_id);
+            return Err(crate::error::AqlError::invalid_operation(
+                "Unique constraint violation".to_string(),
+            ));
         }
-
-        // Get or create the SkipSet for this key
-        let id_set = if let Some(entry) = self.data.get(&key) {
-            entry.value().clone()
-        } else {
-            // Use a shortcut: only insert if it doesn't exist yet to avoid race conditions
-            // but for secondary indexes, multiple threads might create the set.
-            // SkipMap's get_or_insert isn't available, so we use a simple approach.
-            self.data.get_or_insert(key.clone(), Arc::new(SkipSet::new())).value().clone()
-        };
-
-        // SkipSet provides lock-free insertion of the ID
-        id_set.insert(doc_id);
 
         if let Some(ft_index) = &self.full_text {
             ft_index.index_document(doc)?;
@@ -91,6 +86,10 @@ impl Index {
         let key = self.extract_key(doc)?;
         if let Some(entry) = self.data.get(&key) {
             entry.value().remove(&doc.id);
+            // Prune the entry when the set becomes empty to avoid memory growth
+            if entry.value().is_empty() {
+                self.data.remove(&key);
+            }
         }
         Ok(())
     }

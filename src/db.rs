@@ -1028,6 +1028,12 @@ impl Aurora {
             db.replay_wal(wal_entries).await?;
         }
 
+        // Always rebuild primary index from cold storage after startup.
+        // WAL replay only covers entries written since the last flush; documents
+        // that were already checkpointed to cold storage (WAL truncated) must be
+        // reloaded here so queries see all persisted data.
+        db.rebuild_primary_index_from_cold()?;
+
         Ok(db)
     }
     // Fast key-value operations with index support
@@ -1793,6 +1799,39 @@ impl Aurora {
 
         Ok(())
     }
+    /// Rebuild primary index from cold storage.
+    ///
+    /// Scans all `_collection:<name>` keys to discover collections, then for
+    /// each collection scans `<name>:<id>` keys and inserts them into the
+    /// in-memory primary index.  This is idempotent — entries already present
+    /// (e.g. from WAL replay) are left unchanged.
+    fn rebuild_primary_index_from_cold(&self) -> Result<()> {
+        let collection_prefix = "_collection:";
+        let collection_names: Vec<String> = self
+            .cold
+            .scan_prefix(collection_prefix)
+            .filter_map(|r| r.ok())
+            .map(|(key, _)| key.trim_start_matches(collection_prefix).to_string())
+            .collect();
+
+        for collection_name in collection_names {
+            let doc_prefix = format!("{}:", collection_name);
+            for result in self.cold.scan_prefix(&doc_prefix) {
+                if let Ok((key, value)) = result {
+                    let primary_index = self
+                        .primary_indices
+                        .entry(collection_name.clone())
+                        .or_default();
+                    primary_index
+                        .entry(key)
+                        .or_insert_with(|| DiskLocation::new(value.len()));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Replay WAL entries to recover from crash
     ///
     /// Handles transaction boundaries:
