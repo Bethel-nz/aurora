@@ -391,17 +391,20 @@ fn validate_field<S: SchemaProvider>(
                     ErrorCode::UnknownCollection,
                     format!("Collection '{}' does not exist", collection_name),
                 );
-            } else if !field.selection_set.is_empty() {
-                if let Some(collection) = ctx.schema.get_collection(collection_name) {
-                    // Validate nested fields against collection schema
-                    validate_selection_set(&field.selection_set, collection, ctx);
+            } else if field.selection_set.is_empty() {
+                ctx.add_error(
+                    ErrorCode::InvalidInput,
+                    format!("Collection '{}' requires a selection set", collection_name),
+                );
+            } else if let Some(collection) = ctx.schema.get_collection(collection_name) {
+                // Validate nested fields against collection schema
+                validate_selection_set(&field.selection_set, collection, ctx);
 
-                    // Validate filter if present
-                    for arg in &field.arguments {
-                        if arg.name == "where" || arg.name == "filter" {
-                            if let Some(filter) = extract_filter_from_value(&arg.value) {
-                                validate_filter(&filter, collection, ctx);
-                            }
+                // Validate filter if present
+                for arg in &field.arguments {
+                    if arg.name == "where" || arg.name == "filter" {
+                        if let Some(filter) = extract_filter_from_value(&arg.value) {
+                            validate_filter(&filter, collection, ctx);
                         }
                     }
                 }
