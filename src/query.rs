@@ -210,9 +210,17 @@ impl<'a> QueryBuilder<'a> {
                     candidate_bitmap = Some(current_bitmap);
                 }
 
-                // If intersection is empty, we can short-circuit immediately
+                // Short-circuit on empty intersection — but only outside a transaction.
+                // Buffered inserts are merged later and may still satisfy all filters.
                 if let Some(ref b) = candidate_bitmap {
-                    if b.is_empty() { return Ok(vec![]); }
+                    if b.is_empty() {
+                        let in_transaction = crate::transaction::ACTIVE_TRANSACTION_ID
+                            .try_with(|_| ())
+                            .is_ok();
+                        if !in_transaction {
+                            return Ok(vec![]);
+                        }
+                    }
                 }
             }
         }
@@ -280,8 +288,14 @@ impl<'a> QueryBuilder<'a> {
             final_docs
         } else {
             // Fallback to scan if no indices were hit.
-            // Must scan offset+limit docs so the post-sort drain has enough to work with.
-            let scan_limit = self.limit.map(|l| l + self.offset.unwrap_or(0));
+            // Only pre-limit when there is no sort — applying a limit before sorting
+            // truncates the match set and returns the wrong page when scan order
+            // differs from sort order.
+            let scan_limit = if self.order_by.is_none() {
+                self.limit.map(|l| l + self.offset.unwrap_or(0))
+            } else {
+                None
+            };
             
             let db_filters = self.filters.clone();
             self.db.scan_and_filter(&self.collection, move |doc| {
@@ -307,7 +321,18 @@ impl<'a> QueryBuilder<'a> {
             if start + max < end { end = start + max; }
         }
 
-        Ok(docs[start..end].to_vec())
+        let mut result = docs[start..end].to_vec();
+
+        // Apply field projection when select() was called
+        if let Some(ref fields) = self.fields {
+            let field_set: std::collections::HashSet<&str> =
+                fields.iter().map(|s| s.as_str()).collect();
+            for doc in &mut result {
+                doc.data.retain(|k, _| field_set.contains(k.as_str()));
+            }
+        }
+
+        Ok(result)
     }
 
     pub async fn count(self) -> Result<usize> {
@@ -330,7 +355,8 @@ impl<'a> QueryBuilder<'a> {
         let collection = self.collection.clone();
         let filters = self.filters.clone();
         let db_clone = self.db.clone();
-       
+        let debounce_duration = self.debounce_duration;
+
         let initial_results = self.collect().await?;
         let listener = db_clone.pubsub.listen(&collection);
         let state = Arc::new(crate::reactive::ReactiveQueryState::new(filters));
@@ -341,7 +367,7 @@ impl<'a> QueryBuilder<'a> {
             listener,
             state,
             initial_results,
-            None,
+            debounce_duration,
         ))
     }
 }
