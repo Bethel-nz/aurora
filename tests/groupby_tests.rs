@@ -14,16 +14,16 @@ async fn setup_products_db() -> (Aurora, tempfile::TempDir) {
         ..Default::default()
     };
     
-    let db = Aurora::with_config(config).unwrap();
+    let db = Aurora::with_config(config).await.unwrap();
 
     // Create collection
     db.new_collection(
         "products",
         vec![
-            ("name", FieldType::String, false),
-            ("category", FieldType::String, false),
-            ("price", FieldType::Float, false),
-            ("stock", FieldType::Int, false),
+            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("category", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("price", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true }),
+            ("stock", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ],
     ).await
     .unwrap();

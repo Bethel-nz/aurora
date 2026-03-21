@@ -293,7 +293,6 @@ pub struct IntrospectionQuery {
 
 /// Selection within a selection set
 #[derive(Debug, Clone)]
-
 pub enum Selection {
     Field(Field),
     FragmentSpread(String),

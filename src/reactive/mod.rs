@@ -10,6 +10,7 @@ pub use updates::{QueryUpdate, UpdateType};
 pub use watcher::{QueryWatcher, ThrottledQueryWatcher};
 
 use crate::types::Document;
+use crate::query::Filter;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -18,24 +19,21 @@ use tokio::sync::RwLock;
 pub struct ReactiveQueryState {
     /// Current results (keyed by document ID)
     results: Arc<RwLock<HashMap<String, Document>>>,
-    /// Filter function to check if a document matches
-    filter: Arc<dyn Fn(&Document) -> bool + Send + Sync>,
+    /// Filter expression to check if a document matches
+    filters: Vec<Filter>,
 }
 
 impl ReactiveQueryState {
-    pub fn new<F>(filter: F) -> Self
-    where
-        F: Fn(&Document) -> bool + Send + Sync + 'static,
-    {
+    pub fn new(filters: Vec<Filter>) -> Self {
         Self {
             results: Arc::new(RwLock::new(HashMap::new())),
-            filter: Arc::new(filter),
+            filters,
         }
     }
 
     /// Check if a document matches the query filter
     pub fn matches(&self, doc: &Document) -> bool {
-        (self.filter)(doc)
+        self.filters.iter().all(|f| f.matches(doc))
     }
 
     /// Add a document to results if it matches
@@ -99,6 +97,55 @@ impl ReactiveQueryState {
     pub async fn count(&self) -> usize {
         self.results.read().await.len()
     }
+
+    /// Synchronize state with a full snapshot of documents
+    /// Returns a list of updates needed to reach the new state
+    pub async fn sync_state<I>(&self, new_docs: I) -> Vec<QueryUpdate>
+    where
+        I: IntoIterator<Item = Document>,
+    {
+        let mut updates = Vec::new();
+        let mut results = self.results.write().await;
+
+        // 1. Identify which of the new documents should be in results
+        let mut next_results = HashMap::new();
+        for doc in new_docs {
+            if self.matches(&doc) {
+                next_results.insert(doc.id.clone(), doc);
+            }
+        }
+
+        // 2. Find Removed items (IDs present in current results but not in next_results)
+        let current_ids: Vec<String> = results.keys().cloned().collect();
+        for id in current_ids {
+            if !next_results.contains_key(&id) {
+                if let Some(old_doc) = results.remove(&id) {
+                    updates.push(QueryUpdate::Removed(old_doc));
+                }
+            }
+        }
+
+        // 3. Find Added or Modified items
+        for (id, new_doc) in next_results {
+            match results.entry(id) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let old_doc = e.get();
+                    if old_doc.data != new_doc.data {
+                        // Document modified
+                        let old = e.insert(new_doc.clone());
+                        updates.push(QueryUpdate::Modified { old, new: new_doc });
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    // Document added
+                    e.insert(new_doc.clone());
+                    updates.push(QueryUpdate::Added(new_doc));
+                }
+            }
+        }
+
+        updates
+    }
 }
 
 #[cfg(test)]
@@ -108,9 +155,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_reactive_state_add_if_matches() {
-        let state = ReactiveQueryState::new(|doc: &Document| {
-            doc.data.get("active") == Some(&Value::Bool(true))
-        });
+        let state = ReactiveQueryState::new(vec![
+            Filter::Eq("active".to_string(), Value::Bool(true))
+        ]);
 
         let mut data = HashMap::new();
         data.insert("active".to_string(), Value::Bool(true));
@@ -126,9 +173,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_reactive_state_filter() {
-        let state = ReactiveQueryState::new(|doc: &Document| {
-            doc.data.get("active") == Some(&Value::Bool(true))
-        });
+        let state = ReactiveQueryState::new(vec![
+            Filter::Eq("active".to_string(), Value::Bool(true))
+        ]);
 
         let mut active_data = HashMap::new();
         active_data.insert("active".to_string(), Value::Bool(true));
@@ -155,9 +202,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_reactive_state_update_transitions() {
-        let state = ReactiveQueryState::new(|doc: &Document| {
-            doc.data.get("active") == Some(&Value::Bool(true))
-        });
+        let state = ReactiveQueryState::new(vec![
+            Filter::Eq("active".to_string(), Value::Bool(true))
+        ]);
 
         // Add initial active document
         let mut data = HashMap::new();

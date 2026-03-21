@@ -6,9 +6,11 @@
 //! - Filter operator validation
 //! - Collection and field existence checks
 
-use super::ast::{self, Document, Field, Filter, Mutation, Query, Selection, Subscription, Value};
+use super::ast::{
+    self, Document, Field, Filter, FragmentDef, Mutation, Query, Selection, Subscription, Value,
+};
 use crate::types::{Collection, FieldType, ScalarType};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// Error codes for validation failures
@@ -34,6 +36,26 @@ pub enum ErrorCode {
     InvalidArgument,
     /// Unknown directive
     UnknownDirective,
+    /// Unknown fragment
+    UnknownFragment,
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrorCode::UnknownCollection => write!(f, "UnknownCollection"),
+            ErrorCode::UnknownField => write!(f, "UnknownField"),
+            ErrorCode::InvalidInput => write!(f, "InvalidInput"),
+            ErrorCode::TypeMismatch => write!(f, "TypeMismatch"),
+            ErrorCode::MissingRequiredVariable => write!(f, "MissingRequiredVariable"),
+            ErrorCode::MissingOptionalVariable => write!(f, "MissingOptionalVariable"),
+            ErrorCode::InvalidFilterOperator => write!(f, "InvalidFilterOperator"),
+            ErrorCode::DuplicateAlias => write!(f, "DuplicateAlias"),
+            ErrorCode::InvalidArgument => write!(f, "InvalidArgument"),
+            ErrorCode::UnknownDirective => write!(f, "UnknownDirective"),
+            ErrorCode::UnknownFragment => write!(f, "UnknownFragment"),
+        }
+    }
 }
 
 /// Validation error with context
@@ -111,8 +133,10 @@ impl SchemaProvider for InMemorySchema {
 pub struct ValidationContext<'a, S: SchemaProvider> {
     pub schema: &'a S,
     pub variables: HashMap<String, ast::Value>,
+    pub fragments: HashMap<String, &'a FragmentDef>,
     pub errors: Vec<ValidationError>,
     current_path: Vec<String>,
+    validating_fragments: HashSet<String>,
 }
 
 impl<'a, S: SchemaProvider> ValidationContext<'a, S> {
@@ -120,8 +144,10 @@ impl<'a, S: SchemaProvider> ValidationContext<'a, S> {
         Self {
             schema,
             variables: HashMap::new(),
+            fragments: HashMap::new(),
             errors: Vec::new(),
             current_path: Vec::new(),
+            validating_fragments: HashSet::new(),
         }
     }
 
@@ -173,6 +199,18 @@ pub fn validate_document<S: SchemaProvider>(
 ) -> ValidationResult {
     let mut ctx = ValidationContext::new(schema).with_variables(variables);
 
+    // First pass: Collect fragment definitions
+    for op in &doc.operations {
+        if let ast::Operation::FragmentDefinition(frag) = op {
+            if ctx.fragments.insert(frag.name.clone(), frag).is_some() {
+                ctx.add_error(
+                    ErrorCode::InvalidInput,
+                    format!("Duplicate fragment definition '{}'", frag.name),
+                );
+            }
+        }
+    }
+
     for (i, op) in doc.operations.iter().enumerate() {
         ctx.push_path(&format!("operation[{}]", i));
         match op {
@@ -202,10 +240,25 @@ fn validate_query<S: SchemaProvider>(query: &Query, ctx: &mut ValidationContext<
 
     // Validate selection set
     for selection in &query.selection_set {
-        if let Selection::Field(field) = selection {
-            validate_field(field, ctx);
-        } else if let Selection::InlineFragment(inline) = selection {
-            validate_inline_fragment(inline, ctx);
+        match selection {
+            Selection::Field(field) => {
+                validate_field(field, None, ctx);
+            }
+            Selection::InlineFragment(inline) => {
+                validate_inline_fragment(inline, None, ctx);
+            }
+            Selection::FragmentSpread(fragment_name) => {
+                // Fragment spreads at query root are invalid — their fields would be
+                // interpreted as collection names by the planner/executor.
+                ctx.add_error(
+                    ErrorCode::InvalidArgument,
+                    format!(
+                        "Fragment spread '{}' is not allowed at query root; \
+                         use it inside a collection selection set instead",
+                        fragment_name
+                    ),
+                );
+            }
         }
     }
 
@@ -236,10 +289,29 @@ fn validate_mutation<S: SchemaProvider>(mutation: &Mutation, ctx: &mut Validatio
 }
 
 /// Validate an inline fragment
+///
+/// `expected_collection` is `Some(name)` when the fragment appears inside a
+/// collection selection set — the type condition must match the enclosing
+/// collection. At root level (query/subscription) it is `None`.
 fn validate_inline_fragment<S: SchemaProvider>(
     inline: &ast::InlineFragment,
+    expected_collection: Option<&str>,
     ctx: &mut ValidationContext<'_, S>,
 ) {
+    // When nested inside a collection, the type condition must match it
+    if let Some(enc) = expected_collection {
+        if inline.type_condition != enc {
+            ctx.add_error(
+                ErrorCode::TypeMismatch,
+                format!(
+                    "Inline fragment on '{}' cannot appear inside '{}'",
+                    inline.type_condition, enc
+                ),
+            );
+            return;
+        }
+    }
+
     // Check if type condition refers to a valid collection
     if !ctx.schema.collection_exists(&inline.type_condition) {
         ctx.add_error(
@@ -253,7 +325,9 @@ fn validate_inline_fragment<S: SchemaProvider>(
     }
 
     // Validate inner selection set using the type condition as context
-    validate_selection_set(&inline.selection_set, &inline.type_condition, ctx);
+    if let Some(collection) = ctx.schema.get_collection(&inline.type_condition) {
+        validate_selection_set(&inline.selection_set, collection, ctx);
+    }
 }
 
 /// Validate a subscription operation
@@ -270,8 +344,23 @@ fn validate_subscription<S: SchemaProvider>(
 
     // Validate selection set
     for selection in &sub.selection_set {
-        if let Selection::Field(field) = selection {
-            validate_field(field, ctx);
+        match selection {
+            Selection::Field(field) => {
+                validate_field(field, None, ctx);
+            }
+            Selection::InlineFragment(inline) => {
+                validate_inline_fragment(inline, None, ctx);
+            }
+            Selection::FragmentSpread(fragment_name) => {
+                if let Some(fragment) = ctx.fragments.get(fragment_name) {
+                    validate_fragment_spread(fragment_name, &fragment.type_condition, ctx);
+                } else {
+                    ctx.add_error(
+                        ErrorCode::UnknownFragment,
+                        format!("Fragment '{}' is not defined", fragment_name),
+                    );
+                }
+            }
         }
     }
 
@@ -301,37 +390,76 @@ fn validate_variable_definitions<S: SchemaProvider>(
 }
 
 /// Validate a field selection
-fn validate_field<S: SchemaProvider>(field: &Field, ctx: &mut ValidationContext<'_, S>) {
+///
+/// * `parent_collection` - If Some, this field is within a collection and we check field types.
+///                         If None, this is a top-level field that should be a collection reference.
+fn validate_field<S: SchemaProvider>(
+    field: &Field,
+    parent_collection: Option<&Collection>,
+    ctx: &mut ValidationContext<'_, S>,
+) {
     let field_name = field.alias.as_ref().unwrap_or(&field.name);
     ctx.push_path(field_name);
 
-    // Check for collection reference (top-level field)
-    if field.selection_set.is_empty() {
-        // Leaf field - no further validation needed for now
-    } else {
-        // This is a collection query
-        let collection_name = &field.name;
+    match parent_collection {
+        None => {
+            // Top-level field - always validate collection existence (even for leaf fields)
+            let collection_name = &field.name;
+            if !ctx.schema.collection_exists(collection_name) {
+                ctx.add_error(
+                    ErrorCode::UnknownCollection,
+                    format!("Collection '{}' does not exist", collection_name),
+                );
+            } else if field.selection_set.is_empty() {
+                ctx.add_error(
+                    ErrorCode::InvalidInput,
+                    format!("Collection '{}' requires a selection set", collection_name),
+                );
+            } else if let Some(collection) = ctx.schema.get_collection(collection_name) {
+                // Validate nested fields against collection schema
+                validate_selection_set(&field.selection_set, collection, ctx);
 
-        if !ctx.schema.collection_exists(collection_name) {
-            ctx.add_error(
-                ErrorCode::UnknownCollection,
-                format!("Collection '{}' does not exist", collection_name),
-            );
-        } else {
-            // Validate nested fields against collection schema
-            if let Some(collection) = ctx.schema.get_collection(collection_name) {
-                validate_selection_set(&field.selection_set, &collection.name, ctx);
-            }
-        }
-
-        // Validate filter if present
-        for arg in &field.arguments {
-            if arg.name == "where" || arg.name == "filter" {
-                if let Some(filter) = extract_filter_from_value(&arg.value) {
-                    if let Some(collection) = ctx.schema.get_collection(collection_name) {
-                        validate_filter(&filter, collection, ctx);
+                // Validate filter if present
+                for arg in &field.arguments {
+                    if arg.name == "where" || arg.name == "filter" {
+                        report_unknown_filter_ops(&arg.value, ctx);
+                        if let Some(filter) = extract_filter_from_value(&arg.value) {
+                            validate_filter(&filter, collection, ctx);
+                        }
                     }
                 }
+            }
+        }
+        Some(collection) => {
+            // Nested field within a collection - only check selection set if non-empty
+            if !field.selection_set.is_empty() {
+                if let Some(field_def) = collection.fields.get(&field.name) {
+                    match &field_def.field_type {
+                        FieldType::Nested(nested_schema) => {
+                            // Validate selection set against nested schema
+                            validate_nested_selection_set(&field.selection_set, nested_schema, ctx);
+                        }
+                        FieldType::Object | FieldType::Any => {
+                            // Object/Any type - selection set is valid but we can't validate fields
+                            // (no schema to validate against - schemaless/dynamic data)
+                        }
+                        FieldType::Scalar(ScalarType::Object)
+                        | FieldType::Scalar(ScalarType::Any) => {
+                            // Scalar Object/Any - also allow selection sets without validation
+                        }
+                        _ => {
+                            // Non-object type with selection set - this is an error
+                            ctx.add_error(
+                                ErrorCode::TypeMismatch,
+                                format!(
+                                    "Field '{}' is not an object type but has a selection set",
+                                    field.name
+                                ),
+                            );
+                        }
+                    }
+                }
+                // If field doesn't exist, the error is already reported by validate_selection_set
             }
         }
     }
@@ -342,28 +470,27 @@ fn validate_field<S: SchemaProvider>(field: &Field, ctx: &mut ValidationContext<
 /// Validate selection set against collection schema
 fn validate_selection_set<S: SchemaProvider>(
     selections: &[Selection],
-    collection_name: &str,
+    collection: &Collection,
     ctx: &mut ValidationContext<'_, S>,
 ) {
     let mut aliases_seen: HashMap<String, bool> = HashMap::new();
 
     for selection in selections {
-        // Only validate Fields for now, fragments skipped
-        if let Selection::Field(field) = selection {
-            let display_name = field.alias.as_ref().unwrap_or(&field.name);
+        // Validate based on selection type
+        match selection {
+            Selection::Field(field) => {
+                let display_name = field.alias.as_ref().unwrap_or(&field.name);
 
-            // Check for duplicate aliases
-            if aliases_seen.contains_key(display_name) {
-                ctx.add_error(
-                    ErrorCode::DuplicateAlias,
-                    format!("Duplicate field/alias '{}' in selection", display_name),
-                );
-            }
-            aliases_seen.insert(display_name.clone(), true);
+                // Check for duplicate aliases
+                if aliases_seen.contains_key(display_name) {
+                    ctx.add_error(
+                        ErrorCode::DuplicateAlias,
+                        format!("Duplicate field/alias '{}' in selection", display_name),
+                    );
+                }
+                aliases_seen.insert(display_name.clone(), true);
 
-            // Check if field exists in collection schema
-            // We need to look up the collection definition from the schema provider
-            if let Some(collection) = ctx.schema.get_collection(collection_name) {
+                // Check if field exists in collection schema
                 let field_name = &field.name;
                 if !field_name.starts_with("__") && field_name != "id" {
                     if !collection.fields.contains_key(field_name) {
@@ -377,12 +504,146 @@ fn validate_selection_set<S: SchemaProvider>(
                     }
                 }
 
-                // Recursively validate nested selection
-                validate_field(field, ctx);
+                // Recursively validate nested selection with parent context
+                validate_field(field, Some(collection), ctx);
             }
-        } else if let Selection::InlineFragment(inline) = selection {
-            validate_inline_fragment(inline, ctx);
+            Selection::InlineFragment(inline) => {
+                validate_inline_fragment(inline, Some(&collection.name), ctx);
+            }
+            Selection::FragmentSpread(fragment_name) => {
+                validate_fragment_spread(fragment_name, &collection.name, ctx);
+            }
         }
+    }
+}
+
+/// Validate selection set against a nested object schema
+fn validate_nested_selection_set<S: SchemaProvider>(
+    selections: &[Selection],
+    nested_schema: &HashMap<String, crate::types::FieldDefinition>,
+    ctx: &mut ValidationContext<'_, S>,
+) {
+    let mut aliases_seen: HashMap<String, bool> = HashMap::new();
+
+    for selection in selections {
+        match selection {
+            Selection::Field(field) => {
+                let display_name = field.alias.as_ref().unwrap_or(&field.name);
+
+                // Check for duplicate aliases
+                if aliases_seen.contains_key(display_name) {
+                    ctx.add_error(
+                        ErrorCode::DuplicateAlias,
+                        format!("Duplicate field/alias '{}' in selection", display_name),
+                    );
+                }
+                aliases_seen.insert(display_name.clone(), true);
+
+                // Check if field exists in nested schema
+                let field_name = &field.name;
+                if !field_name.starts_with("__") {
+                    if !nested_schema.contains_key(field_name) {
+                        ctx.add_error(
+                            ErrorCode::UnknownField,
+                            format!("Field '{}' does not exist in nested object", field_name),
+                        );
+                    } else if !field.selection_set.is_empty() {
+                        // Validate further nesting
+                        if let Some(field_def) = nested_schema.get(field_name) {
+                            match &field_def.field_type {
+                                FieldType::Nested(deeper_schema) => {
+                                    ctx.push_path(field_name);
+                                    validate_nested_selection_set(
+                                        &field.selection_set,
+                                        deeper_schema,
+                                        ctx,
+                                    );
+                                    ctx.pop_path();
+                                }
+                                FieldType::Object | FieldType::Any => {
+                                    // Object/Any type - allow selection but can't validate
+                                }
+                                FieldType::Scalar(ScalarType::Object)
+                                | FieldType::Scalar(ScalarType::Any) => {
+                                    // Scalar Object/Any - allow selection but can't validate
+                                }
+                                _ => {
+                                    ctx.add_error(
+                                        ErrorCode::TypeMismatch,
+                                        format!(
+                                            "Field '{}' is not an object type but has a selection set",
+                                            field_name
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Selection::InlineFragment(_) | Selection::FragmentSpread(_) => {
+                // Fragments in nested objects not supported for now
+                ctx.add_error(
+                    ErrorCode::InvalidInput,
+                    "Fragments are not supported in nested object selections".to_string(),
+                );
+            }
+        }
+    }
+}
+
+/// Validate a fragment spread
+fn validate_fragment_spread<S: SchemaProvider>(
+    fragment_name: &str,
+    expected_collection: &str,
+    ctx: &mut ValidationContext<'_, S>,
+) {
+    // 0. Check for cycles
+    if ctx.validating_fragments.contains(fragment_name) {
+        ctx.add_error(
+            ErrorCode::InvalidInput,
+            format!("Fragment '{}' contains a cyclic reference", fragment_name),
+        );
+        return;
+    }
+
+    // 1. Check if fragment exists
+    let fragment_opt = ctx.fragments.get(fragment_name).cloned();
+
+    if let Some(fragment) = fragment_opt {
+        // 2. Check type condition matches
+        if fragment.type_condition != expected_collection {
+            ctx.add_error(
+                ErrorCode::TypeMismatch,
+                format!(
+                    "Fragment '{}' is defined on '{}' but used on '{}'",
+                    fragment_name, fragment.type_condition, expected_collection
+                ),
+            );
+            return;
+        }
+
+        // 3. Validate fragment's selection set against the collection
+        if let Some(collection) = ctx.schema.get_collection(expected_collection) {
+            ctx.push_path(&format!("...{}", fragment_name));
+            ctx.validating_fragments.insert(fragment_name.to_string());
+            validate_selection_set(&fragment.selection_set, collection, ctx);
+            ctx.validating_fragments.remove(fragment_name);
+            ctx.pop_path();
+        } else {
+            ctx.add_error(
+                ErrorCode::UnknownCollection,
+                format!(
+                    "Fragment '{}' references unknown collection '{}'",
+                    fragment_name, expected_collection
+                ),
+            );
+        }
+    } else {
+        ctx.add_error(
+            ErrorCode::UnknownFragment,
+            format!("Fragment '{}' is not defined", fragment_name),
+        );
     }
 }
 
@@ -663,7 +924,7 @@ fn validate_filter<S: SchemaProvider>(
         | Filter::Matches(field, _) => {
             // String operations - check field is a string type
             if let Some(field_def) = collection.fields.get(field) {
-                if field_def.field_type != FieldType::String {
+                if field_def.field_type != FieldType::SCALAR_STRING {
                     ctx.add_error(
                         ErrorCode::InvalidFilterOperator,
                         format!("String operator on non-string field '{}'", field),
@@ -775,6 +1036,55 @@ fn value_type_name(value: &Value) -> &'static str {
     }
 }
 
+/// Report validation errors for unrecognised filter operators so users get a
+/// clear message for typos instead of silently-dropped conditions.
+fn report_unknown_filter_ops<S: SchemaProvider>(
+    value: &Value,
+    ctx: &mut ValidationContext<'_, S>,
+) {
+    const KNOWN_OPS: &[&str] = &[
+        "eq", "ne", "gt", "gte", "lt", "lte",
+        "in", "nin", "contains", "startsWith", "endsWith",
+        "matches", "isNull", "isNotNull",
+    ];
+    if let Value::Object(map) = value {
+        for (key, val) in map {
+            match key.as_str() {
+                "and" | "or" => {
+                    if let Value::Array(arr) = val {
+                        arr.iter().for_each(|v| report_unknown_filter_ops(v, ctx));
+                    }
+                }
+                "not" => report_unknown_filter_ops(val, ctx),
+                field => {
+                    if let Value::Object(ops) = val {
+                        // Only flag unknown keys when at least one recognized operator
+                        // is present — otherwise this is a nested-field reference and
+                        // we should recurse rather than flag every key as an unknown op.
+                        let has_known_op = ops.keys().any(|k| KNOWN_OPS.contains(&k.as_str()));
+                        if has_known_op {
+                            for op in ops.keys() {
+                                if !KNOWN_OPS.contains(&op.as_str()) {
+                                    ctx.add_error(
+                                        ErrorCode::InvalidArgument,
+                                        format!(
+                                            "Unknown filter operator '{}' on field '{}'",
+                                            op, field
+                                        ),
+                                    );
+                                }
+                            }
+                        } else {
+                            // Nested field reference — recurse into it
+                            report_unknown_filter_ops(val, ctx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Extract a Filter from an AST Value (for parsing where arguments)
 fn extract_filter_from_value(value: &Value) -> Option<Filter> {
     match value {
@@ -828,6 +1138,9 @@ fn extract_filter_from_value(value: &Value) -> Option<Filter> {
                                     "endsWith" => {
                                         Some(Filter::EndsWith(field.to_string(), op_val.clone()))
                                     }
+                                    "matches" => {
+                                        Some(Filter::Matches(field.to_string(), op_val.clone()))
+                                    }
                                     "isNull" => Some(Filter::IsNull(field.to_string())),
                                     "isNotNull" => Some(Filter::IsNotNull(field.to_string())),
                                     _ => None,
@@ -871,7 +1184,11 @@ pub fn resolve_variables(
             }
             ast::Operation::Schema(_) => {}
             ast::Operation::Migration(_) => {}
-            ast::Operation::FragmentDefinition(_) => {} // Handled when fragment is used
+            ast::Operation::FragmentDefinition(fragment) => {
+                // Resolve variables inside fragment field arguments so they are
+                // substituted before the fragment is expanded at execution time.
+                resolve_in_fields(&mut fragment.selection_set, variables)?;
+            }
             ast::Operation::Introspection(_) => {}      // No variables in introspection
             ast::Operation::Handler(_) => {}            // Handlers don't have variable resolution
         }
@@ -974,7 +1291,7 @@ mod tests {
         users_fields.insert(
             "name".to_string(),
             FieldDefinition {
-                field_type: FieldType::String,
+                field_type: FieldType::SCALAR_STRING,
                 unique: false,
                 indexed: false,
                 nullable: false,
@@ -983,7 +1300,7 @@ mod tests {
         users_fields.insert(
             "email".to_string(),
             FieldDefinition {
-                field_type: FieldType::String,
+                field_type: FieldType::SCALAR_STRING,
                 unique: true,
                 indexed: true,
                 nullable: false,
@@ -992,7 +1309,7 @@ mod tests {
         users_fields.insert(
             "age".to_string(),
             FieldDefinition {
-                field_type: FieldType::Int,
+                field_type: FieldType::SCALAR_INT,
                 unique: false,
                 indexed: false,
                 nullable: false,
@@ -1001,7 +1318,7 @@ mod tests {
         users_fields.insert(
             "active".to_string(),
             FieldDefinition {
-                field_type: FieldType::Bool,
+                field_type: FieldType::SCALAR_BOOL,
                 unique: false,
                 indexed: false,
                 nullable: false,

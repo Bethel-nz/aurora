@@ -14,7 +14,7 @@ async fn test_required_variable_validation() {
         durability_mode: aurora_db::types::DurabilityMode::Synchronous,
         ..Default::default()
     };
-    let db = Aurora::with_config(config).unwrap();
+    let db = Aurora::with_config(config).await.unwrap();
 
     // Create a test collection
     db.new_collection(
@@ -22,12 +22,12 @@ async fn test_required_variable_validation() {
         vec![
             (
                 "name".to_string(),
-                aurora_db::types::FieldType::String,
+                aurora_db::types::FieldType::SCALAR_STRING,
                 false,
             ),
             (
                 "email".to_string(),
-                aurora_db::types::FieldType::String,
+                aurora_db::types::FieldType::SCALAR_STRING,
                 false,
             ),
         ],
@@ -115,19 +115,19 @@ async fn test_required_variable_in_mutation() {
         durability_mode: aurora_db::types::DurabilityMode::Synchronous,
         ..Default::default()
     };
-    let db = Aurora::with_config(config).unwrap();
+    let db = Aurora::with_config(config).await.unwrap();
 
     db.new_collection(
         "users",
         vec![
             (
                 "name".to_string(),
-                aurora_db::types::FieldType::String,
+                aurora_db::types::FieldType::SCALAR_STRING,
                 false,
             ),
             (
                 "email".to_string(),
-                aurora_db::types::FieldType::String,
+                aurora_db::types::FieldType::SCALAR_STRING,
                 false,
             ),
         ],
@@ -197,19 +197,19 @@ async fn test_boolean_variable_type_validation() {
         durability_mode: aurora_db::types::DurabilityMode::Synchronous,
         ..Default::default()
     };
-    let db = Aurora::with_config(config).unwrap();
+    let db = Aurora::with_config(config).await.unwrap();
 
     db.new_collection(
         "users",
         vec![
             (
                 "name".to_string(),
-                aurora_db::types::FieldType::String,
+                aurora_db::types::FieldType::SCALAR_STRING,
                 false,
             ),
             (
                 "active".to_string(),
-                aurora_db::types::FieldType::Bool,
+                aurora_db::types::FieldType::SCALAR_BOOL,
                 false,
             ),
         ],

@@ -1,6 +1,26 @@
 use aurora_db::{Aurora, FieldType, Result, Value};
 use std::path::Path;
 
+/// Remove all Aurora files for a given db path base:
+///   {base}/        — workers.db directory
+///   {base}.db      — ColdStore (Sled) directory
+///   {base}.wal     — write-ahead log
+fn cleanup_db(base: &Path) {
+    for path in [
+        base.to_path_buf(),
+        base.with_extension("db"),
+        base.with_extension("wal"),
+    ] {
+        if path.exists() {
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(&path);
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
 // Timing macro for operations
 macro_rules! time_operation {
     ($label:expr, $op:expr) => {{
@@ -17,28 +37,12 @@ async fn main() -> Result<()> {
     println!("Starting Aurora database showcase...");
 
     let db_path = Path::new("showcase_db");
-    // Clean up from previous runs
-    if db_path.exists() {
-        std::fs::remove_dir_all(db_path)?;
-    }
+    // Clean up from previous runs (cold store = showcase_db.db, WAL = showcase_db.wal)
+    cleanup_db(db_path);
 
-    let db = time_operation!("Database initialization", Aurora::open(db_path))?;
+    let db = time_operation!("Database initialization", Aurora::open(db_path).await)?;
 
-    // 1. Basic Key-Value Operations
-    println!("\n=== 1. Basic Key-Value Operations ===");
-    let key = "my_key";
-    let value = b"my_value".to_vec();
-    time_operation!("Set key", db.put(key.to_string(), value.clone(), None)).await?;
-    let retrieved = time_operation!("Get key", db.get(key))?.unwrap();
-    assert_eq!(retrieved, value);
-    println!("Get/Set verification successful.");
-
-    time_operation!("Delete key", db.delete(key).await)?;
-    let retrieved_after_delete = time_operation!("Get key after delete", db.get(key))?;
-    assert!(retrieved_after_delete.is_none());
-    println!("Delete verification successful.");
-
-    // 2. Collection and Document Operations
+    // 1. Collection and Document Operations
     println!("\n=== 2. Collection and Document Operations ===");
     let collection_name = "users";
     time_operation!(
@@ -46,14 +50,13 @@ async fn main() -> Result<()> {
         db.new_collection(
             collection_name,
             vec![
-                ("name".to_string(), FieldType::String, false),
-                ("email".to_string(), FieldType::String, true),
-                ("age".to_string(), FieldType::Int, false),
-                ("premium".to_string(), FieldType::Bool, false),
+                ("name".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+                ("email".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),
+                ("age".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+                ("premium".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_BOOL, unique: false, indexed: false, nullable: true }),
             ]
-        )
-    )
-    .await?;
+        ).await
+    )?;
     println!("-> Created collection '{}'", collection_name);
 
     let user_id = time_operation!(
@@ -73,7 +76,7 @@ async fn main() -> Result<()> {
 
     let user_doc =
         time_operation!("Get document", db.get_document(collection_name, &user_id))?.unwrap();
-    println!("Retrieved user: {}", user_doc);
+    println!("Retrieved user:\n{}", user_doc);
     assert_eq!(
         user_doc.data.get("name"),
         Some(&Value::String("Jane Doe".to_string()))
@@ -108,14 +111,14 @@ async fn main() -> Result<()> {
     let adult_users = time_operation!(
         "Query (age > 21)",
         db.query(collection_name)
-            .filter(|f| f.gt("age", Value::Int(21)))
+            .filter(|f: &aurora_db::query::FilterBuilder| f.gt("age", Value::Int(21)))
             .collect()
             .await
     )?;
-    assert_eq!(adult_users.len(), 2);
+    assert_eq!(adult_users.len(), 3);
     println!("Found {} adult user(s).", adult_users.len());
     for user in &adult_users {
-        println!(" - Found user: {}", user);
+        println!(" - Found user:\n{}", user);
     }
 
     // 4. Full-Text Search
@@ -124,8 +127,8 @@ async fn main() -> Result<()> {
     db.new_collection(
         articles_collection,
         vec![
-            ("title".to_string(), FieldType::String, false),
-            ("content".to_string(), FieldType::String, false),
+            ("title".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("content".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
         ],
     )
     .await?;
@@ -155,23 +158,35 @@ async fn main() -> Result<()> {
     println!("-> Articles indexed.");
 
     println!("Searching for articles about 'database'...");
-    let search_results = time_operation!(
+    let search_results: Vec<aurora_db::types::Document> = time_operation!(
         "Search",
         db.search(articles_collection)
-            .field("content")
-            .matching("database")
+            .query("database")
             .collect()
             .await
     )?;
     assert_eq!(search_results.len(), 1);
     println!("Found {} search result(s).", search_results.len());
     for article in &search_results {
-        println!(" - Found article: {}", article);
+        println!(" - Found article:\n{}", article);
+    }
+
+    // 5. Deleting Documents
+    println!("\n=== 5. Deleting Documents ===");
+    let delete_key = format!("{}:{}", collection_name, user_id);
+    time_operation!("Delete document", db.delete(&delete_key).await)?;
+    println!("-> Deleted user '{}'.", user_id);
+
+    if let Some(deleted) = db.get_document(collection_name, &user_id)? {
+        println!("ERROR: document still exists: {}", deleted);
+    } else {
+        println!("-> Confirmed: document no longer exists.");
     }
 
     // Cleanup
     println!("\nCleaning up database file...");
-    std::fs::remove_dir_all(db_path)?;
+    drop(db);
+    cleanup_db(db_path);
     println!("Showcase finished successfully.");
 
     Ok(())

@@ -3,6 +3,8 @@ use crate::types::{AuroraConfig, ColdStoreMode};
 use sled::Db;
 use std::sync::Arc;
 
+const ZSTD_MAGIC: u8 = 0x5A; // 'Z' in hex
+
 pub struct ColdStore {
     db: Db,
     #[allow(dead_code)]
@@ -45,24 +47,12 @@ impl ColdStore {
         let db = sled_config.open().map_err(|e| {
             let error_msg = e.to_string();
 
-            // Check for Windows "Access is denied" error (file locked by another process)
             if error_msg.contains("Access is denied") || error_msg.contains("os error 5") {
-                let lock_hint = if std::path::Path::new(&db_path).exists() {
-                    "\n\nPossible solutions:\n\
-                    1. Close any other Aurora instances using this database\n\
-                    2. If no other instance is running, the previous instance may have crashed.\n\
-                       Delete the lock file in the database directory and try again\n\
-                    3. Run as administrator if permission is the issue"
-                } else {
-                    "\n\nThe database directory may require administrator privileges to create."
-                };
-
                 AqlError::new(
                     ErrorCode::IoError,
                     format!(
-                        "Cannot open database at '{}': file is locked or access denied.{}",
+                        "Cannot open database at '{}': file is locked or access denied.",
                         db_path,
-                        lock_hint
                     ),
                 )
             } else {
@@ -73,14 +63,6 @@ impl ColdStore {
         Ok(Self { db, db_path })
     }
 
-    /// Attempt to detect and remove stale lock files
-    ///
-    /// This is useful for recovering from crashes where the lock file wasn't properly cleaned up.
-    /// Only call this if you're sure no other process is using the database.
-    ///
-    /// # Safety
-    /// This function should only be used when you're certain the database is not in use by another process.
-    /// Calling this while another Aurora instance is running could lead to data corruption.
     pub fn try_remove_stale_lock(db_path: &str) -> Result<bool> {
         use std::path::Path;
 
@@ -95,7 +77,6 @@ impl ColdStore {
             return Ok(false);
         }
 
-        // Sled uses a .lock file in the db directory
         let lock_file = db_dir.join(".lock");
         if lock_file.exists() {
             std::fs::remove_file(&lock_file)?;
@@ -106,11 +87,30 @@ impl ColdStore {
     }
 
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        Ok(self.db.get(key.as_bytes())?.map(|ivec| ivec.to_vec()))
+        let val = self.db.get(key.as_bytes())?;
+        match val {
+            Some(ivec) => {
+                let bytes = ivec.as_ref();
+                if bytes.starts_with(&[ZSTD_MAGIC]) {
+                    let decompressed = zstd::decode_all(&bytes[1..]).map_err(|e| {
+                        AqlError::new(ErrorCode::SerializationError, format!("Decompression failed: {}", e))
+                    })?;
+                    Ok(Some(decompressed))
+                } else {
+                    Ok(Some(bytes.to_vec()))
+                }
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn set(&self, key: String, value: Vec<u8>) -> Result<()> {
-        self.db.insert(key.as_bytes(), value)?;
+        let mut compressed = vec![ZSTD_MAGIC];
+        zstd::stream::copy_encode(&value[..], &mut compressed, 3).map_err(|e| {
+            AqlError::new(ErrorCode::SerializationError, format!("Compression failed: {}", e))
+        })?;
+        
+        self.db.insert(key.as_bytes(), compressed)?;
         Ok(())
     }
 
@@ -122,11 +122,20 @@ impl ColdStore {
     pub fn scan(&self) -> impl Iterator<Item = Result<(String, Vec<u8>)>> + '_ {
         self.db.iter().map(|result| {
             result.map_err(AqlError::from).and_then(|(key, value)| {
+                let bytes = value.as_ref();
+                let data = if bytes.starts_with(&[ZSTD_MAGIC]) {
+                    zstd::decode_all(&bytes[1..]).map_err(|e| {
+                        AqlError::new(ErrorCode::SerializationError, format!("Decompression failed: {}", e))
+                    })?
+                } else {
+                    bytes.to_vec()
+                };
+
                 Ok((
                     String::from_utf8(key.to_vec()).map_err(|_| {
                         AqlError::new(ErrorCode::ProtocolError, "Invalid UTF-8 in key".to_string())
                     })?,
-                    value.to_vec(),
+                    data,
                 ))
             })
         })
@@ -138,11 +147,20 @@ impl ColdStore {
     ) -> impl Iterator<Item = Result<(String, Vec<u8>)>> + '_ {
         self.db.scan_prefix(prefix.as_bytes()).map(|result| {
             result.map_err(AqlError::from).and_then(|(key, value)| {
+                let bytes = value.as_ref();
+                let data = if bytes.starts_with(&[ZSTD_MAGIC]) {
+                    zstd::decode_all(&bytes[1..]).map_err(|e| {
+                        AqlError::new(ErrorCode::SerializationError, format!("Decompression failed: {}", e))
+                    })?
+                } else {
+                    bytes.to_vec()
+                };
+
                 Ok((
                     String::from_utf8(key.to_vec()).map_err(|_| {
                         AqlError::new(ErrorCode::ProtocolError, "Invalid UTF-8 in key".to_string())
                     })?,
-                    value.to_vec(),
+                    data,
                 ))
             })
         })
@@ -152,7 +170,9 @@ impl ColdStore {
         let batch = pairs
             .into_iter()
             .fold(sled::Batch::default(), |mut batch, (key, value)| {
-                batch.insert(key.as_bytes(), value);
+                let mut compressed = vec![ZSTD_MAGIC];
+                let _ = zstd::stream::copy_encode(&value[..], &mut compressed, 3);
+                batch.insert(key.as_bytes(), compressed);
                 batch
             });
 
@@ -160,29 +180,28 @@ impl ColdStore {
         Ok(())
     }
 
-    // CHANGED: New optimized method for WriteBuffer
     pub fn batch_set_arc(&self, pairs: Vec<(Arc<String>, Arc<Vec<u8>>)>) -> Result<()> {
         let batch = pairs
             .into_iter()
             .fold(sled::Batch::default(), |mut batch, (key, value)| {
-                // Sled accepts &[u8], so we deref the Arc. 
-                // This avoids cloning the Vec<u8> before passing it to Sled.
-                batch.insert(key.as_bytes(), value.as_slice());
+                let mut compressed = vec![ZSTD_MAGIC];
+                let _ = zstd::stream::copy_encode(value.as_slice(), &mut compressed, 3);
+                batch.insert(key.as_bytes(), compressed);
                 batch
             });
 
         self.db.apply_batch(batch)?;
-        // Note: No explicit flush here (Sled handles it based on flush_every_ms)
         Ok(())
     }
 
-    /// Flushes all buffered writes to disk to ensure durability.
     pub fn flush(&self) -> Result<()> {
         self.db.flush()?;
         Ok(())
     }
 
     pub fn compact(&self) -> Result<()> {
+        // Sled compaction is handled by its internal GC, but we can call checksum or other things
+        // or just let it flush.
         self.db.flush()?;
         Ok(())
     }

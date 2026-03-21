@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 #[tokio::test]
 async fn section_1_schema_definition() -> Result<()> {
-    let db = setup_db()?;
+    let db = setup_db().await?;
 
     // -------------------------------------------------------------------------
     // 1. Define Your Schema
@@ -53,7 +53,7 @@ async fn section_1_schema_definition() -> Result<()> {
 
 #[tokio::test]
 async fn section_2_data_mutation() -> Result<()> {
-    let db = setup_db()?;
+    let db = setup_db().await?;
     // (Assume schema is created)
     ensure_schema(&db).await?;
 
@@ -91,7 +91,7 @@ async fn section_2_data_mutation() -> Result<()> {
 
 #[tokio::test]
 async fn section_3_complex_querying() -> Result<()> {
-    let db = setup_db()?;
+    let db = setup_db().await?;
     ensure_schema(&db).await?;
     seed_data(&db).await?;
 
@@ -131,7 +131,7 @@ async fn section_3_complex_querying() -> Result<()> {
 
 #[tokio::test]
 async fn section_4_computed_fields() -> Result<()> {
-    let db = setup_db()?;
+    let db = setup_db().await?;
     ensure_schema(&db).await?;
     seed_data(&db).await?;
 
@@ -172,7 +172,7 @@ async fn section_4_computed_fields() -> Result<()> {
 
 #[tokio::test]
 async fn section_5_aggregation() -> Result<()> {
-    let db = setup_db()?;
+    let db = setup_db().await?;
     ensure_schema(&db).await?;
     seed_data(&db).await?;
 
@@ -215,14 +215,14 @@ async fn section_5_aggregation() -> Result<()> {
 
 // --- DOMAIN HELPERS ---
 
-fn setup_db() -> Result<Aurora> {
+async fn setup_db() -> Result<Aurora> {
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("showcase.db");
     let config = aurora_db::AuroraConfig {
         db_path,
         ..Default::default()
     };
-    Aurora::with_config(config)
+    Aurora::with_config(config).await
 }
 
 async fn ensure_schema(db: &Aurora) -> Result<()> {

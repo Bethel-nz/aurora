@@ -168,6 +168,7 @@ fn value_to_dynamic(value: &Value) -> Dynamic {
         Value::Float(f) => Dynamic::from(*f),
         Value::String(s) => Dynamic::from(s.clone()),
         Value::Uuid(u) => Dynamic::from(u.to_string()),
+        Value::DateTime(dt) => Dynamic::from(dt.to_rfc3339()),
         Value::Array(arr) => {
             let vec: Vec<Dynamic> = arr.iter().map(value_to_dynamic).collect();
             Dynamic::from(vec)
@@ -197,6 +198,10 @@ fn dynamic_to_value(dyn_val: Dynamic) -> Option<Value> {
         return Some(Value::Float(f));
     }
     if let Some(s) = dyn_val.clone().try_cast::<String>() {
+        // Try to recover a DateTime that was encoded as RFC3339 by value_to_dynamic
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&s) {
+            return Some(Value::DateTime(dt.with_timezone(&chrono::Utc)));
+        }
         return Some(Value::String(s));
     }
     if let Some(arr) = dyn_val.clone().try_cast::<Vec<Dynamic>>() {
@@ -506,5 +511,21 @@ mod tests {
         // Test round
         let result = engine.evaluate("round(doc.value)", &doc);
         assert_eq!(result, Some(Value::Float(4.0)));
+    }
+
+    #[test]
+    fn test_datetime_roundtrip_through_script() {
+        use chrono::TimeZone;
+        let ts = chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
+
+        let expr = ComputedExpression::Script("doc.created_at".to_string());
+
+        let mut doc = Document::new();
+        doc.data
+            .insert("created_at".to_string(), Value::DateTime(ts));
+
+        let result = expr.evaluate(&doc);
+        assert_eq!(result, Some(Value::DateTime(ts)),
+            "DateTime should survive a round-trip through value_to_dynamic / dynamic_to_value");
     }
 }

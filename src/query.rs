@@ -2,351 +2,93 @@
 //!
 //! This module provides a powerful, fluent query interface for filtering, sorting,
 //! and retrieving documents from Aurora collections.
-//!
-//! ## Architectural Note: "The Query as a Stream"
-//!
-//! Unlike traditional databases that parse SQL strings into an execution plan,
-//! Aurora's query engine is built around the **Fluent Builder Pattern** and **Iterators**.
-//!
-//! 1.  **Type-Safe Construction**: Queries are built using Rust method chaining, ensuring
-//!     validity at compile time (or runtime construction without parsing overhead).
-//! 2.  **Zero-Allocation Filtering**: The `Queryable` trait and `DocumentFilter` type allow
-//!     us to stack closures. These filters run directly on the data stream without
-//!     intermediate allocations.
-//! 3.  **Reactive Core**: The `watch()` method transforms a static query into a
-//!     live stream of `QueryUpdate` events. This is the heart of the "Embedded Platform"
-//!     concept—allowing the application to react to data changes instantly.
-//!
-//! ## Examples
-//!
-
-//! // Get all active users over 21
-//! let users = db.query("users")
-//!     .filter(|f| f.eq("status", "active") && f.gt("age", 21))
-//!     .order_by("last_login", false)
-//!     .limit(20)
-//!     .collect()
-//!     .await?;
-//! ```
 
 use crate::Aurora;
-use crate::error::AqlError;
 use crate::error::Result;
 use crate::types::{Document, Value};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use roaring::RoaringBitmap;
 
-/// Trait for objects that can filter documents.
-///
-/// This trait is implemented for closures that take a reference to a
-/// `FilterBuilder` and return a boolean, allowing for a natural filter syntax.
-pub trait Queryable {
-    fn matches(&self, doc: &Document) -> bool;
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SimpleQueryBuilder {
+    pub collection: String,
+    pub filters: Vec<Filter>,
+    pub order_by: Option<(String, bool)>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
-
-impl<F> Queryable for F
-where
-    F: Fn(&Document) -> bool,
-{
-    fn matches(&self, doc: &Document) -> bool {
-        self(doc)
-    }
-}
-
-/// Type alias for document filter functions
-type DocumentFilter<'a> = Box<dyn Fn(&Document) -> bool + Send + Sync + 'a>;
 
 /// Builder for creating and executing document queries.
-///
-/// QueryBuilder uses a fluent interface pattern to construct
-/// and execute queries against Aurora collections.
-///
-/// # Examples
-///
-/// ```rust,no_run
-/// // Query for active premium users
-/// let premium_users = db.query("users")
-///     .filter(|f| f.eq("status", "active") && f.eq("account_type", "premium"))
-///     .order_by("created_at", false)
-///     .limit(10)
-///     .collect()
-///     .await?;
-/// ```
 pub struct QueryBuilder<'a> {
     db: &'a Aurora,
     collection: String,
-    filters: Vec<DocumentFilter<'a>>,
+    filters: Vec<Filter>,
     order_by: Option<(String, bool)>,
     limit: Option<usize>,
     offset: Option<usize>,
     fields: Option<Vec<String>>,
-    /// Optional debounce duration for reactive queries (watch)
-    /// When set, updates are batched and emitted at most once per interval
     debounce_duration: Option<std::time::Duration>,
 }
 
 /// Builder for constructing document filter expressions.
-///
-/// This struct provides methods for comparing document fields
-/// with values to create filter conditions.
-///
-/// # Examples
-///
-/// ```rust,no_run
-/// // Combine multiple filter conditions
-/// db.query("products")
-///     .filter(|f| {
-///         f.gte("price", 10.0) &&
-///         f.lte("price", 50.0) &&
-///         f.contains("name", "widget")
-///     })
-///     .collect()
-///     .await?;
-/// ```
-pub struct FilterBuilder<'a, 'b> {
-    doc: &'b Document,
-    _marker: std::marker::PhantomData<&'a ()>,
-}
+pub struct FilterBuilder;
 
-impl<'a, 'b> FilterBuilder<'a, 'b> {
-    /// Create a new filter builder for the given document
-    pub fn new(doc: &'b Document) -> Self {
-        Self {
-            doc,
-            _marker: std::marker::PhantomData,
-        }
+impl FilterBuilder {
+    pub fn new() -> Self {
+        Self
     }
 
-    /// Check if a field equals a value
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.eq("status", "active"))
-    /// ```
-    pub fn eq<T: Into<Value>>(&self, field: &str, value: T) -> bool {
-        let value = value.into();
-        self.get_nested_value(field) == Some(&value)
+    pub fn eq<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
+        Filter::Eq(field.to_string(), value.into())
     }
 
-    /// Check if a field is greater than a value
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.gt("age", 21))
-    /// ```
-    pub fn gt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
-        let value = value.into();
-        self.get_nested_value(field).is_some_and(|v| v > &value)
+    pub fn ne<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
+        Filter::Ne(field.to_string(), value.into())
     }
 
-    /// Check if a field is greater than or equal to a value
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.gte("age", 21))
-    /// ```
-    pub fn gte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
-        let value = value.into();
-        self.get_nested_value(field).is_some_and(|v| v >= &value)
+    pub fn in_values<T: Into<Value> + Clone>(&self, field: &str, values: &[T]) -> Filter {
+        Filter::In(field.to_string(), values.iter().cloned().map(|v| v.into()).collect())
     }
 
-    /// Check if a field is less than a value
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.lt("age", 65))
-    /// ```
-    pub fn lt<T: Into<Value>>(&self, field: &str, value: T) -> bool {
-        let value = value.into();
-        self.get_nested_value(field).is_some_and(|v| v < &value)
+    pub fn starts_with(&self, field: &str, value: &str) -> Filter {
+        Filter::StartsWith(field.to_string(), value.to_string())
     }
 
-    /// Check if a field is less than or equal to a value
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.lte("age", 65))
-    /// ```
-    pub fn lte<T: Into<Value>>(&self, field: &str, value: T) -> bool {
-        let value = value.into();
-        self.get_nested_value(field).is_some_and(|v| v <= &value)
+    pub fn contains(&self, field: &str, value: &str) -> Filter {
+        Filter::Contains(field.to_string(), value.to_string())
     }
 
-    /// Check if a field contains a value
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.contains("name", "widget"))
-    /// ```
-    pub fn contains(&self, field: &str, value: &str) -> bool {
-        self.get_nested_value(field).is_some_and(|v| match v {
-            Value::String(s) => s.contains(value),
-            Value::Array(arr) => arr.contains(&Value::String(value.to_string())),
-            _ => false,
-        })
+    pub fn gt<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
+        Filter::Gt(field.to_string(), value.into())
     }
 
-    /// Check if a field is in a list of values
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.in_values("status", &["active", "inactive"]))
-    /// ```
-    pub fn in_values<T: Into<Value> + Clone>(&self, field: &str, values: &[T]) -> bool {
-        let values: Vec<Value> = values.iter().map(|v| v.clone().into()).collect();
-        self.get_nested_value(field)
-            .is_some_and(|v| values.contains(v))
+    pub fn gte<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
+        Filter::Gte(field.to_string(), value.into())
     }
 
-    /// Check if a field is between two values (inclusive)
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.between("age", 18, 65))
-    /// ```
-    pub fn between<T: Into<Value> + Clone>(&self, field: &str, min: T, max: T) -> bool {
-        self.gte(field, min) && self.lte(field, max)
+    pub fn lt<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
+        Filter::Lt(field.to_string(), value.into())
     }
 
-    /// Check if a field exists and is not null
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.exists("email"))
-    /// ```
-    pub fn exists(&self, field: &str) -> bool {
-        self.get_nested_value(field)
-            .is_some_and(|v| !matches!(v, Value::Null))
+    pub fn lte<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
+        Filter::Lte(field.to_string(), value.into())
     }
 
-    /// Check if a field doesn't exist or is null
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.is_null("email"))
-    /// ```
-    pub fn is_null(&self, field: &str) -> bool {
-        self.get_nested_value(field)
-            .is_none_or(|v| matches!(v, Value::Null))
+    pub fn in_vec<T: Into<Value>>(&self, field: &str, values: Vec<T>) -> Filter {
+        Filter::In(field.to_string(), values.into_iter().map(|v| v.into()).collect())
     }
 
-    /// Check if a field starts with a prefix
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.starts_with("name", "John"))
-    /// ```
-    pub fn starts_with(&self, field: &str, prefix: &str) -> bool {
-        self.get_nested_value(field).is_some_and(|v| match v {
-            Value::String(s) => s.starts_with(prefix),
-            _ => false,
-        })
-    }
-
-    /// Check if a field ends with a suffix
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.ends_with("name", "son"))
-    /// ```
-    pub fn ends_with(&self, field: &str, suffix: &str) -> bool {
-        self.get_nested_value(field).is_some_and(|v| match v {
-            Value::String(s) => s.ends_with(suffix),
-            _ => false,
-        })
-    }
-
-    /// Check if a field is in an array
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.array_contains("status", "active"))
-    /// ```
-    pub fn array_contains(&self, field: &str, value: impl Into<Value>) -> bool {
-        let value = value.into();
-        self.get_nested_value(field).is_some_and(|v| match v {
-            Value::Array(arr) => arr.contains(&value),
-            _ => false,
-        })
-    }
-
-    /// Check if an array has a specific length
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.array_len_eq("status", 2))
-    /// ```
-    pub fn array_len_eq(&self, field: &str, len: usize) -> bool {
-        self.get_nested_value(field).is_some_and(|v| match v {
-            Value::Array(arr) => arr.len() == len,
-            _ => false,
-        })
-    }
-
-    /// Access a nested field using dot notation
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.get_nested_value("user.address.city") == Some(&Value::String("New York")))
-    /// ```
-    pub fn get_nested_value(&self, path: &str) -> Option<&Value> {
-        let parts: Vec<&str> = path.split('.').collect();
-        let mut current = self.doc.data.get(parts[0])?;
-
-        for &part in &parts[1..] {
-            if let Value::Object(map) = current {
-                current = map.get(part)?;
-            } else {
-                return None;
-            }
-        }
-
-        Some(current)
-    }
-
-    /// Check if a nested field equals a value
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.nested_eq("user.address.city", "New York"))
-    /// ```
-    pub fn nested_eq<T: Into<Value>>(&self, path: &str, value: T) -> bool {
-        let value = value.into();
-        self.get_nested_value(path) == Some(&value)
-    }
-
-    /// Check if a field matches a regular expression
-    ///
-    /// # Examples
-
-    /// .filter(|f| f.matches_regex("email", r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"))
-    /// ```
-    pub fn matches_regex(&self, field: &str, pattern: &str) -> bool {
-        use regex::Regex;
-
-        // Prevent DoS via overly complex/long regex
-        if pattern.len() > 100 {
-            return false;
-        }
-
-        if let Ok(re) = Regex::new(pattern) {
-            self.get_nested_value(field).is_some_and(|v| match v {
-                Value::String(s) => re.is_match(s),
-                _ => false,
-            })
-        } else {
-            false
-        }
+    pub fn between<T: Into<Value> + Clone>(&self, field: &str, min: T, max: T) -> Filter {
+        Filter::And(vec![
+            Filter::Gte(field.to_string(), min.into()),
+            Filter::Lte(field.to_string(), max.into()),
+        ])
     }
 }
 
 impl<'a> QueryBuilder<'a> {
-    /// Create a new query builder for the specified collection
-    ///
-    /// # Examples
-
-    /// let query = db.query("users");
-    /// ```
     pub fn new(db: &'a Aurora, collection: &str) -> Self {
         Self {
             db,
@@ -360,943 +102,461 @@ impl<'a> QueryBuilder<'a> {
         }
     }
 
-    /// Add a filter function to the query
-    ///
-    /// # Examples
-
-    /// let active_users = db.query("users")
-    ///     .filter(|f| f.eq("status", "active"))
-    ///     .collect()
-    ///     .await?;
-    /// ```
-    pub fn filter<F>(mut self, filter_fn: F) -> Self
+    pub fn filter<F>(mut self, f: F) -> Self
     where
-        // CHANGE 2: Require the closure `F` to be `Send + Sync`.
-        F: Fn(&FilterBuilder) -> bool + Send + Sync + 'a,
+        F: FnOnce(&FilterBuilder) -> Filter,
     {
-        self.filters.push(Box::new(move |doc| {
-            let filter_builder = FilterBuilder::new(doc);
-            filter_fn(&filter_builder)
-        }));
+        let builder = FilterBuilder::new();
+        self.filters.push(f(&builder));
         self
     }
 
-    /// Sort results by a field (ascending or descending)
-    ///
-    /// # Parameters
-    /// * `field` - The field to sort by
-    /// * `ascending` - `true` for ascending order, `false` for descending
-    ///
-    /// # Examples
-    /// ```
-    /// // Sort by age ascending
-    /// .order_by("age", true)
-    ///
-    /// // Sort by creation date descending (newest first)
-    /// .order_by("created_at", false)
-    /// ```
     pub fn order_by(mut self, field: &str, ascending: bool) -> Self {
         self.order_by = Some((field.to_string(), ascending));
         self
     }
 
-    /// Limit the number of results returned
-    ///
-    /// # Examples
-    /// ```
-    /// // Get at most 10 results
-    /// .limit(10)
-    /// ```
     pub fn limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
         self
     }
 
-    /// Skip a number of results (for pagination)
-    ///
-    /// # Examples
-    /// ```
-    /// // For pagination: skip the first 20 results and get the next 10
-    /// .offset(20).limit(10)
-    /// ```
     pub fn offset(mut self, offset: usize) -> Self {
         self.offset = Some(offset);
         self
     }
 
-    /// Select only specific fields to return
-    ///
-    /// # Examples
-    /// ```
-    /// // Only return name and email fields
-    /// .select(&["name", "email"])
-    /// ```
-    pub fn select(mut self, fields: &[&str]) -> Self {
-        self.fields = Some(fields.iter().map(|s| s.to_string()).collect());
+    pub fn select(mut self, fields: Vec<&str>) -> Self {
+        self.fields = Some(fields.into_iter().map(|s| s.to_string()).collect());
         self
     }
 
-    /// Set debounce/throttle interval for reactive queries (watch)
-    ///
-    /// When watching a query, updates will be batched and emitted at most once
-    /// per interval. This prevents overwhelming the UI with high-frequency updates.
-    /// Events are deduplicated by document ID, keeping only the latest state.
-    ///
-    /// # Examples
-    /// ```
-    /// use std::time::Duration;
-    ///
-    /// // Rate-limit to max 10 updates per second
-    /// let mut watcher = db.query("logs")
-    ///     .filter(|f| f.eq("level", "ERROR"))
-    ///     .debounce(Duration::from_millis(100))
-    ///     .watch()
-    ///     .await?;
-    /// ```
     pub fn debounce(mut self, duration: std::time::Duration) -> Self {
         self.debounce_duration = Some(duration);
         self
     }
 
-    /// Execute the query and collect the results
-    ///
-    /// # Returns
-    /// A vector of documents matching the query criteria
-    ///
-    /// # Examples
-
-    /// let results = db.query("products")
-    ///     .filter(|f| f.lt("price", 100))
-    ///     .collect()
-    ///     .await?;
-    /// ```
-    pub async fn collect(self) -> Result<Vec<Document>> {
-        self.collect_internal().await
+    pub async fn first_one(self) -> Result<Option<Document>> {
+        let docs = self.limit(1).collect().await?;
+        Ok(docs.into_iter().next())
     }
 
-    /// Internal helper to execute query without consuming self
-    async fn collect_internal(&self) -> Result<Vec<Document>> {
-        // Ensure indices are initialized
+    /// Executes the query and returns the matching documents.
+    /// Uses secondary indices (Roaring Bitmaps) for optimized filtering when possible.
+    pub async fn collect(self) -> Result<Vec<Document>> {
         self.db.ensure_indices_initialized().await?;
 
-        // Optimization: Use early termination for queries with LIMIT but no ORDER BY
-        let mut docs = if self.order_by.is_none() && self.limit.is_some() {
-            // Early termination path - scan only until we have enough results
-            let target = self.limit.unwrap() + self.offset.unwrap_or(0);
-            let filter = |doc: &Document| self.filters.iter().all(|f| f(doc));
-            self.db
-                .scan_and_filter(&self.collection, filter, Some(target))?
+        // Optimized Bitwise Intersection Path
+        let mut candidate_bitmap: Option<RoaringBitmap> = None;
+
+        for filter in &self.filters {
+            if let Filter::Eq(field, value) = filter {
+                // Check secondary indices
+                let index_key = format!("{}:{}", self.collection, field);
+                let val_str = match value {
+                    Value::String(s) => s.clone(),
+                    _ => value.to_string(),
+                };
+                let full_key = format!("{}:{}:{}", self.collection, field, val_str);
+
+                let mut current_bitmap = RoaringBitmap::new();
+                let mut found = false;
+
+                // 1. Check Cold Index (mmap) — bounds-checked to avoid panic on corrupt manifest
+                if let Some(loc) = self.db.index_manifest.get(&full_key) {
+                    let (offset, len) = *loc.value();
+                    if let Ok(guard) = self.db.mmap_index.read() {
+                        if let Some(mmap) = guard.as_ref() {
+                            if offset + len <= mmap.len() {
+                                let bytes = &mmap[offset..(offset + len)];
+                                if let Ok(cold_bitmap) = RoaringBitmap::deserialize_from(bytes) {
+                                    current_bitmap |= cold_bitmap;
+                                    found = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Check Hot Index — direct entry lookup, no DashMap clone
+                if let Some(storage_arc) = self.db.get_indexed_storage(&index_key, &val_str) {
+                    if let Ok(storage) = storage_arc.read() {
+                        current_bitmap |= storage.to_bitmap();
+                        found = true;
+                    }
+                }
+
+                if !found {
+                    // Only short-circuit on an indexed miss when there is NO active
+                    // transaction — transaction writes are buffered and never reach the
+                    // bitmap index, so we must not hide them with an early empty return.
+                    let in_transaction = crate::transaction::ACTIVE_TRANSACTION_ID
+                        .try_with(|id| *id)
+                        .ok()
+                        .and_then(|id| self.db.transaction_manager.active_transactions.get(&id))
+                        .is_some();
+
+                    if !in_transaction && self.db.has_index_key(&index_key) {
+                        return Ok(vec![]);
+                    }
+                    // Index absent or inside a transaction → fall through to scan path
+                    candidate_bitmap = None;
+                    break;
+                }
+
+                if let Some(ref mut existing) = candidate_bitmap {
+                    *existing &= current_bitmap; // Bitwise AND intersection
+                } else {
+                    candidate_bitmap = Some(current_bitmap);
+                }
+
+                // Short-circuit on empty intersection — but only outside a transaction.
+                // Buffered inserts are merged later and may still satisfy all filters.
+                if let Some(ref b) = candidate_bitmap {
+                    if b.is_empty() {
+                        let in_transaction = crate::transaction::ACTIVE_TRANSACTION_ID
+                            .try_with(|id| *id)
+                            .ok()
+                            .and_then(|id| self.db.transaction_manager.active_transactions.get(&id))
+                            .is_some();
+                        if !in_transaction {
+                            return Ok(vec![]);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut docs = if let Some(bitmap) = candidate_bitmap {
+            // OPTIMIZATION: If the query only requests 'id', we can bypass Sled hydration entirely
+            let id_only = self.fields.as_ref().map(|f| f.len() == 1 && f[0] == "id").unwrap_or(false);
+            
+            // Check active transaction buffer for collection members
+            let tx_id = crate::transaction::ACTIVE_TRANSACTION_ID
+                .try_with(|id| *id)
+                .ok();
+            
+            let tx_buffer = tx_id.and_then(|id| self.db.transaction_manager.active_transactions.get(&id));
+
+            // Hydrate only the final matching IDs
+            let mut final_docs = Vec::with_capacity(bitmap.len() as usize);
+            for internal_id in bitmap {
+                if let Some(external_id) = self.db.get_external_id(internal_id) {
+                    // IMPORTANT: Check if this doc was deleted in the current transaction
+                    if let Some(ref buffer) = tx_buffer {
+                        let key = format!("{}:{}", self.collection, external_id);
+                        if buffer.deletes.contains_key(&key) {
+                            continue;
+                        }
+                    }
+
+                    if id_only && self.filters.is_empty() {
+                        // ULTRA FAST PATH: No filters and id only
+                        final_docs.push(Document { id: external_id, data: HashMap::new() });
+                        continue;
+                    }
+
+                    if let Ok(Some(doc)) = self.db.get_document(&self.collection, &external_id) {
+                        // Double-check with full filter (for any non-indexed conditions)
+                        if self.filters.iter().all(|f| f.matches(&doc)) {
+                            final_docs.push(doc);
+                        }
+                    }
+                }
+            }
+
+            // Also check for NEW documents in transaction that might match (not in bitmap index yet)
+            if let Some(buffer) = tx_buffer {
+                let prefix = format!("{}:", self.collection);
+                for item in buffer.writes.iter() {
+                    let key: &String = item.key();
+                    if let Some(external_id) = key.strip_prefix(&prefix) {
+                        
+                        // If it's already in final_docs (from bitmap index), skip it
+                        if final_docs.iter().any(|d| d.id == external_id) {
+                            continue;
+                        }
+
+                        let data: &Vec<u8> = item.value();
+                        if let Ok(doc) = self.db.deserialize_internal::<Document>(data) {
+                            if self.filters.iter().all(|f| f.matches(&doc)) {
+                                final_docs.push(doc);
+                            }
+                        }
+                    }
+                }
+            }
+
+            final_docs
         } else {
-            // Standard path - need all matching docs (for sorting or no limit)
-            let mut docs = self.db.get_all_collection(&self.collection).await?;
-            docs.retain(|doc| self.filters.iter().all(|f| f(doc)));
-            docs
+            // Fallback to scan if no indices were hit.
+            // Only pre-limit when there is no sort — applying a limit before sorting
+            // truncates the match set and returns the wrong page when scan order
+            // differs from sort order.
+            let scan_limit = if self.order_by.is_none() {
+                self.limit.map(|l| l + self.offset.unwrap_or(0))
+            } else {
+                None
+            };
+            
+            let db_filters = self.filters.clone();
+            self.db.scan_and_filter(&self.collection, move |doc| {
+                db_filters.iter().all(|f| f.matches(doc))
+            }, scan_limit)?
         };
 
-        // Apply ordering
-        if let Some((field, ascending)) = &self.order_by {
-            docs.sort_by(|a, b| match (a.data.get(field), b.data.get(field)) {
-                (Some(v1), Some(v2)) => {
-                    let cmp = v1.cmp(v2);
-                    if *ascending { cmp } else { cmp.reverse() }
-                }
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
+        // Apply Sorting
+        if let Some((field, ascending)) = self.order_by {
+            docs.sort_by(|a, b| {
+                let v1 = a.data.get(&field);
+                let v2 = b.data.get(&field);
+                let ord = compare_values(v1, v2);
+                if ascending { ord } else { ord.reverse() }
             });
         }
 
-        // Apply field selection if specified
-        if let Some(fields) = &self.fields {
-            // Create new documents with only selected fields
-            docs = docs
-                .into_iter()
-                .map(|doc| {
-                    let mut new_data = HashMap::new();
-                    // Always include the ID
-                    for field in fields {
-                        if let Some(value) = doc.data.get(field) {
-                            new_data.insert(field.clone(), value.clone());
-                        }
-                    }
-                    Document {
-                        id: doc.id,
-                        data: new_data,
-                    }
-                })
-                .collect();
+        // Apply Offset/Limit
+        let mut start = self.offset.unwrap_or(0);
+        if start > docs.len() { start = docs.len(); }
+        let mut end = docs.len();
+        if let Some(max) = self.limit {
+            if start + max < end { end = start + max; }
         }
 
-        // Apply offset and limit safely
-        let start = self.offset.unwrap_or(0);
-        let end = self
-            .limit
-            .map(|l| start.saturating_add(l))
-            .unwrap_or(docs.len());
+        let mut result = docs[start..end].to_vec();
 
-        // Ensure we don't go out of bounds
-        let end = end.min(docs.len());
-        Ok(docs.get(start..end).unwrap_or(&[]).to_vec())
+        // Apply field projection when select() was called
+        if let Some(ref fields) = self.fields {
+            let field_set: std::collections::HashSet<&str> =
+                fields.iter().map(|s| s.as_str()).collect();
+            for doc in &mut result {
+                doc.data.retain(|k, _| field_set.contains(k.as_str()));
+            }
+        }
+
+        Ok(result)
     }
 
-    /// Watch the query for real-time updates
-    ///
-    /// Returns a QueryWatcher that streams live updates when documents are added,
-    /// removed, or modified in ways that affect the query results. Perfect for
-    /// building reactive UIs, live dashboards, and real-time applications.
-    ///
-    /// # Performance
-    /// - Zero overhead for queries without watchers
-    /// - Updates delivered asynchronously via channels
-    /// - Automatic filtering - only matching changes are emitted
-    /// - Memory efficient - only tracks matching documents
-    ///
-    /// # Requirements
-    /// This method requires the QueryBuilder to have a 'static lifetime,
-    /// which means the database reference must also be 'static (e.g., Arc<Aurora>).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use aurora_db::{Aurora, types::Value};
-    /// use std::sync::Arc;
-    ///
-    /// let db = Arc::new(Aurora::open("mydb.db")?);
-    ///
-    /// // Basic reactive query - watch active users
-    /// let mut watcher = db.query("users")
-    ///     .filter(|f| f.eq("active", Value::Bool(true)))
-    ///     .watch()
-    ///     .await?;
-    ///
-    /// // Receive updates in real-time
-    /// while let Some(update) = watcher.next().await {
-    ///     match update {
-    ///         QueryUpdate::Added(doc) => {
-    ///             println!("New active user: {}", doc.id);
-    ///         },
-    ///         QueryUpdate::Removed(doc) => {
-    ///             println!("User deactivated: {}", doc.id);
-    ///         },
-    ///         QueryUpdate::Modified { old, new } => {
-    ///             println!("User updated: {} -> {}", old.id, new.id);
-    ///         },
-    ///     }
-    /// }
-    /// ```
-    ///
-    /// # Real-World Use Cases
-    ///
-    /// **Live Leaderboard:**
-    /// ```
-    /// // Watch top players by score
-    /// let mut leaderboard = db.query("players")
-    ///     .filter(|f| f.gte("score", Value::Int(1000)))
-    ///     .watch()
-    ///     .await?;
-    ///
-    /// tokio::spawn(async move {
-    ///     while let Some(update) = leaderboard.next().await {
-    ///         // Update UI with new rankings
-    ///         broadcast_to_clients(&update).await;
-    ///     }
-    /// });
-    /// ```
-    ///
-    /// **Activity Feed:**
-    /// ```
-    /// // Watch recent posts for a user's feed
-    /// let mut feed = db.query("posts")
-    ///     .filter(|f| f.eq("author_id", user_id))
-    ///     .watch()
-    ///     .await?;
-    ///
-    /// // Stream updates to WebSocket
-    /// while let Some(update) = feed.next().await {
-    ///     match update {
-    ///         QueryUpdate::Added(post) => {
-    ///             websocket.send(json!({"type": "new_post", "post": post})).await?;
-    ///         },
-    ///         _ => {}
-    ///     }
-    /// }
-    /// ```
-    ///
-    /// **Real-Time Dashboard:**
-    /// ```
-    /// // Watch critical metrics
-    /// let mut alerts = db.query("metrics")
-    ///     .filter(|f| f.gt("cpu_usage", Value::Float(80.0)))
-    ///     .watch()
-    ///     .await?;
-    ///
-    /// tokio::spawn(async move {
-    ///     while let Some(update) = alerts.next().await {
-    ///         if let QueryUpdate::Added(metric) = update {
-    ///             // Alert on high CPU usage
-    ///             send_alert(format!("High CPU: {:?}", metric)).await;
-    ///         }
-    ///     }
-    /// });
-    /// ```
-    ///
-    /// **Collaborative Editing:**
-    /// ```
-    /// // Watch document for changes from other users
-    /// let doc_id = "doc-123";
-    /// let mut changes = db.query("documents")
-    ///     .filter(|f| f.eq("id", doc_id))
-    ///     .watch()
-    ///     .await?;
-    ///
-    /// tokio::spawn(async move {
-    ///     while let Some(update) = changes.next().await {
-    ///         if let QueryUpdate::Modified { old, new } = update {
-    ///             // Merge changes from other editors
-    ///             apply_remote_changes(&old, &new).await;
-    ///         }
-    ///     }
-    /// });
-    /// ```
-    ///
-    /// **Stock Ticker:**
-    /// ```
-    /// // Watch price changes
-    /// let mut price_watcher = db.query("stocks")
-    ///     .filter(|f| f.eq("symbol", "AAPL"))
-    ///     .watch()
-    ///     .await?;
-    ///
-    /// while let Some(update) = price_watcher.next().await {
-    ///     if let QueryUpdate::Modified { old, new } = update {
-    ///         if let (Some(old_price), Some(new_price)) =
-    ///             (old.data.get("price"), new.data.get("price")) {
-    ///             println!("AAPL: {} -> {}", old_price, new_price);
-    ///         }
-    ///     }
-    /// }
-    /// ```
-    ///
-    /// # Multiple Watchers Pattern
-    ///
-    /// ```
-    /// // Watch multiple queries concurrently
-    /// let mut high_priority = db.query("tasks")
-    ///     .filter(|f| f.eq("priority", Value::String("high".into())))
-    ///     .watch()
-    ///     .await?;
-    ///
-    /// let mut urgent = db.query("tasks")
-    ///     .filter(|f| f.eq("status", Value::String("urgent".into())))
-    ///     .watch()
-    ///     .await?;
-    ///
-    /// tokio::spawn(async move {
-    ///     loop {
-    ///         tokio::select! {
-    ///             Some(update) = high_priority.next() => {
-    ///                 println!("High priority: {:?}", update);
-    ///             },
-    ///             Some(update) = urgent.next() => {
-    ///                 println!("Urgent: {:?}", update);
-    ///             },
-    ///         }
-    ///     }
-    /// });
-    /// ```
-    ///
-    /// # Important Notes
-    /// - Requires Arc<Aurora> for 'static lifetime
-    /// - Updates are delivered asynchronously
-    /// - Watcher keeps running until dropped
-    /// - Only matching documents trigger updates
-    /// - Use tokio::spawn to process updates in background
-    ///
-    /// # See Also
-    /// - `Aurora::listen()` for collection-level change notifications
-    /// - `QueryWatcher::next()` to receive the next update
-    /// - `QueryWatcher::try_next()` for non-blocking checks
-    pub async fn watch(mut self) -> Result<crate::reactive::QueryWatcher>
-    where
-        'a: 'static,
-    {
-        use crate::reactive::{QueryWatcher, ReactiveQueryState};
-        use std::sync::Arc;
-
-        // Get initial results BEFORE moving filters
-        let docs = self.collect_internal().await?;
-
-        // Extract context
-        let collection = self.collection.clone();
-        let db = self.db;
-        let debounce = self.debounce_duration;
-        let filters = std::mem::take(&mut self.filters);
-
-        // Create a listener for this collection
-        let listener = db.listen(&collection);
-
-        // Create filter closure that combines all the query filters
-        let filter_fn = move |doc: &Document| -> bool { filters.iter().all(|f| f(doc)) };
-
-        // Create reactive state
-        let state = Arc::new(ReactiveQueryState::new(filter_fn));
-
-        // Create and return watcher
-        Ok(QueryWatcher::new(
-            collection, listener, state, docs, debounce,
-        ))
-    }
-
-    /// Get only the first matching document or None if no matches
-    ///
-    /// # Examples
-
-    /// let user = db.query("users")
-    ///     .filter(|f| f.eq("email", "jane@example.com"))
-    ///     .first_one()
-    ///     .await?;
-    /// ```
-    pub async fn first_one(self) -> Result<Option<Document>> {
-        self.limit(1).collect().await.map(|mut docs| docs.pop())
-    }
-
-    /// Count the number of documents matching the query
-    ///
-    /// # Examples
-
-    /// let active_count = db.query("users")
-    ///     .filter(|f| f.eq("status", "active"))
-    ///     .count()
-    ///     .await?;
-    /// ```
     pub async fn count(self) -> Result<usize> {
-        self.collect().await.map(|docs| docs.len())
+        let results = self.collect().await?;
+        Ok(results.len())
     }
 
-    /// Update documents matching the query with new field values
-    ///
-    /// # Returns
-    /// The number of documents updated
-    ///
-    /// # Examples
-
-    /// let updated = db.query("products")
-    ///     .filter(|f| f.lt("stock", 5))
-    ///     .update([
-    ///         ("status", Value::String("low_stock".to_string())),
-    ///         ("needs_reorder", Value::Bool(true))
-    ///     ].into_iter().collect())
-    ///     .await?;
-    /// ```
-    pub async fn update(self, updates: HashMap<&str, Value>) -> Result<usize> {
-        // Store a reference to the db and collection before consuming self
-        let db = self.db;
-        let collection = self.collection.clone();
-
-        let docs = self.collect().await?;
-        let mut updated_count = 0;
-
-        for doc in docs {
-            let mut updated_doc = doc.clone();
-            let mut changed = false;
-
-            for (field, value) in &updates {
-                updated_doc.data.insert(field.to_string(), value.clone());
-                changed = true;
-            }
-
-            if changed {
-                // Update document in the database
-                db.put(
-                    format!("{}:{}", collection, updated_doc.id),
-                    serde_json::to_vec(&updated_doc)?,
-                    None,
-                )
-                .await?;
-                updated_count += 1;
-            }
-        }
-
-        Ok(updated_count)
-    }
-
-    /// Delete documents matching the query
-    ///
-    /// # Returns
-    /// The number of documents deleted
-    ///
-    /// # Examples
-    /// ```rust,no_run
-    /// let deleted = db.query("users")
-    ///     .filter(|f| f.eq("active", false))
-    ///     .delete()
-    ///     .await?;
-    /// ```
-    /// Delete documents matching the query
-    ///
-    /// # Returns
-    /// The number of documents deleted
-    ///
-    /// # Note
-    /// Deletions are not atomic. If an error occurs during deletion,
-    /// some documents may have been deleted while others remain.
-    /// For atomic batch operations, consider using transactions.
-    ///
-    /// # Examples
-    /// ```no_run
-    /// # use aurora_db::{Aurora, Result};
-    /// # async fn example(db: &Aurora) -> Result<()> {
-    /// // Delete all inactive users
-    /// let deleted = db.query("users")
-    ///     .filter(|f| f.eq("status", "inactive"))
-    ///     .delete()
-    ///     .await?;
-    /// println!("Deleted {} users", deleted);
-    /// # Ok(())
-    /// # }
-    /// ```
     pub async fn delete(self) -> Result<usize> {
-        // Store reference to db and collection before consuming self
         let db = self.db;
         let collection = self.collection.clone();
-
-        // Use collect() to get matching documents (leverages optimization)
         let docs = self.collect().await?;
-        let mut deleted_count = 0;
-
+        let count = docs.len();
         for doc in docs {
-            let key = format!("{}:{}", collection, doc.id);
-            db.delete(&key).await?;
-            deleted_count += 1;
+            let _ = db.aql_delete_document(&collection, &doc.id).await;
         }
+        Ok(count)
+    }
 
-        Ok(deleted_count)
+    pub async fn watch(self) -> Result<crate::reactive::QueryWatcher> {
+        let collection = self.collection.clone();
+        let filters = self.filters.clone();
+        let db_clone = self.db.clone();
+        let debounce_duration = self.debounce_duration;
+
+        let initial_results = self.collect().await?;
+        let listener = db_clone.pubsub.listen(&collection);
+        let state = Arc::new(crate::reactive::ReactiveQueryState::new(filters));
+
+        Ok(crate::reactive::QueryWatcher::new(
+            Arc::new(db_clone),
+            collection,
+            listener,
+            state,
+            initial_results,
+            debounce_duration,
+        ))
     }
 }
 
-/// Builder for performing full-text search operations
-///
-/// # Examples
-/// ```rust,no_run
-/// let results = db.search("products")
-///     .field("description")
-///     .matching("wireless headphones")
-///     .fuzzy(true)
-///     .collect()
-///     .await?;
-/// ```
+/// Builder for full-text search queries.
 pub struct SearchBuilder<'a> {
     db: &'a Aurora,
     collection: String,
-    field: Option<String>,
-    query: Option<String>,
+    query: String,
+    limit: Option<usize>,
     fuzzy: bool,
+    distance: u8,
 }
 
 impl<'a> SearchBuilder<'a> {
-    /// Create a new search builder for the specified collection
     pub fn new(db: &'a Aurora, collection: &str) -> Self {
         Self {
             db,
             collection: collection.to_string(),
-            field: None,
-            query: None,
-            fuzzy: false,
-        }
-    }
-
-    /// Specify the field to search in
-    ///
-    /// # Examples
-
-    /// .field("description")
-    /// ```
-    pub fn field(mut self, field: &str) -> Self {
-        self.field = Some(field.to_string());
-        self
-    }
-
-    /// Specify the search query text
-    ///
-    /// # Examples
-
-    /// .matching("wireless headphones")
-    /// ```
-    pub fn matching(mut self, query: &str) -> Self {
-        self.query = Some(query.to_string());
-        self
-    }
-
-    /// Enable or disable fuzzy matching (for typo tolerance)
-    ///
-    /// # Examples
-
-    /// .fuzzy(true)  // Enable fuzzy matching
-    /// ```
-    pub fn fuzzy(mut self, enable: bool) -> Self {
-        self.fuzzy = enable;
-        self
-    }
-
-    /// Execute the search and collect the results
-    ///
-    /// # Returns
-    /// A vector of documents matching the search criteria
-    ///
-    /// # Examples
-
-    /// let results = db.search("articles")
-    ///     .field("content")
-    ///     .matching("quantum computing")
-    ///     .collect()
-    ///     .await?;
-    /// ```
-    pub async fn collect(self) -> Result<Vec<Document>> {
-        let field = self
-            .field
-            .ok_or_else(|| AqlError::invalid_operation("Search field not specified"))?;
-        let query = self
-            .query
-            .ok_or_else(|| AqlError::invalid_operation("Search query not specified"))?;
-
-        self.db.search_text(&self.collection, &field, &query).await
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SimpleQueryBuilder {
-    pub collection: String,
-    pub filters: Vec<Filter>,
-    pub order_by: Option<(String, bool)>,
-    pub limit: Option<usize>,
-    pub offset: Option<usize>,
-}
-
-impl SimpleQueryBuilder {
-    pub fn new(collection: String) -> Self {
-        Self {
-            collection,
-            filters: Vec::new(),
-            order_by: None,
+            query: String::new(),
             limit: None,
-            offset: None,
+            fuzzy: false,
+            distance: 0,
         }
     }
 
-    pub fn filter(mut self, filter: Filter) -> Self {
-        self.filters.push(filter);
+    pub fn query(mut self, query: &str) -> Self {
+        self.query = query.to_string();
         self
     }
 
-    /// Filter for exact equality
-    ///
-    /// Uses secondary index if the field is indexed (O(1) lookup).
-    /// Falls back to full collection scan if not indexed (O(n)).
-    ///
-    /// # Arguments
-    /// * `field` - The field name to filter on
-    /// * `value` - The exact value to match
-    ///
-    /// # Examples
-    ///
-
-    /// use aurora_db::{Aurora, types::Value};
-    ///
-    /// let db = Aurora::open("mydb.db")?;
-    ///
-    /// // Find active users
-    /// let active_users = db.query("users")
-    ///     .filter(|f| f.eq("status", Value::String("active".into())))
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// // Multiple equality filters (AND logic)
-    /// let premium_active = db.query("users")
-    ///     .filter(|f| f.eq("tier", Value::String("premium".into())))
-    ///     .filter(|f| f.eq("active", Value::Bool(true)))
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// // Numeric equality
-    /// let age_30 = db.query("users")
-    ///     .filter(|f| f.eq("age", Value::Int(30)))
-    ///     .collect()
-    ///     .await?;
-    /// ```
-    pub fn eq(self, field: &str, value: Value) -> Self {
-        self.filter(Filter::Eq(field.to_string(), value))
-    }
-
-    /// Filter for greater than
-    ///
-    /// Finds all documents where the field value is strictly greater than
-    /// the provided value. With LIMIT, uses early termination for performance.
-    ///
-    /// # Arguments
-    /// * `field` - The field name to compare
-    /// * `value` - The minimum value (exclusive)
-    ///
-    /// # Performance
-    /// - Without LIMIT: O(n) - scans all documents
-    /// - With LIMIT: O(k) where k = limit + offset (early termination)
-    /// - No index support yet (planned for future)
-    ///
-    /// # Examples
-    ///
-
-    /// use aurora_db::{Aurora, types::Value};
-    ///
-    /// let db = Aurora::open("mydb.db")?;
-    ///
-    /// // Find high scorers (with early termination)
-    /// let high_scorers = db.query("users")
-    ///     .filter(|f| f.gt("score", Value::Int(1000)))
-    ///     .limit(100)  // Stops after finding 100 matches
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// // Price range queries
-    /// let expensive = db.query("products")
-    ///     .filter(|f| f.gt("price", Value::Float(99.99)))
-    ///     .order_by("price", false)  // Descending
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// // Date filtering (timestamps as integers)
-    /// let recent = db.query("events")
-    ///     .filter(|f| f.gt("timestamp", Value::Int(1609459200)))  // After Jan 1, 2021
-    ///     .collect()
-    ///     .await?;
-    /// ```
-    pub fn gt(self, field: &str, value: Value) -> Self {
-        self.filter(Filter::Gt(field.to_string(), value))
-    }
-
-    /// Filter for greater than or equal to
-    ///
-    /// Finds all documents where the field value is greater than or equal to
-    /// the provided value. Inclusive version of `gt()`.
-    ///
-    /// # Arguments
-    /// * `field` - The field name to compare
-    /// * `value` - The minimum value (inclusive)
-    ///
-    /// # Examples
-    ///
-
-    /// use aurora_db::{Aurora, types::Value};
-    ///
-    /// let db = Aurora::open("mydb.db")?;
-    ///
-    /// // Minimum age requirement (inclusive)
-    /// let adults = db.query("users")
-    ///     .filter(|f| f.gte("age", Value::Int(18)))
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// // Inventory management
-    /// let in_stock = db.query("products")
-    ///     .filter(|f| f.gte("stock", Value::Int(1)))
-    ///     .collect()
-    ///     .await?;
-    /// ```
-    pub fn gte(self, field: &str, value: Value) -> Self {
-        self.filter(Filter::Gte(field.to_string(), value))
-    }
-
-    /// Filter for less than
-    ///
-    /// Finds all documents where the field value is strictly less than
-    /// the provided value.
-    ///
-    /// # Arguments
-    /// * `field` - The field name to compare
-    /// * `value` - The maximum value (exclusive)
-    ///
-    /// # Examples
-    ///
-
-    /// use aurora_db::{Aurora, types::Value};
-    ///
-    /// let db = Aurora::open("mydb.db")?;
-    ///
-    /// // Low balance accounts
-    /// let low_balance = db.query("accounts")
-    ///     .filter(|f| f.lt("balance", Value::Float(10.0)))
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// // Budget products
-    /// let budget = db.query("products")
-    ///     .filter(|f| f.lt("price", Value::Float(50.0)))
-    ///     .order_by("price", true)  // Ascending
-    ///     .collect()
-    ///     .await?;
-    /// ```
-    pub fn lt(self, field: &str, value: Value) -> Self {
-        self.filter(Filter::Lt(field.to_string(), value))
-    }
-
-    /// Filter for less than or equal to
-    ///
-    /// Finds all documents where the field value is less than or equal to
-    /// the provided value. Inclusive version of `lt()`.
-    ///
-    /// # Arguments
-    /// * `field` - The field name to compare
-    /// * `value` - The maximum value (inclusive)
-    ///
-    /// # Examples
-    ///
-
-    /// use aurora_db::{Aurora, types::Value};
-    ///
-    /// let db = Aurora::open("mydb.db")?;
-    ///
-    /// // Senior discount eligibility
-    /// let seniors = db.query("users")
-    ///     .filter(|f| f.lte("age", Value::Int(65)))
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// // Clearance items
-    /// let clearance = db.query("products")
-    ///     .filter(|f| f.lte("price", Value::Float(20.0)))
-    ///     .collect()
-    ///     .await?;
-    /// ```
-    pub fn lte(self, field: &str, value: Value) -> Self {
-        self.filter(Filter::Lte(field.to_string(), value))
-    }
-
-    /// Filter for substring containment
-    ///
-    /// Finds all documents where the field value contains the specified substring.
-    /// Case-sensitive matching. For text search, consider using the `search()` API instead.
-    ///
-    /// # Arguments
-    /// * `field` - The field name to search in (must be a string field)
-    /// * `value` - The substring to search for
-    ///
-    /// # Performance
-    /// - Always O(n) - scans all documents
-    /// - Case-sensitive string matching
-    /// - For full-text search, use `db.search()` instead
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use aurora_db::Aurora;
-    ///
-    /// let db = Aurora::open("mydb.db")?;
-    ///
-    /// // Find articles about Rust
-    /// let rust_articles = db.query("articles")
-    ///     .filter(|f| f.contains("title", "Rust"))
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// // Email domain filtering
-    /// let gmail_users = db.query("users")
-    ///     .filter(|f| f.contains("email", "@gmail.com"))
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// // Tag searching
-    /// let rust_posts = db.query("posts")
-    ///     .filter(|f| f.contains("tags", "rust"))
-    ///     .collect()
-    ///     .await?;
-    /// ```
-    ///
-    /// # Note
-    /// For case-insensitive search or more advanced text matching,
-    /// use the full-text search API: `db.search(collection).query(text)`
-    pub fn contains(self, field: &str, value: &str) -> Self {
-        self.filter(Filter::Contains(field.to_string(), value.to_string()))
-    }
-
-    /// Convenience method for range queries
-    pub fn between(self, field: &str, min: Value, max: Value) -> Self {
-        self.filter(Filter::Gte(field.to_string(), min))
-            .filter(Filter::Lte(field.to_string(), max))
-    }
-
-    /// Sort results by a field (ascending or descending)
-    pub fn order_by(mut self, field: &str, ascending: bool) -> Self {
-        self.order_by = Some((field.to_string(), ascending));
-        self
-    }
-
-    /// Limit the number of results returned
     pub fn limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
         self
     }
 
-    /// Skip a number of results (for pagination)
-    pub fn offset(mut self, offset: usize) -> Self {
-        self.offset = Some(offset);
+    pub fn fuzzy(mut self, distance: u8) -> Self {
+        self.fuzzy = true;
+        self.distance = distance;
         self
+    }
+
+    pub async fn collect(self) -> Result<Vec<Document>> {
+        let query = self.query.to_lowercase();
+        let mut results = Vec::new();
+
+        if let Some(index) = self.db.primary_indices.get(&self.collection) {
+            for entry in index.iter() {
+                if let Some(data) = self.db.get(entry.key())? {
+                    if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                        let matches = if query.is_empty() {
+                            true
+                        } else {
+                            doc.data.values().any(|v| {
+                                if let crate::types::Value::String(s) = v {
+                                    s.to_lowercase().contains(&query)
+                                } else {
+                                    false
+                                }
+                            })
+                        };
+                        if matches {
+                            results.push(doc);
+                            if let Some(l) = self.limit {
+                                if results.len() >= l {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(results)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+
+fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
+    match (a, b) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(v1), Some(v2)) => v1.partial_cmp(v2).unwrap_or(std::cmp::Ordering::Equal),
+    }
+}
+
+/// Supported filter operators
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Filter {
     Eq(String, Value),
+    Ne(String, Value),
     Gt(String, Value),
     Gte(String, Value),
     Lt(String, Value),
     Lte(String, Value),
+    In(String, Vec<Value>),
     Contains(String, String),
+    StartsWith(String, String),
+    IsNull(String),
+    IsNotNull(String),
+    Not(Box<Filter>),
     And(Vec<Filter>),
     Or(Vec<Filter>),
 }
 
-fn get_field_value<'a>(doc: &'a Document, path: &str) -> Option<&'a Value> {
-    // First, try a direct lookup for field names that might contain dots.
-    if let Some(value) = doc.data.get(path) {
-        return Some(value);
+/// Traverse a dotted field path (e.g. `"meta.author"`) through a Document's data map.
+/// Returns `None` if any segment is missing or the intermediate value is not an Object.
+fn get_nested<'a>(doc: &'a Document, field: &str) -> Option<&'a Value> {
+    let mut parts = field.splitn(2, '.');
+    let first = parts.next()?;
+    let rest = parts.next();
+    let val = doc.data.get(first)?;
+    match rest {
+        None => Some(val),
+        Some(remaining) => get_nested_value(val, remaining),
     }
+}
 
-    if !path.contains('.') {
-        return None;
-    }
-
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut current = doc.data.get(parts[0])?;
-
-    for &part in &parts[1..] {
-        if let Value::Object(map) = current {
-            current = map.get(part)?;
-        } else {
-            return None;
+fn get_nested_value<'a>(val: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut parts = path.splitn(2, '.');
+    let first = parts.next()?;
+    let rest = parts.next();
+    if let Value::Object(map) = val {
+        let child = map.get(first)?;
+        match rest {
+            None => Some(child),
+            Some(remaining) => get_nested_value(child, remaining),
         }
+    } else {
+        None
     }
+}
 
-    Some(current)
+impl std::ops::Not for Filter {
+    type Output = Self;
+    fn not(self) -> Self::Output {
+        Filter::Not(Box::new(self))
+    }
 }
 
 impl Filter {
-    /// Check if a document matches this filter
     pub fn matches(&self, doc: &Document) -> bool {
         match self {
-            Filter::Eq(field, value) => get_field_value(doc, field) == Some(value),
-            Filter::Gt(field, value) => get_field_value(doc, field).is_some_and(|v| v > value),
-            Filter::Gte(field, value) => get_field_value(doc, field).is_some_and(|v| v >= value),
-            Filter::Lt(field, value) => get_field_value(doc, field).is_some_and(|v| v < value),
-            Filter::Lte(field, value) => get_field_value(doc, field).is_some_and(|v| v <= value),
-            Filter::Contains(field, substr) => get_field_value(doc, field).is_some_and(|v| {
-                if let Value::String(s) = v {
-                    s.contains(substr)
-                } else if let Value::Array(arr) = v {
-                    arr.contains(&Value::String(substr.clone()))
-                } else {
-                    false
-                }
+            Filter::Eq(f, v) => get_nested(doc, f) == Some(v),
+            Filter::Ne(f, v) => get_nested(doc, f) != Some(v),
+            Filter::Gt(f, v) => get_nested(doc, f).map_or(false, |dv| dv > v),
+            Filter::Gte(f, v) => get_nested(doc, f).map_or(false, |dv| dv >= v),
+            Filter::Lt(f, v) => get_nested(doc, f).map_or(false, |dv| dv < v),
+            Filter::Lte(f, v) => get_nested(doc, f).map_or(false, |dv| dv <= v),
+            Filter::In(f, v) => get_nested(doc, f).map_or(false, |dv| v.contains(dv)),
+            Filter::Contains(f, v) => get_nested(doc, f).map_or(false, |dv| {
+                if let Value::String(s) = dv { s.contains(v.as_str()) } else { false }
             }),
-            Filter::And(filters) => filters.iter().all(|f| f.matches(doc)),
-            Filter::Or(filters) => filters.iter().any(|f| f.matches(doc)),
+            Filter::StartsWith(f, v) => get_nested(doc, f).map_or(false, |dv| {
+                if let Value::String(s) = dv { s.starts_with(v.as_str()) } else { false }
+            }),
+            Filter::IsNull(f) => get_nested(doc, f).map_or(true, |v| matches!(v, Value::Null)),
+            Filter::IsNotNull(f) => get_nested(doc, f).map_or(false, |v| !matches!(v, Value::Null)),
+            Filter::Not(f) => !f.matches(doc),
+            Filter::And(fs) => fs.iter().all(|f| f.matches(doc)),
+            Filter::Or(fs) => fs.iter().any(|f| f.matches(doc)),
+        }
+    }
+}
+
+impl std::ops::BitAnd for Filter {
+    type Output = Filter;
+    fn bitand(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Filter::And(mut a), Filter::And(mut b)) => { a.append(&mut b); Filter::And(a) }
+            (Filter::And(mut a), b) => { a.push(b); Filter::And(a) }
+            (a, Filter::And(mut b)) => { b.insert(0, a); Filter::And(b) }
+            (a, b) => Filter::And(vec![a, b]),
+        }
+    }
+}
+
+impl std::ops::BitOr for Filter {
+    type Output = Filter;
+    fn bitor(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Filter::Or(mut a), Filter::Or(mut b)) => { a.append(&mut b); Filter::Or(a) }
+            (Filter::Or(mut a), b) => { a.push(b); Filter::Or(a) }
+            (a, Filter::Or(mut b)) => { b.insert(0, a); Filter::Or(b) }
+            (a, b) => Filter::Or(vec![a, b]),
         }
     }
 }

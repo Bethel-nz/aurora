@@ -5,7 +5,7 @@ use serde_json::{Value as JsonValue, json};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-// --- API Payload Structs ---
+// API Payload Structs
 // These define the shape of JSON the server expects.
 
 #[derive(Deserialize)]
@@ -42,7 +42,7 @@ pub struct QueryPayload {
     pub select: Option<Vec<String>>,
 }
 
-// --- Data Conversion Functions ---
+// Data Conversion Functions
 
 /// Converts an internal `Document` into a clean, client-friendly `serde_json::Value`.
 pub fn document_to_json(doc: &Document) -> JsonValue {
@@ -65,6 +65,7 @@ fn value_to_json(value: &Value) -> JsonValue {
         Value::Float(f) => json!(f),
         Value::Bool(b) => json!(b),
         Value::Uuid(u) => json!(u.to_string()),
+        Value::DateTime(dt) => json!(dt.to_rfc3339()),
         Value::Array(arr) => JsonValue::Array(arr.iter().map(value_to_json).collect()),
         Value::Object(obj) => {
             let map = obj
@@ -110,6 +111,8 @@ pub fn json_to_value(json_value: &JsonValue) -> Result<Value> {
         JsonValue::String(s) => {
             if let Ok(uuid) = Uuid::parse_str(s) {
                 Ok(Value::Uuid(uuid))
+            } else if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+                Ok(Value::DateTime(dt.with_timezone(&chrono::Utc)))
             } else {
                 Ok(Value::String(s.clone()))
             }

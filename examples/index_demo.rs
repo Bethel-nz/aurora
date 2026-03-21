@@ -4,23 +4,23 @@ use std::time::Instant;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a database
-    let db = Aurora::open("index_demo.db")?;
+    let db = Aurora::open("index_demo.db").await?;
 
     // Create a collection for users
     db.new_collection(
         "users",
         vec![
-            ("id".to_string(), FieldType::String, true),
-            ("name".to_string(), FieldType::String, false),
-            ("email".to_string(), FieldType::String, true),
-            ("age".to_string(), FieldType::Int, false),
-            ("department".to_string(), FieldType::String, false),
-            ("salary".to_string(), FieldType::Float, false),
+            ("id".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),
+            ("name".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("email".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),
+            ("age".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+            ("department".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("salary".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true }),
         ],
     )
     .await?;
 
-    println!("🏗️  Inserting 10,000 test users...");
+    println!(" Inserting 10,000 test users...");
     let start = Instant::now();
 
     // Insert 10,000 test users
@@ -44,15 +44,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let insert_time = start.elapsed();
-    println!("✅ Inserted 10,000 users in {:?}", insert_time);
+    println!(" Inserted 10,000 users in {:?}", insert_time);
 
     // Query without index (slow)
-    println!("\n🐌 Querying without index...");
+    println!("\n Querying without index...");
     let start = Instant::now();
 
     let results = db
         .query("users")
-        .filter(|f| f.eq("department", "Engineering"))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("department", "Engineering"))
         .collect()
         .await?;
 
@@ -64,19 +64,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create index on department field
-    println!("\n🚀 Creating index on department field...");
+    println!("\n Creating index on department field...");
     let start = Instant::now();
     db.create_index("users", "department").await?;
     let index_creation_time = start.elapsed();
-    println!("✅ Index created in {:?}", index_creation_time);
+    println!(" Index created in {:?}", index_creation_time);
 
     // Query with index (fast)
-    println!("\n⚡ Querying with index...");
+    println!("\n Querying with index...");
     let start = Instant::now();
 
     let results = db
         .query("users")
-        .filter(|f| f.eq("department", "Engineering"))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("department", "Engineering"))
         .collect()
         .await?;
 
@@ -88,22 +88,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Show the performance improvement
-    if slow_query_time.as_nanos() > 0 {
+    if slow_query_time.as_nanos() > 0 && fast_query_time.as_nanos() > 0 {
         let speedup = slow_query_time.as_nanos() as f64 / fast_query_time.as_nanos() as f64;
         println!(
-            "\n📊 Performance improvement: {:.1}x faster with index!",
+            "\n Performance improvement: {:.1}x faster with index!",
             speedup
         );
     }
 
     // Create more indices for demonstration
-    println!("\n🔧 Creating additional indices...");
+    println!("\n Creating additional indices...");
     db.create_indices("users", &["email", "age", "salary"])
         .await?;
 
     // Show index statistics
     let stats = db.get_index_stats("users");
-    println!("\n📈 Index Statistics:");
+    println!("\n Index Statistics:");
     for (field, stat) in stats {
         println!(
             "  {}: {} unique values, {} total docs, avg {:.1} docs/value",
@@ -112,12 +112,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Demonstrate complex query with multiple indices
-    println!("\n🔍 Complex query using multiple indices...");
+    println!("\n Complex query using multiple indices...");
     let start = Instant::now();
 
     let results = db
         .query("users")
-        .filter(|f| f.eq("department", "Sales") && f.gt("salary", Value::Float(75000.0)))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("department", "Sales") & f.gt("salary", Value::Float(75000.0)))
         .order_by("salary", false)
         .limit(10)
         .collect()
@@ -131,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Show some results
-    println!("\n👥 Top Sales performers:");
+    println!("\n Top Sales performers:");
     for (i, user) in results.iter().take(5).enumerate() {
         let name = user.data.get("name").unwrap();
         let salary = user.data.get("salary").unwrap();
@@ -146,6 +146,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    println!("\n🎉 Index demo completed!");
+    println!("\n Index demo completed!");
     Ok(())
 }

@@ -27,14 +27,14 @@ async fn stress_test_concurrent_writes() {
         config.enable_wal = true;
         config.checkpoint_interval_ms = 100;
 
-        let db = Arc::new(Aurora::with_config(config).unwrap());
+        let db = Arc::new(Aurora::with_config(config).await.unwrap());
 
         // Create collection
         db.new_collection(
             "stress_test",
             vec![
-                ("name", FieldType::String, false),
-                ("value", FieldType::Int, false),
+                ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+                ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
             ],
         )
         .await
@@ -112,9 +112,9 @@ async fn stress_test_concurrent_reads_writes() {
     config.enable_write_buffering = true;
     config.enable_wal = true;
 
-    let db = Arc::new(Aurora::with_config(config).unwrap());
+    let db = Arc::new(Aurora::with_config(config).await.unwrap());
 
-    db.new_collection("rw_test", vec![("counter", FieldType::Int, false)])
+    db.new_collection("rw_test", vec![("counter", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true })])
         .await
         .unwrap();
 
@@ -190,9 +190,9 @@ async fn stress_test_pubsub_notifications() {
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("pubsub_stress.aurora");
 
-    let db = Arc::new(Aurora::open(db_path.to_str().unwrap()).unwrap());
+    let db = Arc::new(Aurora::open(db_path.to_str().unwrap()).await.unwrap());
 
-    db.new_collection("pubsub_test", vec![("event", FieldType::String, false)])
+    db.new_collection("pubsub_test", vec![("event", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true })])
         .await
         .unwrap();
 

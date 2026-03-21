@@ -4,22 +4,23 @@ use std::time::Instant;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a database
-    let db = Aurora::open("range_query_demo.db")?;
+    let db = Aurora::open("range_query_demo.db").await?;
 
     // Create a collection for products
     db.new_collection(
         "products",
         vec![
-            ("id".to_string(), FieldType::String, true),
-            ("name".to_string(), FieldType::String, false),
-            ("price".to_string(), FieldType::Float, false),
-            ("category".to_string(), FieldType::String, false),
-            ("rating".to_string(), FieldType::Float, false),
-            ("stock_quantity".to_string(), FieldType::Int, false),
+            ("id".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),
+            ("name".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("price".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true }),
+            ("category".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("rating".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true }),
+            ("stock_quantity".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
         ],
-    ).await?;
+    )
+    .await?;
 
-    println!("🏗️  Inserting 50,000 test products...");
+    println!(" Inserting 50,000 test products...");
     let start = Instant::now();
 
     // Insert 50,000 test products with varied data
@@ -43,15 +44,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let insert_time = start.elapsed();
-    println!("✅ Inserted 50,000 products in {:?}", insert_time);
+    println!("Inserted 50,000 products in {:?}", insert_time);
 
     // Demo 1: Range query WITHOUT index (slow)
-    println!("\n🐌 Range query WITHOUT index...");
+    println!("\n Range query WITHOUT index...");
     let start = Instant::now();
 
     let results = db
         .query("products")
-        .filter(|f| f.between("price", Value::Float(1000.0), Value::Float(2000.0)))
+        .filter(|f: &aurora_db::query::FilterBuilder| {
+            f.between("price", Value::Float(1000.0), Value::Float(2000.0))
+        })
         .collect()
         .await?;
 
@@ -63,19 +66,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create index on price field
-    println!("\n🚀 Creating index on price field...");
+    println!("\n Creating index on price field...");
     let start = Instant::now();
     db.create_index("products", "price").await?;
     let index_creation_time = start.elapsed();
-    println!("✅ Price index created in {:?}", index_creation_time);
+    println!(" Price index created in {:?}", index_creation_time);
 
     // Demo 2: Range query WITH index (fast)
-    println!("\n⚡ Range query WITH index...");
+    println!("\n Range query WITH index...");
     let start = Instant::now();
 
     let results = db
         .query("products")
-        .filter(|f| f.between("price", Value::Float(1000.0), Value::Float(2000.0)))
+        .filter(|f: &aurora_db::query::FilterBuilder| {
+            f.between("price", Value::Float(1000.0), Value::Float(2000.0))
+        })
         .collect()
         .await?;
 
@@ -87,30 +92,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Show performance improvement
-    if slow_query_time.as_nanos() > 0 {
+    if slow_query_time.as_nanos() > 0 && fast_query_time.as_nanos() > 0 {
         let speedup = slow_query_time.as_nanos() as f64 / fast_query_time.as_nanos() as f64;
-        println!(
-            "\n📊 Range query speedup: {:.1}x faster with index!",
-            speedup
-        );
+        println!("\n Range query speedup: {:.1}x faster with index!", speedup);
     }
 
     // Create more indices for complex queries
-    println!("\n🔧 Creating additional indices...");
+    println!("\n Creating additional indices...");
     db.create_indices("products", &["rating", "stock_quantity", "category"])
         .await?;
 
     // Demo 3: Complex multi-condition range query
-    println!("\n🔍 Complex range query with multiple conditions...");
+    println!("\n Complex range query with multiple conditions...");
     let start = Instant::now();
 
     // Find high-rated, well-stocked products in a specific price range
     let results = db
         .query("products")
-        .filter(|f| {
+        .filter(|f: &aurora_db::query::FilterBuilder| {
             f.between("price", Value::Float(500.0), Value::Float(1500.0))
-                && f.gte("rating", Value::Float(4.0))
-                && f.gt("stock_quantity", Value::Int(100))
+                & f.gte("rating", Value::Float(4.0))
+                & f.gt("stock_quantity", Value::Int(100))
         })
         .order_by("rating", false) // Best rated first
         .limit(20)
@@ -125,13 +127,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Demo 4: Different range query types
-    println!("\n🎯 Testing different range query operators...");
+    println!("\n Testing different range query operators...");
 
     // Greater than
     let start = Instant::now();
     let expensive_products = db
         .query("products")
-        .filter(|f| f.gt("price", Value::Float(20000.0)))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.gt("price", Value::Float(20000.0)))
         .collect()
         .await?;
     let gt_time = start.elapsed();
@@ -145,12 +147,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let budget_products = db
         .query("products")
-        .filter(|f| f.lte("price", Value::Float(50.0)))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.lte("price", Value::Float(50.0)))
         .collect()
         .await?;
     let lte_time = start.elapsed();
     println!(
-        "Products ≤ $50: {} found in {:?}",
+        "Products <= $50: {} found in {:?}",
         budget_products.len(),
         lte_time
     );
@@ -159,19 +161,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let high_stock = db
         .query("products")
-        .filter(|f| f.gte("stock_quantity", Value::Int(900)))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.gte("stock_quantity", Value::Int(900)))
         .collect()
         .await?;
     let gte_time = start.elapsed();
     println!(
-        "High stock items (≥900): {} found in {:?}",
+        "High stock items (>=900): {} found in {:?}",
         high_stock.len(),
         gte_time
     );
 
     // Show index statistics
     let stats = db.get_index_stats("products");
-    println!("\n📈 Index Statistics:");
+    println!("\n Index Statistics:");
     for (field, stat) in stats {
         println!(
             "  {}: {} unique values, {} total docs, avg {:.1} docs/value",
@@ -180,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Show some sample results
-    println!("\n🏆 Sample premium products:");
+    println!("\n Sample premium products:");
     for (i, product) in results.iter().take(5).enumerate() {
         let name = product.data.get("name").unwrap();
         let price = product.data.get("price").unwrap();
@@ -188,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stock = product.data.get("stock_quantity").unwrap();
 
         println!(
-            "  {}. {} - ${:.0} (★{:.1}, {} in stock)",
+            "  {}. {} - ${:.0} (rating: {:.1}, {} in stock)",
             i + 1,
             name,
             match price {
@@ -206,6 +208,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    println!("\n🎉 Range query demo completed!");
+    println!("\n Range query demo completed!");
     Ok(())
 }

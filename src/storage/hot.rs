@@ -17,11 +17,21 @@ pub struct CacheStats {
     pub weighted_size: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EvictionPolicy {
     LRU,    // 5min default TTL
     LFU,    // 15min default TTL
     Hybrid, // 30min default TTL
+}
+
+impl std::fmt::Display for EvictionPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvictionPolicy::LRU => write!(f, "LRU"),
+            EvictionPolicy::LFU => write!(f, "LFU"),
+            EvictionPolicy::Hybrid => write!(f, "Hybrid"),
+        }
+    }
 }
 
 impl EvictionPolicy {
@@ -140,7 +150,7 @@ impl HotStore {
         }
     }
 
-    // --- Synchronous API (Fast path) ---
+    // Synchronous API (Fast path)
 
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
         self.get_ref(key).map(|arc| (*arc).clone())
@@ -169,7 +179,7 @@ impl HotStore {
         self.cache.insert(key.to_string(), cached);
     }
 
-    // --- Async API Compatibility ---
+    // Async API Compatibility
     // Since moka::sync is thread-safe and fast (memory only),
     // we can call it directly in async blocks without spawn_blocking
     // unless you have massive eviction callbacks.
@@ -183,7 +193,7 @@ impl HotStore {
         self.set(Arc::new(key), Arc::new(value), ttl)
     }
 
-    // --- Maintenance & Stats ---
+    // Maintenance & Stats
 
     pub fn is_hot(&self, key: &str) -> bool {
         self.cache.contains_key(key)

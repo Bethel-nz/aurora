@@ -2,8 +2,13 @@ use crate::error::{AqlError, Result};
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::task_local;
 
 static TRANSACTION_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+task_local! {
+    pub static ACTIVE_TRANSACTION_ID: TransactionId;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TransactionId(u64);
@@ -11,6 +16,12 @@ pub struct TransactionId(u64);
 impl Default for TransactionId {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Display for TransactionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "tx:{}", self.0)
     }
 }
 
@@ -33,6 +44,7 @@ pub struct TransactionBuffer {
     pub id: TransactionId,
     pub writes: DashMap<String, Vec<u8>>,
     pub deletes: DashMap<String, ()>,
+    pub events: Arc<tokio::sync::Mutex<Vec<crate::pubsub::ChangeEvent>>>,
 }
 
 impl TransactionBuffer {
@@ -41,12 +53,20 @@ impl TransactionBuffer {
             id,
             writes: DashMap::new(),
             deletes: DashMap::new(),
+            events: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         }
     }
 
     pub fn write(&self, key: String, value: Vec<u8>) {
         self.deletes.remove(&key);
         self.writes.insert(key, value);
+    }
+
+    pub fn read(&self, key: &str) -> Option<Vec<u8>> {
+        if self.deletes.contains_key(key) {
+            return None;
+        }
+        self.writes.get(key).map(|v| v.value().clone())
     }
 
     pub fn delete(&self, key: String) {

@@ -5,7 +5,7 @@ use tempfile::TempDir;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
-fn setup_baseline(enable_wal: bool) -> Result<(Aurora, TempDir)> {
+async fn setup_baseline(enable_wal: bool) -> Result<(Aurora, TempDir)> {
     let temp_dir = tempfile::tempdir().map_err(|e| {
         aurora_db::AqlError::invalid_operation(format!("Failed to create temp dir: {}", e))
     })?;
@@ -17,7 +17,7 @@ fn setup_baseline(enable_wal: bool) -> Result<(Aurora, TempDir)> {
     config.enable_write_buffering = true;
     config.enable_wal = enable_wal;
 
-    let db = Aurora::with_config(config)?;
+    let db = Aurora::with_config(config).await?;
     Ok((db, temp_dir))
 }
 
@@ -30,13 +30,13 @@ fn run_baseline_bench(c: &mut Criterion, enable_wal: bool, group_name: &str) {
     let scales = [1, 10, 100, 1000, 10_000, 100_000, 1_000_000];
 
     for &size in &scales {
-        let (db, _temp_dir) = setup_baseline(enable_wal).unwrap();
+        let (db, _temp_dir) = rt.block_on(setup_baseline(enable_wal)).unwrap();
 
         rt.block_on(async {
             let schema_aql = r#"
                 schema {
                     define collection bench {
-                        id: String @primaryKey
+                        id: String @primary
                         data: String
                         index: Int @indexed
                         timestamp: String
@@ -135,7 +135,7 @@ fn run_baseline_bench(c: &mut Criterion, enable_wal: bool, group_name: &str) {
             b.iter(|| {
                 rt.block_on(async {
                     db.query("bench")
-                        .filter(|f| f.gt("index", Value::Int((s / 2) as i64)))
+                        .filter(|f: &aurora_db::query::FilterBuilder| f.gt("index", Value::Int((s / 2) as i64)))
                         .limit(100)
                         .collect()
                         .await

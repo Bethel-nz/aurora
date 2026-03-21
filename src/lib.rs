@@ -49,9 +49,8 @@
 
 // Re-export primary types and modules
 pub use crate::db::Aurora;
-pub use crate::db::DataInfo;
 pub use crate::error::{AqlError, Result};
-pub use crate::query::{QueryBuilder, SearchBuilder};
+pub use crate::query::{QueryBuilder, SimpleQueryBuilder, SearchBuilder};
 pub use types::{
     AuroraConfig, ColdStoreMode, Collection, Document, DurabilityMode, FieldDefinition, FieldType,
     Value,

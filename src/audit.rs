@@ -76,7 +76,7 @@ pub struct ConsoleAuditLogger;
 
 impl AuditLogger for ConsoleAuditLogger {
     fn log(&self, entry: AuditEntry) {
-        let status = if entry.success { "✓" } else { "✗" };
+        let status = if entry.success { "SUCCESS" } else { "FAILED" };
         let duration = entry
             .duration_ms
             .map(|d| format!(" ({}ms)", d))

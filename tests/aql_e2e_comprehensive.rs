@@ -13,7 +13,7 @@ async fn setup_db(name: &str) -> (Aurora, TempDir) {
         durability_mode: aurora_db::DurabilityMode::Synchronous,
         ..Default::default()
     };
-    (Aurora::with_config(config).unwrap(), temp_dir)
+    (Aurora::with_config(config).await.unwrap(), temp_dir)
 }
 
 #[tokio::test]

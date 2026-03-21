@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 /// Job status tracking the lifecycle of a background job
 ///
-/// Jobs progress through states: Pending → Running → Completed/Failed → DeadLetter
+/// Jobs progress through states: Pending -> Running -> Completed/Failed -> DeadLetter
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum JobStatus {
     /// Job is queued and waiting to be processed
@@ -18,6 +18,18 @@ pub enum JobStatus {
     Failed { error: String, retries: u32 },
     /// Job permanently failed after max retries
     DeadLetter { error: String },
+}
+
+impl std::fmt::Display for JobStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JobStatus::Pending => write!(f, "Pending"),
+            JobStatus::Running => write!(f, "Running"),
+            JobStatus::Completed => write!(f, "Completed"),
+            JobStatus::Failed { error, retries } => write!(f, "Failed({}, retries: {})", error, retries),
+            JobStatus::DeadLetter { error } => write!(f, "DeadLetter({})", error),
+        }
+    }
 }
 
 /// Job priority for execution order
@@ -51,6 +63,17 @@ pub enum JobPriority {
     High = 3,
     /// Critical priority (value: 4) - payments, security
     Critical = 4,
+}
+
+impl std::fmt::Display for JobPriority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JobPriority::Low => write!(f, "Low"),
+            JobPriority::Normal => write!(f, "Normal"),
+            JobPriority::High => write!(f, "High"),
+            JobPriority::Critical => write!(f, "Critical"),
+        }
+    }
 }
 
 /// A durable background job
@@ -99,6 +122,12 @@ pub struct Job {
     /// Seconds before worker is considered dead (default: 30)
     #[serde(default = "default_lease")]
     pub lease_duration: u64,
+}
+
+impl std::fmt::Display for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
+    }
 }
 
 /// Default lease duration: 30 seconds

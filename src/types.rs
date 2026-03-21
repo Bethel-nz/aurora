@@ -1,12 +1,10 @@
 use chrono::{DateTime, Utc};
-use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 #[derive(
@@ -16,29 +14,27 @@ use uuid::Uuid;
     Deserialize,
     PartialEq,
     Eq,
+    PartialOrd,
+    Ord,
     Hash,
-    Archive,
-    RkyvSerialize,
-    RkyvDeserialize,
 )]
-#[archive(check_bytes)]
 pub enum ScalarType {
     String,
     Int,
     Uuid,
     Bool,
     Float,
-    Any,
     Object,
     Array,
+    Any,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FieldType {
     Scalar(ScalarType),
-    Array(ScalarType),                             // Array of scalars
-    Object,                                        // Flat object (no schema validation)
-    Nested(Box<HashMap<String, FieldDefinition>>), // Deeply nested object with schema
+    Object,
+    Array(ScalarType),
+    Nested(Box<HashMap<String, FieldDefinition>>),
     Any,
 }
 
@@ -48,34 +44,98 @@ impl Hash for FieldType {
         match self {
             FieldType::Scalar(s) => s.hash(state),
             FieldType::Array(s) => s.hash(state),
-            FieldType::Object => {}
-            FieldType::Nested(map) => {
-                let mut entries: Vec<_> = map.iter().collect();
-                entries.sort_by(|a, b| a.0.cmp(b.0));
-                for (k, v) in entries {
+            FieldType::Nested(m) => {
+                let mut keys: Vec<_> = m.keys().collect();
+                keys.sort();
+                for k in keys {
                     k.hash(state);
-                    v.hash(state);
+                    m.get(k).unwrap().hash(state);
                 }
             }
-            FieldType::Any => {}
+            _ => {}
         }
     }
 }
 
-// Helpers for backward compatibility/ease of use
-#[allow(non_upper_case_globals)]
-impl FieldType {
-    pub const String: FieldType = FieldType::Scalar(ScalarType::String);
-    pub const Int: FieldType = FieldType::Scalar(ScalarType::Int);
-    pub const Uuid: FieldType = FieldType::Scalar(ScalarType::Uuid);
-    pub const Bool: FieldType = FieldType::Scalar(ScalarType::Bool);
-    pub const Float: FieldType = FieldType::Scalar(ScalarType::Float);
-    pub const Any: FieldType = FieldType::Scalar(ScalarType::Any);
+impl fmt::Display for ScalarType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ScalarType::String => write!(f, "String"),
+            ScalarType::Int => write!(f, "Int"),
+            ScalarType::Uuid => write!(f, "Uuid"),
+            ScalarType::Bool => write!(f, "Bool"),
+            ScalarType::Float => write!(f, "Float"),
+            ScalarType::Object => write!(f, "Object"),
+            ScalarType::Array => write!(f, "Array"),
+            ScalarType::Any => write!(f, "Any"),
+        }
+    }
+}
 
-    // Renamed to avoid shadowing the Object and Array enum variants
-    /// Scalar object type (use `FieldType::Object` variant for flat objects without schema)
+impl fmt::Display for FieldType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FieldType::Scalar(s) => write!(f, "{}", s),
+            FieldType::Object => write!(f, "Object"),
+            FieldType::Array(s) => write!(f, "Array<{}>", s),
+            FieldType::Nested(_) => write!(f, "Nested"),
+            FieldType::Any => write!(f, "Any"),
+        }
+    }
+}
+
+impl fmt::Display for FieldDefinition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}{} (indexed: {}, unique: {})",
+            self.field_type,
+            if self.nullable { "?" } else { "!" },
+            self.indexed,
+            self.unique,
+        )
+    }
+}
+
+impl fmt::Display for Collection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
+    }
+}
+
+impl fmt::Display for DurabilityMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DurabilityMode::None => write!(f, "None"),
+            DurabilityMode::WAL => write!(f, "WAL"),
+            DurabilityMode::Strict => write!(f, "Strict"),
+            DurabilityMode::Synchronous => write!(f, "Synchronous"),
+        }
+    }
+}
+
+impl fmt::Display for ColdStoreMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ColdStoreMode::HighThroughput => write!(f, "HighThroughput"),
+            ColdStoreMode::LowSpace => write!(f, "LowSpace"),
+        }
+    }
+}
+
+impl fmt::Display for AuroraConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
+    }
+}
+
+impl FieldType {
+    pub const SCALAR_STRING: FieldType = FieldType::Scalar(ScalarType::String);
+    pub const SCALAR_INT: FieldType = FieldType::Scalar(ScalarType::Int);
+    pub const SCALAR_BOOL: FieldType = FieldType::Scalar(ScalarType::Bool);
+    pub const SCALAR_FLOAT: FieldType = FieldType::Scalar(ScalarType::Float);
+    pub const SCALAR_UUID: FieldType = FieldType::Scalar(ScalarType::Uuid);
     pub const SCALAR_OBJECT: FieldType = FieldType::Scalar(ScalarType::Object);
-    /// Scalar array type (use `FieldType::Array(T)` variant for typed arrays)
     pub const SCALAR_ARRAY: FieldType = FieldType::Scalar(ScalarType::Array);
 }
 
@@ -84,7 +144,7 @@ pub struct FieldDefinition {
     pub field_type: FieldType,
     pub unique: bool,
     pub indexed: bool,
-    pub nullable: bool, // Added #1
+    pub nullable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,14 +153,14 @@ pub struct Collection {
     pub fields: HashMap<String, FieldDefinition>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
     pub id: String,
     pub data: HashMap<String, Value>,
 }
 
-impl Default for Document {
-    fn default() -> Self {
+impl Document {
+    pub fn new() -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             data: HashMap::new(),
@@ -108,518 +168,176 @@ impl Default for Document {
     }
 }
 
-impl Document {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
 impl fmt::Display for Document {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{{ ")?;
-        let mut first = true;
-        for (key, value) in &self.data {
-            if !first {
-                write!(f, ", ")?;
-            }
-            write!(f, "\"{}\": {}", key, value)?;
-            first = false;
-        }
-        write!(f, " }}")
+        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
     }
 }
 
-impl fmt::Debug for Document {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
 pub enum Value {
     Null,
-    String(String),
+    Bool(bool),
     Int(i64),
     Float(f64),
-    Bool(bool),
+    String(String),
+    Uuid(Uuid),
+    DateTime(DateTime<Utc>),
     Array(Vec<Value>),
     Object(HashMap<String, Value>),
-    Uuid(Uuid),
-}
-
-// Custom implementations for Hash, Eq, and PartialEq
-impl Hash for Value {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            Value::Null => 0.hash(state),
-            Value::String(s) => s.hash(state),
-            Value::Int(i) => i.hash(state),
-            Value::Float(f) => {
-                // Convert to bits to hash floating point numbers
-                f.to_bits().hash(state)
-            }
-            Value::Bool(b) => b.hash(state),
-            Value::Array(arr) => arr.hash(state),
-            Value::Object(map) => {
-                // Sort keys for consistent hashing
-                let mut keys: Vec<_> = map.keys().collect();
-                keys.sort();
-                for key in keys {
-                    key.hash(state);
-                    map.get(key).unwrap().hash(state);
-                }
-            }
-            Value::Uuid(u) => u.hash(state),
-        }
-    }
-}
-
-impl PartialEq for Value {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Value::Null, Value::Null) => true,
-            (Value::String(a), Value::String(b)) => a == b,
-            (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Array(a), Value::Array(b)) => a == b,
-            (Value::Object(a), Value::Object(b)) => a == b,
-            (Value::Uuid(a), Value::Uuid(b)) => a == b,
-            _ => false,
-        }
-    }
 }
 
 impl Eq for Value {}
 
-// Implement Display for Value
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Value::String(s) => write!(f, "\"{}\"", s),
-            Value::Int(i) => write!(f, "{}", i),
-            Value::Float(fl) => write!(f, "{}", fl),
-            Value::Bool(b) => write!(f, "{}", b),
-            Value::Array(arr) => {
-                let items: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
-                write!(f, "[{}]", items.join(", "))
-            }
-            Value::Object(obj) => {
-                let items: Vec<String> = obj
-                    .iter()
-                    .map(|(k, v)| format!("\"{}\": {}", k, v))
-                    .collect();
-                write!(f, "{{{}}}", items.join(", "))
-            }
-            Value::Uuid(u) => write!(f, "\"{}\"", u),
-            Value::Null => write!(f, "null"),
-        }
-    }
-}
-
-// Helper for deterministic ordering of different types
-fn type_rank(v: &Value) -> u8 {
-    match v {
-        Value::Null => 0,
-        Value::Bool(_) => 1,
-        Value::Int(_) => 2,
-        Value::Float(_) => 3,
-        Value::String(_) => 4,
-        Value::Uuid(_) => 5,
-        Value::Array(_) => 6,
-        Value::Object(_) => 7,
-    }
-}
-
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let self_rank = type_rank(self);
-        let other_rank = type_rank(other);
-
-        if self_rank != other_rank {
-            return Some(self_rank.cmp(&other_rank));
-        }
-
-        match (self, other) {
-            (Value::String(a), Value::String(b)) => a.partial_cmp(b),
-            (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
-            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
-            (Value::Bool(a), Value::Bool(b)) => a.partial_cmp(b),
-            (Value::Array(a), Value::Array(b)) => a.partial_cmp(b),
-            (Value::Uuid(a), Value::Uuid(b)) => a.partial_cmp(b),
-            (Value::Object(_), Value::Object(_)) => Some(Ordering::Equal),
-            (Value::Null, Value::Null) => Some(Ordering::Equal),
-            _ => None,
-        }
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other)
-            .expect("Value::partial_cmp should always return Some for same-type values")
+        match (self, other) {
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Null, _) => Ordering::Less,
+            (_, Value::Null) => Ordering::Greater,
+            
+            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+            (Value::Bool(_), _) => Ordering::Less,
+            (_, Value::Bool(_)) => Ordering::Greater,
+
+            (Value::Int(a), Value::Int(b)) => a.cmp(b),
+            (Value::Int(_), _) => Ordering::Less,
+            (_, Value::Int(_)) => Ordering::Greater,
+
+            (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
+            (Value::Float(_), _) => Ordering::Less,
+            (_, Value::Float(_)) => Ordering::Greater,
+
+            (Value::String(a), Value::String(b)) => a.cmp(b),
+            (Value::String(_), _) => Ordering::Less,
+            (_, Value::String(_)) => Ordering::Greater,
+            
+            (Value::Uuid(a), Value::Uuid(b)) => a.cmp(b),
+            (Value::Uuid(_), _) => Ordering::Less,
+            (_, Value::Uuid(_)) => Ordering::Greater,
+            
+            (Value::DateTime(a), Value::DateTime(b)) => a.cmp(b),
+            (Value::DateTime(_), _) => Ordering::Less,
+            (_, Value::DateTime(_)) => Ordering::Greater,
+
+            (Value::Array(a), Value::Array(b)) => a.cmp(b),
+            (Value::Array(_), _) => Ordering::Less,
+            (_, Value::Array(_)) => Ordering::Greater,
+
+            (Value::Object(_), Value::Object(_)) => Ordering::Equal, // Simplified for brevity
+        }
     }
 }
 
-// Add From implementations for common types
-impl From<i64> for Value {
-    fn from(v: i64) -> Self {
-        Value::Int(v)
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Null => write!(f, "null"),
+            Value::Bool(b) => write!(f, "{}", b),
+            Value::Int(i) => write!(f, "{}", i),
+            Value::Float(fl) => write!(f, "{}", fl),
+            Value::String(s) => write!(f, "{}", s),
+            Value::Uuid(u) => write!(f, "{}", u),
+            Value::DateTime(dt) => write!(f, "{}", dt),
+            Value::Array(arr) => write!(f, "{}", serde_json::to_string(arr).unwrap_or_else(|_| "[]".to_string())),
+            Value::Object(obj) => write!(f, "{}", serde_json::to_string(obj).unwrap_or_else(|_| "{}".to_string())),
+        }
     }
 }
 
-impl From<i32> for Value {
-    fn from(v: i32) -> Self {
-        Value::Int(v as i64)
-    }
-}
-
-impl From<&str> for Value {
-    fn from(v: &str) -> Self {
-        Value::String(v.to_string())
-    }
-}
-
-impl From<String> for Value {
-    fn from(v: String) -> Self {
-        Value::String(v)
-    }
-}
-
-impl From<bool> for Value {
-    fn from(v: bool) -> Self {
-        Value::Bool(v)
-    }
-}
-
-impl From<f64> for Value {
-    fn from(v: f64) -> Self {
-        Value::Float(v)
-    }
-}
-
-impl From<Vec<Value>> for Value {
-    fn from(v: Vec<Value>) -> Self {
-        Value::Array(v)
-    }
-}
-
-impl From<HashMap<String, Value>> for Value {
-    fn from(v: HashMap<String, Value>) -> Self {
-        Value::Object(v)
-    }
-}
-
-impl From<Uuid> for Value {
-    fn from(v: Uuid) -> Self {
-        Value::Uuid(v)
-    }
-}
-
-// Helper methods for Value type conversion and extraction
 impl Value {
     pub fn as_str(&self) -> Option<&str> {
-        if let Value::String(s) = self {
-            Some(s)
-        } else {
-            None
-        }
+        if let Value::String(s) = self { Some(s) } else { None }
     }
-
-    pub fn as_bool(&self) -> Option<bool> {
-        if let Value::Bool(b) = self {
-            Some(*b)
-        } else {
-            None
-        }
-    }
-
     pub fn as_i64(&self) -> Option<i64> {
-        if let Value::Int(i) = self {
-            Some(*i)
-        } else {
-            None
-        }
+        if let Value::Int(i) = self { Some(*i) } else { None }
     }
-
     pub fn as_f64(&self) -> Option<f64> {
-        if let Value::Float(f) = self {
-            Some(*f)
-        } else {
-            None
-        }
+        if let Value::Float(f) = self { Some(*f) } else { None }
     }
-
+    pub fn as_bool(&self) -> Option<bool> {
+        if let Value::Bool(b) = self { Some(*b) } else { None }
+    }
     pub fn as_array(&self) -> Option<&Vec<Value>> {
-        if let Value::Array(arr) = self {
-            Some(arr)
-        } else {
-            None
-        }
+        if let Value::Array(a) = self { Some(a) } else { None }
     }
-
     pub fn as_object(&self) -> Option<&HashMap<String, Value>> {
-        if let Value::Object(obj) = self {
-            Some(obj)
-        } else {
-            None
-        }
-    }
-
-    pub fn as_uuid(&self) -> Option<Uuid> {
-        match self {
-            Value::Uuid(u) => Some(*u),
-            Value::String(s) => Uuid::parse_str(s).ok(),
-            _ => None,
-        }
-    }
-
-    pub fn as_datetime(&self) -> Option<DateTime<Utc>> {
-        match self {
-            Value::String(s) => DateTime::parse_from_rfc3339(s)
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc)),
-            _ => None,
-        }
-    }
-
-    /// Generate a string from known value types.
-    pub fn to_safe_string(&self) -> Option<String> {
-        match self {
-            Value::String(s) => Some(s.clone()),
-            Value::Int(i) => Some(i.to_string()),
-            Value::Bool(b) => Some(b.to_string()),
-            Value::Float(f) => Some(f.to_string()),
-            Value::Uuid(u) => Some(u.to_string()),
-            _ => None,
-        }
-    }
-
-    /// Try conversion to i32
-    pub fn as_i32(&self) -> Option<i32> {
-        self.as_i64().and_then(|i| i.try_into().ok())
+        if let Value::Object(o) = self { Some(o) } else { None }
     }
 }
 
-//
-// General extractor helpers for repeated access patterns
-//
+impl From<String> for Value { fn from(v: String) -> Self { Value::String(v) } }
+impl From<&str> for Value { fn from(v: &str) -> Self { Value::String(v.to_string()) } }
+impl From<bool> for Value { fn from(v: bool) -> Self { Value::Bool(v) } }
+impl From<f64> for Value { fn from(v: f64) -> Self { Value::Float(v) } }
+impl From<i64> for Value { fn from(v: i64) -> Self { Value::Int(v) } }
 
-pub fn required_str<'a>(
-    map: &'a HashMap<String, Value>,
-    key: &str,
-) -> Result<&'a str, Box<dyn Error>> {
-    map.get(key)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("Missing or invalid '{}' (str)", key).into())
-}
-
-pub fn optional_str(map: &HashMap<String, Value>, key: &str) -> Option<String> {
-    map.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
-}
-
-pub fn required_uuid(map: &HashMap<String, Value>, key: &str) -> Result<Uuid, Box<dyn Error>> {
-    map.get(key)
-        .and_then(|v| v.as_uuid())
-        .ok_or_else(|| format!("Missing or invalid '{}' (uuid)", key).into())
-}
-
-pub fn optional_uuid(map: &HashMap<String, Value>, key: &str) -> Option<Uuid> {
-    map.get(key).and_then(|v| v.as_uuid())
-}
-
-pub fn required_i64(map: &HashMap<String, Value>, key: &str) -> Result<i64, Box<dyn Error>> {
-    map.get(key)
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| format!("Missing or invalid '{}' (i64)", key).into())
-}
-
-pub fn optional_i64(map: &HashMap<String, Value>, key: &str) -> Option<i64> {
-    map.get(key).and_then(|v| v.as_i64())
-}
-
-pub fn required_bool(map: &HashMap<String, Value>, key: &str) -> Result<bool, Box<dyn Error>> {
-    map.get(key)
-        .and_then(|v| v.as_bool())
-        .ok_or_else(|| format!("Missing or invalid '{}' (bool)", key).into())
-}
-
-pub fn optional_bool(map: &HashMap<String, Value>, key: &str) -> Option<bool> {
-    map.get(key).and_then(|v| v.as_bool())
-}
-
-pub fn required_datetime(
-    map: &HashMap<String, Value>,
-    key: &str,
-) -> Result<DateTime<Utc>, Box<dyn Error>> {
-    map.get(key)
-        .and_then(|v| v.as_datetime())
-        .ok_or_else(|| format!("Missing or invalid '{}' (datetime)", key).into())
-}
-
-pub fn optional_datetime(map: &HashMap<String, Value>, key: &str) -> Option<DateTime<Utc>> {
-    map.get(key).and_then(|v| v.as_datetime())
-}
-
-/// Get a vector of Strings from a Value Array field
-pub fn array_of_strings(map: &HashMap<String, Value>, key: &str) -> Vec<String> {
-    map.get(key)
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Configuration for Aurora database
-#[derive(Debug, Clone)]
-pub struct AuroraConfig {
-    // Database location settings
-    pub db_path: PathBuf,
-    pub create_dirs: bool, // Create parent directories if they don't exist
-
-    // Hot store config
-    pub hot_cache_size_mb: usize,
-    pub hot_cache_cleanup_interval_secs: u64,
-    pub eviction_policy: crate::storage::EvictionPolicy,
-
-    // Cold store config
-    pub cold_cache_capacity_mb: usize,
-    pub cold_flush_interval_ms: Option<u64>,
-    pub cold_mode: ColdStoreMode,
-
-    // General config
-    pub auto_compact: bool,
-    pub compact_interval_mins: u64,
-
-    // Index config
-    pub max_index_entries_per_field: usize, // Limit memory for indices
-
-    // Write config
-    pub enable_write_buffering: bool, // Background write buffering
-    pub write_buffer_size: usize,     // Number of operations to buffer
-    pub write_buffer_flush_interval_ms: u64, // Flush interval
-
-    // Durability config
-    pub durability_mode: DurabilityMode, // Trade-off between performance and data safety
-    pub enable_wal: bool,                // Enable write-ahead logging
-    pub checkpoint_interval_ms: u64,     // Background checkpoint interval (flush + WAL truncate)
-
-    /// Optional path to audit log file. If None, audit logging is disabled.
-    pub audit_log_path: Option<PathBuf>,
-}
-
-/// Durability mode determines the trade-off between performance and data safety
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DurabilityMode {
-    /// No durability guarantees - fastest, but data may be lost on crash
-    /// Write buffer enabled, no WAL, no explicit flushes
     None,
-    /// Write-ahead log for crash recovery - good balance of performance and safety
-    /// WAL is flushed on every write, data is recoverable after crash
     WAL,
-    /// Synchronous writes to disk - slowest, but maximum durability
-    /// Every write is flushed to disk immediately
+    Strict,
+    /// Synchronous mode: every write blocks until it reaches durable storage.
+    /// No buffering, no WAL — safest but slowest.
     Synchronous,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ColdStoreMode {
     HighThroughput,
     LowSpace,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuroraConfig {
+    pub db_path: PathBuf,
+    pub create_dirs: bool,
+    pub hot_cache_size_mb: usize,
+    pub hot_cache_cleanup_interval_secs: u64,
+    pub eviction_policy: crate::storage::EvictionPolicy,
+    pub cold_cache_capacity_mb: usize,
+    pub cold_flush_interval_ms: Option<u64>,
+    pub cold_mode: ColdStoreMode,
+    pub auto_compact: bool,
+    pub compact_interval_mins: u64,
+    pub max_index_entries_per_field: usize,
+    pub enable_write_buffering: bool,
+    pub write_buffer_size: usize,
+    pub write_buffer_flush_interval_ms: u64,
+    pub durability_mode: DurabilityMode,
+    pub enable_wal: bool,
+    pub checkpoint_interval_ms: u64,
+    pub audit_log_path: Option<String>,
+}
+
 impl Default for AuroraConfig {
     fn default() -> Self {
         Self {
-            db_path: PathBuf::from("aurora.db"),
+            db_path: PathBuf::from("aurora_db"),
             create_dirs: true,
-
-            hot_cache_size_mb: 64,
-            hot_cache_cleanup_interval_secs: 300,
+            hot_cache_size_mb: 256,
+            hot_cache_cleanup_interval_secs: 60,
             eviction_policy: crate::storage::EvictionPolicy::LRU,
-
-            cold_cache_capacity_mb: 128,
-            cold_flush_interval_ms: Some(100),
+            cold_cache_capacity_mb: 1024,
+            cold_flush_interval_ms: Some(5000),
             cold_mode: ColdStoreMode::HighThroughput,
-
             auto_compact: true,
             compact_interval_mins: 60,
-
             max_index_entries_per_field: 100_000,
-
             enable_write_buffering: true,
-            write_buffer_size: 1000,
-            write_buffer_flush_interval_ms: 100,
-
-            // Use WAL mode by default for good balance of performance and durability
+            write_buffer_size: 10_000,
+            write_buffer_flush_interval_ms: 1000,
             durability_mode: DurabilityMode::WAL,
             enable_wal: true,
-            checkpoint_interval_ms: 5000, // Checkpoint every 100ms
-            audit_log_path: None,         // Disabled by default
-        }
-    }
-}
-
-impl AuroraConfig {
-    /// Create a new configuration with a specific database path
-    pub fn with_path<P: AsRef<Path>>(path: P) -> Self {
-        Self {
-            db_path: path.as_ref().to_path_buf(),
-            ..Default::default()
-        }
-    }
-
-    /// Configuration optimized for read-heavy workloads (news sites, blogs)
-    pub fn read_optimized() -> Self {
-        Self {
-            hot_cache_size_mb: 512,
-            eviction_policy: crate::storage::EvictionPolicy::LFU,
-            cold_cache_capacity_mb: 256,
-            cold_mode: ColdStoreMode::HighThroughput,
-            ..Default::default()
-        }
-    }
-
-    /// Configuration optimized for write-heavy workloads (analytics, logging)
-    pub fn write_optimized() -> Self {
-        Self {
-            hot_cache_size_mb: 128,
-            eviction_policy: crate::storage::EvictionPolicy::LRU,
-            cold_cache_capacity_mb: 512,
-            cold_flush_interval_ms: Some(50),
-            enable_write_buffering: true,
-            write_buffer_size: 10000,
-            ..Default::default()
-        }
-    }
-
-    /// Configuration for memory-constrained environments
-    pub fn low_memory() -> Self {
-        Self {
-            hot_cache_size_mb: 32,
-            eviction_policy: crate::storage::EvictionPolicy::LRU,
-            cold_cache_capacity_mb: 32,
-            cold_mode: ColdStoreMode::LowSpace,
-            max_index_entries_per_field: 10_000,
-            ..Default::default()
-        }
-    }
-
-    /// Configuration for high-traffic real-time applications
-    pub fn realtime() -> Self {
-        Self {
-            hot_cache_size_mb: 1024,
-            eviction_policy: crate::storage::EvictionPolicy::Hybrid,
-            cold_cache_capacity_mb: 512,
-            cold_flush_interval_ms: Some(25),
-            enable_write_buffering: true,
-            write_buffer_size: 5000,
-            auto_compact: false,
-            max_index_entries_per_field: 500_000,
-            ..Default::default()
+            checkpoint_interval_ms: 10000,
+            audit_log_path: None,
         }
     }
 }
