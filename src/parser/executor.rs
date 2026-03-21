@@ -41,11 +41,12 @@ impl QueryPlan {
     pub fn from_query(
         query: &ast::Query,
         fragments: &HashMap<String, FragmentDef>,
+        variables: &HashMap<String, ast::Value>,
     ) -> Result<Vec<Self>> {
         let root_fields = collect_fields(
             &query.selection_set,
             fragments,
-            &query.variables_values,
+            variables,
             None,
         )?;
 
@@ -62,7 +63,7 @@ impl QueryPlan {
             let sub_fields = collect_fields(
                 &field.selection_set,
                 fragments,
-                &query.variables_values,
+                variables,
                 Some(&field.name),
             )?;
 
@@ -146,7 +147,7 @@ pub async fn execute(db: &Aurora, aql: &str, options: ExecutionOptions) -> Resul
             })
             .collect();
 
-        let plans = QueryPlan::from_query(query, &fragments)?;
+        let plans = QueryPlan::from_query(query, &fragments, &vars)?;
         if plans.len() == 1 {
             let plan = Arc::new(plans[0].clone());
             plan.validate(&vars)?;
@@ -157,6 +158,20 @@ pub async fn execute(db: &Aurora, aql: &str, options: ExecutionOptions) -> Resul
     }
 
     // FALLBACK: Normal execution for complex documents (but WITH our prepared vars)
+    // Merge declared variable defaults for any var not explicitly provided.
+    let mut vars = vars;
+    for op in &doc.operations {
+        if let Operation::Query(q) = op {
+            for var_def in &q.variable_definitions {
+                if !vars.contains_key(&var_def.name) {
+                    if let Some(default) = &var_def.default_value {
+                        vars.insert(var_def.name.clone(), default.clone());
+                    }
+                }
+            }
+        }
+    }
+
     // We must resolve variables in the AST before executing the document path
     super::validator::resolve_variables(&mut doc, &vars).map_err(|e| {
         let code = match e.code {
@@ -1038,10 +1053,44 @@ async fn execute_mutation(
 
     validate_required_variables(&mutation.variable_definitions, vars)?;
 
-    // Wrap every mutation block in a transaction so that a failure in any
+    // If there's already an active transaction in scope, run ops directly inside
+    // it — the caller owns commit/rollback. Creating a nested transaction would
+    // shadow the outer ACTIVE_TRANSACTION_ID and prevent the outer rollback from
+    // undoing these writes.
+    let already_in_tx = ACTIVE_TRANSACTION_ID
+        .try_with(|id| *id)
+        .ok()
+        .and_then(|id| db.transaction_manager.active_transactions.get(&id))
+        .is_some();
+
+    if already_in_tx {
+        let mut results = Vec::new();
+        let mut context = HashMap::new();
+        for mut_op in &mutation.operations {
+            let res = execute_mutation_op(db, mut_op, vars, &context, options, fragments).await?;
+            if let Some(alias) = &mut_op.alias {
+                if let Some(doc) = res.returned_documents.first() {
+                    let mut m = serde_json::Map::new();
+                    for (k, v) in &doc.data {
+                        m.insert(k.clone(), aurora_value_to_json_value(v));
+                    }
+                    m.insert("id".to_string(), JsonValue::String(doc.id.clone()));
+                    context.insert(alias.clone(), JsonValue::Object(m));
+                }
+            }
+            results.push(res);
+        }
+        return if results.len() == 1 {
+            Ok(ExecutionResult::Mutation(results.remove(0)))
+        } else {
+            Ok(ExecutionResult::Batch(
+                results.into_iter().map(ExecutionResult::Mutation).collect(),
+            ))
+        };
+    }
+
+    // No active transaction — wrap the mutation block in one so a failure in any
     // operation rolls back all previous operations in the same block.
-    // put() and aql_delete_document() both check ACTIVE_TRANSACTION_ID, so
-    // all writes inside the scope are buffered until commit.
     let tx_id = db.begin_transaction().await;
 
     let exec_result = ACTIVE_TRANSACTION_ID
@@ -1079,7 +1128,6 @@ async fn execute_mutation(
             }
         }
         Err(e) => {
-            // Best-effort rollback — if it fails the buffer is dropped anyway
             let _ = db.rollback_transaction(tx_id).await;
             Err(e)
         }

@@ -162,15 +162,17 @@ impl<'a> QueryBuilder<'a> {
                 let mut current_bitmap = RoaringBitmap::new();
                 let mut found = false;
 
-                // 1. Check Cold Index (mmap)
+                // 1. Check Cold Index (mmap) — bounds-checked to avoid panic on corrupt manifest
                 if let Some(loc) = self.db.index_manifest.get(&full_key) {
                     let (offset, len) = *loc.value();
                     if let Ok(guard) = self.db.mmap_index.read() {
                         if let Some(mmap) = guard.as_ref() {
-                            let bytes = &mmap[offset..(offset + len)];
-                            if let Ok(cold_bitmap) = RoaringBitmap::deserialize_from(bytes) {
-                                current_bitmap |= cold_bitmap;
-                                found = true;
+                            if offset + len <= mmap.len() {
+                                let bytes = &mmap[offset..(offset + len)];
+                                if let Ok(cold_bitmap) = RoaringBitmap::deserialize_from(bytes) {
+                                    current_bitmap |= cold_bitmap;
+                                    found = true;
+                                }
                             }
                         }
                     }
@@ -185,15 +187,19 @@ impl<'a> QueryBuilder<'a> {
                 }
 
                 if !found {
-                    // Only short-circuit if the field's index is actually present in hot
-                    // RAM — meaning we know it's complete for this session. If the index
-                    // key is entirely absent (e.g. post-restart before re-warm), fall
-                    // through to the scan path so we don't silently return empty results.
-                    let field_indexed_in_hot = self.db.has_index_key(&index_key);
-                    if field_indexed_in_hot {
+                    // Only short-circuit on an indexed miss when there is NO active
+                    // transaction — transaction writes are buffered and never reach the
+                    // bitmap index, so we must not hide them with an early empty return.
+                    let in_transaction = crate::transaction::ACTIVE_TRANSACTION_ID
+                        .try_with(|id| *id)
+                        .ok()
+                        .and_then(|id| self.db.transaction_manager.active_transactions.get(&id))
+                        .is_some();
+
+                    if !in_transaction && self.db.has_index_key(&index_key) {
                         return Ok(vec![]);
                     }
-                    // Index absent → abandon bitmap path, let scan handle it
+                    // Index absent or inside a transaction → fall through to scan path
                     candidate_bitmap = None;
                     break;
                 }
@@ -251,10 +257,10 @@ impl<'a> QueryBuilder<'a> {
 
             // Also check for NEW documents in transaction that might match (not in bitmap index yet)
             if let Some(buffer) = tx_buffer {
+                let prefix = format!("{}:", self.collection);
                 for item in buffer.writes.iter() {
                     let key: &String = item.key();
-                    if key.starts_with(&self.collection) && key.contains(':') {
-                        let external_id = key.split(':').nth(1).unwrap_or("");
+                    if let Some(external_id) = key.strip_prefix(&prefix) {
                         
                         // If it's already in final_docs (from bitmap index), skip it
                         if final_docs.iter().any(|d| d.id == external_id) {

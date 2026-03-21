@@ -223,16 +223,16 @@ fn validate_query<S: SchemaProvider>(query: &Query, ctx: &mut ValidationContext<
                 validate_inline_fragment(inline, ctx);
             }
             Selection::FragmentSpread(fragment_name) => {
-                // Top-level fragment spreads are tricky because we don't know the collection
-                // But Fragment definitions have a type_condition
-                if let Some(fragment) = ctx.fragments.get(fragment_name) {
-                    validate_fragment_spread(fragment_name, &fragment.type_condition, ctx);
-                } else {
-                    ctx.add_error(
-                        ErrorCode::UnknownFragment,
-                        format!("Fragment '{}' is not defined", fragment_name),
-                    );
-                }
+                // Fragment spreads at query root are invalid — their fields would be
+                // interpreted as collection names by the planner/executor.
+                ctx.add_error(
+                    ErrorCode::InvalidArgument,
+                    format!(
+                        "Fragment spread '{}' is not allowed at query root; \
+                         use it inside a collection selection set instead",
+                        fragment_name
+                    ),
+                );
             }
         }
     }
