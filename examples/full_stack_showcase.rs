@@ -98,9 +98,10 @@ async fn main() -> anyhow::Result<()> {
         for j in 0..batch_size {
             let id = i * batch_size + j;
             let symbol = symbols[id % symbols.len()];
-            // Adjust price to trigger whale alerts occasionally
-            let price = 40000.0 + (id as f64 * 0.5); 
-            let amount = 1.5;
+            // Vary price and amount so total_value spans the 10k and 50k thresholds
+            // (some < 10k, some 10k-50k, some > 50k — only true "whales" trigger alerts)
+            let price = 5000.0 + (id as f64 % 50) * 1000.0; // 5_000..54_000
+            let amount = 0.5 + (id as f64 % 5) * 0.4;       // 0.5..2.1
             
             let mut trade = HashMap::new();
             trade.insert("symbol".to_string(), Value::String(symbol.to_string()));
