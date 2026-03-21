@@ -24,6 +24,16 @@ pub enum EvictionPolicy {
     Hybrid, // 30min default TTL
 }
 
+impl std::fmt::Display for EvictionPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvictionPolicy::LRU => write!(f, "LRU"),
+            EvictionPolicy::LFU => write!(f, "LFU"),
+            EvictionPolicy::Hybrid => write!(f, "Hybrid"),
+        }
+    }
+}
+
 impl EvictionPolicy {
     pub fn default_ttl(&self) -> Duration {
         match self {

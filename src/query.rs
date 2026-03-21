@@ -385,13 +385,37 @@ impl<'a> SearchBuilder<'a> {
     }
 
     pub async fn collect(self) -> Result<Vec<Document>> {
-        // Simple mock implementation for now
+        let query = self.query.to_lowercase();
         let mut results = Vec::new();
-        if let Ok(iter) = self.db.stream_collection(&self.collection) {
-            for doc in iter {
-                results.push(doc);
+
+        if let Some(index) = self.db.primary_indices.get(&self.collection) {
+            for entry in index.iter() {
+                if let Some(data) = self.db.get(entry.key())? {
+                    if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                        let matches = if query.is_empty() {
+                            true
+                        } else {
+                            doc.data.values().any(|v| {
+                                if let crate::types::Value::String(s) = v {
+                                    s.to_lowercase().contains(&query)
+                                } else {
+                                    false
+                                }
+                            })
+                        };
+                        if matches {
+                            results.push(doc);
+                            if let Some(l) = self.limit {
+                                if results.len() >= l {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
+
         Ok(results)
     }
 }

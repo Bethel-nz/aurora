@@ -1356,10 +1356,16 @@ fn ast_filter_to_event_filter(
             f.clone(),
             aql_value_to_db_value(v, vars)?,
         )),
-        AqlFilter::Matches(f, v) => Ok(EventFilter::Matches(
-            f.clone(),
-            aql_value_to_db_value(v, vars)?,
-        )),
+        AqlFilter::Matches(f, v) => {
+            let pattern = match aql_value_to_db_value(v, vars)? {
+                crate::types::Value::String(s) => s,
+                other => other.to_string(),
+            };
+            let re = regex::Regex::new(&pattern).map_err(|e| {
+                crate::error::AqlError::invalid_operation(format!("Invalid regex pattern: {}", e))
+            })?;
+            Ok(EventFilter::Matches(f.clone(), re))
+        }
         AqlFilter::IsNull(f) => Ok(EventFilter::IsNull(f.clone())),
         AqlFilter::IsNotNull(f) => Ok(EventFilter::IsNotNull(f.clone())),
         AqlFilter::And(filters) => {
@@ -1429,6 +1435,10 @@ async fn execute_schema(
                             indexed = true;
                         } else if directive.name == "unique" {
                             unique = true;
+                        } else if directive.name == "primary" {
+                            // @primary implies the field is both indexed and unique
+                            indexed = true;
+                            unique = true;
                         }
                     }
 
@@ -1444,11 +1454,60 @@ async fn execute_schema(
 
                 db.new_collection(name, field_defs).await?;
             }
-            _ => {
-                return Err(AqlError::new(
-                    ErrorCode::InvalidOperation,
-                    "Only DefineCollection is supported in schema blocks for now".to_string(),
-                ));
+            ast::SchemaOp::AlterCollection { name, actions } => {
+                last_collection = name.clone();
+                for action in actions {
+                    match action {
+                        ast::AlterAction::AddField(field) => {
+                            let field_type = map_ast_type(&field.field_type);
+                            let mut indexed = false;
+                            let mut unique = false;
+                            for directive in &field.directives {
+                                if directive.name == "indexed" || directive.name == "index" {
+                                    indexed = true;
+                                } else if directive.name == "unique" {
+                                    unique = true;
+                                }
+                            }
+                            let def = FieldDefinition {
+                                field_type,
+                                unique,
+                                indexed,
+                                nullable: !field.field_type.is_required,
+                            };
+                            db.add_field_to_schema(name, field.name.clone(), def).await?;
+                        }
+                        ast::AlterAction::DropField(field_name) => {
+                            db.drop_field_from_schema(name, field_name.clone()).await?;
+                        }
+                        ast::AlterAction::RenameField { from, to } => {
+                            db.rename_field_in_schema(name, from.clone(), to.clone()).await?;
+                        }
+                        ast::AlterAction::ModifyField(field) => {
+                            let field_type = map_ast_type(&field.field_type);
+                            let mut indexed = false;
+                            let mut unique = false;
+                            for directive in &field.directives {
+                                if directive.name == "indexed" || directive.name == "index" {
+                                    indexed = true;
+                                } else if directive.name == "unique" {
+                                    unique = true;
+                                }
+                            }
+                            let def = FieldDefinition {
+                                field_type,
+                                unique,
+                                indexed,
+                                nullable: !field.field_type.is_required,
+                            };
+                            db.modify_field_in_schema(name, field.name.clone(), def).await?;
+                        }
+                    }
+                }
+            }
+            ast::SchemaOp::DropCollection { name, .. } => {
+                db.drop_collection_schema(name).await?;
+                last_collection = name.clone();
             }
         }
     }

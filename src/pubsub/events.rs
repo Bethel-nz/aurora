@@ -1,5 +1,6 @@
 use crate::types::{Document, Value};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[cfg(test)]
 use std::collections::HashMap;
@@ -28,6 +29,22 @@ pub struct ChangeEvent {
     pub document: Option<Document>,
     /// Previous document (for Update only)
     pub old_document: Option<Document>,
+}
+
+impl fmt::Display for ChangeEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
+    }
+}
+
+impl fmt::Display for ChangeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ChangeType::Insert => write!(f, "Insert"),
+            ChangeType::Update => write!(f, "Update"),
+            ChangeType::Delete => write!(f, "Delete"),
+        }
+    }
 }
 
 impl ChangeEvent {
@@ -174,8 +191,8 @@ pub enum EventFilter {
     IsNull(String),
     /// Is Not Null
     IsNotNull(String),
-    /// Match regex pattern
-    Matches(String, Value),
+    /// Match regex pattern (field, compiled_regex)
+    Matches(String, regex::Regex),
 }
 
 impl EventFilter {
@@ -241,15 +258,12 @@ impl EventFilter {
             EventFilter::IsNotNull(field) => event
                 .get_field(field)
                 .map_or(false, |v| !matches!(v, Value::Null)),
-            EventFilter::Matches(field, val) => {
-                if let (Some(field_val), Value::String(pattern)) = (event.get_field(field), val) {
-                    if let Value::String(s) = field_val {
-                        if let Ok(re) = regex::Regex::new(pattern) {
-                            return re.is_match(s);
-                        }
-                    }
+            EventFilter::Matches(field, re) => {
+                if let Some(Value::String(s)) = event.get_field(field) {
+                    re.is_match(s)
+                } else {
+                    false
                 }
-                false
             }
         }
     }
@@ -329,5 +343,31 @@ mod tests {
         assert!(
             !EventFilter::FieldEquals("active".to_string(), Value::Bool(false)).matches(&event)
         );
+    }
+
+    #[test]
+    fn test_event_filter_matches_regex() {
+        let mut data = HashMap::new();
+        data.insert("email".to_string(), Value::String("alice@example.com".into()));
+        data.insert("score".to_string(), Value::Int(42));
+
+        let doc = Document { id: "1".to_string(), data };
+        let event = ChangeEvent::insert("users", "1", doc);
+
+        // Matching pattern
+        let re_match = regex::Regex::new(r"@example\.com$").unwrap();
+        assert!(EventFilter::Matches("email".to_string(), re_match).matches(&event));
+
+        // Non-matching pattern
+        let re_no_match = regex::Regex::new(r"@other\.com$").unwrap();
+        assert!(!EventFilter::Matches("email".to_string(), re_no_match).matches(&event));
+
+        // Non-string field returns false
+        let re_any = regex::Regex::new(r".*").unwrap();
+        assert!(!EventFilter::Matches("score".to_string(), re_any).matches(&event));
+
+        // Missing field returns false
+        let re_any2 = regex::Regex::new(r".*").unwrap();
+        assert!(!EventFilter::Matches("missing".to_string(), re_any2).matches(&event));
     }
 }

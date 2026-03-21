@@ -40,6 +40,24 @@ pub enum ErrorCode {
     UnknownFragment,
 }
 
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrorCode::UnknownCollection => write!(f, "UnknownCollection"),
+            ErrorCode::UnknownField => write!(f, "UnknownField"),
+            ErrorCode::InvalidInput => write!(f, "InvalidInput"),
+            ErrorCode::TypeMismatch => write!(f, "TypeMismatch"),
+            ErrorCode::MissingRequiredVariable => write!(f, "MissingRequiredVariable"),
+            ErrorCode::MissingOptionalVariable => write!(f, "MissingOptionalVariable"),
+            ErrorCode::InvalidFilterOperator => write!(f, "InvalidFilterOperator"),
+            ErrorCode::DuplicateAlias => write!(f, "DuplicateAlias"),
+            ErrorCode::InvalidArgument => write!(f, "InvalidArgument"),
+            ErrorCode::UnknownDirective => write!(f, "UnknownDirective"),
+            ErrorCode::UnknownFragment => write!(f, "UnknownFragment"),
+        }
+    }
+}
+
 /// Validation error with context
 #[derive(Debug, Clone)]
 pub struct ValidationError {
@@ -1066,7 +1084,11 @@ pub fn resolve_variables(
             }
             ast::Operation::Schema(_) => {}
             ast::Operation::Migration(_) => {}
-            ast::Operation::FragmentDefinition(_) => {} // Handled when fragment is used
+            ast::Operation::FragmentDefinition(fragment) => {
+                // Resolve variables inside fragment field arguments so they are
+                // substituted before the fragment is expanded at execution time.
+                resolve_in_fields(&mut fragment.selection_set, variables)?;
+            }
             ast::Operation::Introspection(_) => {}      // No variables in introspection
             ast::Operation::Handler(_) => {}            // Handlers don't have variable resolution
         }

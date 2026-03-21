@@ -57,6 +57,78 @@ impl Hash for FieldType {
     }
 }
 
+impl fmt::Display for ScalarType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ScalarType::String => write!(f, "String"),
+            ScalarType::Int => write!(f, "Int"),
+            ScalarType::Uuid => write!(f, "Uuid"),
+            ScalarType::Bool => write!(f, "Bool"),
+            ScalarType::Float => write!(f, "Float"),
+            ScalarType::Object => write!(f, "Object"),
+            ScalarType::Array => write!(f, "Array"),
+            ScalarType::Any => write!(f, "Any"),
+        }
+    }
+}
+
+impl fmt::Display for FieldType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FieldType::Scalar(s) => write!(f, "{}", s),
+            FieldType::Object => write!(f, "Object"),
+            FieldType::Array(s) => write!(f, "Array<{}>", s),
+            FieldType::Nested(_) => write!(f, "Nested"),
+            FieldType::Any => write!(f, "Any"),
+        }
+    }
+}
+
+impl fmt::Display for FieldDefinition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}{} (indexed: {}, unique: {})",
+            self.field_type,
+            if self.nullable { "?" } else { "!" },
+            self.indexed,
+            self.unique,
+        )
+    }
+}
+
+impl fmt::Display for Collection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
+    }
+}
+
+impl fmt::Display for DurabilityMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DurabilityMode::None => write!(f, "None"),
+            DurabilityMode::WAL => write!(f, "WAL"),
+            DurabilityMode::Strict => write!(f, "Strict"),
+            DurabilityMode::Synchronous => write!(f, "Synchronous"),
+        }
+    }
+}
+
+impl fmt::Display for ColdStoreMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ColdStoreMode::HighThroughput => write!(f, "HighThroughput"),
+            ColdStoreMode::LowSpace => write!(f, "LowSpace"),
+        }
+    }
+}
+
+impl fmt::Display for AuroraConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
+    }
+}
+
 impl FieldType {
     pub const SCALAR_STRING: FieldType = FieldType::Scalar(ScalarType::String);
     pub const SCALAR_INT: FieldType = FieldType::Scalar(ScalarType::Int);
@@ -93,6 +165,12 @@ impl Document {
             id: Uuid::new_v4().to_string(),
             data: HashMap::new(),
         }
+    }
+}
+
+impl fmt::Display for Document {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
     }
 }
 
@@ -168,8 +246,8 @@ impl fmt::Display for Value {
             Value::String(s) => write!(f, "{}", s),
             Value::Uuid(u) => write!(f, "{}", u),
             Value::DateTime(dt) => write!(f, "{}", dt),
-            Value::Array(_) => write!(f, "[Array]"),
-            Value::Object(_) => write!(f, "{{Object}}"),
+            Value::Array(arr) => write!(f, "{}", serde_json::to_string(arr).unwrap_or_else(|_| "[]".to_string())),
+            Value::Object(obj) => write!(f, "{}", serde_json::to_string(obj).unwrap_or_else(|_| "{}".to_string())),
         }
     }
 }

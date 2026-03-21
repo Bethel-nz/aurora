@@ -19,6 +19,12 @@ impl Default for TransactionId {
     }
 }
 
+impl std::fmt::Display for TransactionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "tx:{}", self.0)
+    }
+}
+
 impl TransactionId {
     pub fn new() -> Self {
         Self(TRANSACTION_ID_COUNTER.fetch_add(1, Ordering::SeqCst))
