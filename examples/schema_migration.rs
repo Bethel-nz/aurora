@@ -15,7 +15,7 @@ async fn main() -> aurora_db::Result<()> {
     println!("              AURORA DB - SCHEMA MIGRATION EXAMPLE                 ");
     println!("===================================================================\n");
 
-    let temp_dir = tempfile::tempdir().unwrap();
+    let temp_dir = tempfile::tempdir()?;
     let config = AuroraConfig {
         db_path: temp_dir.path().join("migration.db"),
         ..Default::default()
@@ -74,9 +74,9 @@ async fn main() -> aurora_db::Result<()> {
     db.execute(
         r#"
         schema {
-            extend collection users {
-                age: Int
-                role: String
+            alter collection users {
+                add age: Int
+                add role: String
             }
         }
     "#,

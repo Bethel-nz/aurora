@@ -1,5 +1,4 @@
 use aurora_db::{Aurora, AuroraConfig};
-use aurora_db::parser::executor::ExecutionOptions;
 use std::time::Instant;
 use std::path::PathBuf;
 
@@ -31,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.ensure_indices_initialized().await?;
     let rehydrate_duration = start_rehydrate.elapsed();
     println!("Indices Re-hydrated in: {:?}", rehydrate_duration);
-    println!("(Rebuilt SkipMaps & Roaring Bitmaps for 1M docs)");
+    println!("(Index checkpoint memory-mapped; secondary indices populated from cold storage on demand)");
 
     // 2. Complex Query Test
     println!("\nExecuting Fluent Query (3 Equality conditions)...");

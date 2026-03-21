@@ -1,6 +1,5 @@
 use aurora_db::{Aurora, AuroraConfig, FieldType, Value};
 use std::time::Instant;
-use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -18,26 +17,24 @@ async fn main() -> anyhow::Result<()> {
         ("count", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
     ]).await?;
 
-    // 1. Benchmark: Pure Insert
+    // 1. Benchmark: Pure Insert — use explicit IDs so the upsert pass below
+    //    targets the same documents (upsert takes a specific ID, insert_into
+    //    returns a UUID that we'd need to collect otherwise).
     let start = Instant::now();
     for i in 0..10000 {
-        db.insert_into("bench", vec![
+        db.upsert("bench", &format!("item-{}", i), vec![
             ("name", Value::String(format!("item-{}", i))),
             ("count", Value::Int(i)),
         ]).await?;
     }
     db.sync().await?;
     let insert_duration = start.elapsed();
-    println!("  Standard Insert: {:?} ({:.0} ops/sec)", insert_duration, 10000.0 / insert_duration.as_secs_f64());
+    println!("  Standard Insert (upsert new): {:?} ({:.0} ops/sec)", insert_duration, 10000.0 / insert_duration.as_secs_f64());
 
-    // 2. Benchmark: Upsert (Updating existing documents)
-    // This will trigger the "Fast Path" through the document_cache
+    // 2. Benchmark: Upsert (Updating existing documents — same IDs as above)
     let start = Instant::now();
     for i in 0..10000 {
-        // We use the ID format expected by our simulation
-        // Note: insert_into generates UUIDs, but upsert takes a specific ID.
-        // For a fair comparison, let's upsert to 10,000 specific IDs.
-        db.upsert("bench", &format!("user-{}", i), vec![
+        db.upsert("bench", &format!("item-{}", i), vec![
             ("name", Value::String(format!("updated-item-{}", i))),
             ("count", Value::Int(i * 2)),
         ]).await?;

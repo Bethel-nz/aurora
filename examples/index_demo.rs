@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Show the performance improvement
-    if slow_query_time.as_nanos() > 0 {
+    if slow_query_time.as_nanos() > 0 && fast_query_time.as_nanos() > 0 {
         let speedup = slow_query_time.as_nanos() as f64 / fast_query_time.as_nanos() as f64;
         println!(
             "\n Performance improvement: {:.1}x faster with index!",

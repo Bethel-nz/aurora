@@ -1,5 +1,6 @@
 use aurora_db::{Aurora, AuroraConfig, FieldType, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 use std::path::PathBuf;
 
@@ -34,8 +35,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batch_size = 10_000;
     let total_docs = 1_000_000;
     
-    // Payload to reach ~1.2KB per doc
-    let payload = "A".repeat(1100); 
+    // Payload to reach ~1.2KB per doc — shared via Arc to avoid 1M allocations
+    let payload = Arc::new("A".repeat(1100));
 
     for i in 0..(total_docs / batch_size) {
         let mut batch = Vec::with_capacity(batch_size);
@@ -46,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             doc.insert("age".to_string(), Value::Int((id % 100) as i64));
             doc.insert("city".to_string(), Value::String(cities[id % cities.len()].to_string()));
             doc.insert("active".to_string(), Value::Bool(id % 2 == 0));
-            doc.insert("payload".to_string(), Value::String(payload.clone()));
+            doc.insert("payload".to_string(), Value::String((*payload).clone()));
             batch.push(doc);
         }
         db.batch_insert("users", batch).await?;

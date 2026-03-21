@@ -48,8 +48,9 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         while let Ok(event) = dashboard_stream.recv().await {
             // Live stream of telemetry events
-            if matches!(event.change_type, aurora_db::pubsub::events::ChangeType::Insert) && event.id.contains("CRITICAL") {
-                // println!("  [DASHBOARD]  High-Priority event: {}", event.id);
+            if matches!(event.change_type, aurora_db::pubsub::events::ChangeType::Insert) {
+                // Check the status field for critical events (event.id is a UUID, not status)
+                // println!("  [DASHBOARD]  New telemetry event: {}", event.id);
             }
         }
     });
@@ -65,9 +66,11 @@ async fn main() -> anyhow::Result<()> {
         while let Some(update) = safety_watcher.next().await {
             match update {
                 aurora_db::reactive::updates::QueryUpdate::Added(doc) => {
-                    let drone_id = doc.data.get("drone_id").unwrap().as_str().unwrap();
-                    let temp = doc.data.get("temp").unwrap().as_f64().unwrap();
-                    println!("  [ALARM] Critical Heat! Drone {} is at {:.1}C", drone_id, temp);
+                    if let (Some(aurora_db::Value::String(drone_id)), Some(aurora_db::Value::Float(temp))) =
+                        (doc.data.get("drone_id"), doc.data.get("temp"))
+                    {
+                        println!("  [ALARM] Critical Heat! Drone {} is at {:.1}C", drone_id, temp);
+                    }
                 }
                 _ => {}
             }
@@ -93,16 +96,21 @@ async fn main() -> anyhow::Result<()> {
             heartbeat.insert("battery".to_string(), Value::Int((100 - (id % 100)) as i64));
             heartbeat.insert("status".to_string(), Value::String(if temp > 90.0 { "CRITICAL" } else { "OK" }.to_string()));
             
-            // If critical, enqueue a repair job
+            batch.push(heartbeat);
+        }
+        db.batch_insert("telemetry", batch).await?;
+
+        // Enqueue repair jobs only after successful persistence
+        for j in 0..batch_size {
+            let id = i * batch_size + j;
+            let temp = 40.0 + (id as f64 % 60.0);
             if temp > 98.0 {
+                let drone_id = format!("DRONE-{:05}", id % 1000);
                 let mut payload = HashMap::new();
                 payload.insert("drone_id".to_string(), serde_json::Value::String(drone_id));
                 worker_system.enqueue(Job::new("dispatch_repair").with_payload(payload)).await?;
             }
-            
-            batch.push(heartbeat);
         }
-        db.batch_insert("telemetry", batch).await?;
     }
 
     db.sync().await?;

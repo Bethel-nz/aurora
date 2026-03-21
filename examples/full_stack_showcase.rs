@@ -44,10 +44,11 @@ async fn main() -> anyhow::Result<()> {
     // 3. Define Schema with Computed Fields
     // We auto-calculate 'total_value' (price * amount) and 'fee' (0.1%)
     db.new_collection("trades", vec![
-        ("symbol", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-        ("price", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true }),
-        ("amount", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true }),
-        ("side", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+        ("symbol",      aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+        ("price",       aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT,  unique: false, indexed: false, nullable: true }),
+        ("amount",      aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT,  unique: false, indexed: false, nullable: true }),
+        ("side",        aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+        ("total_value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT,  unique: false, indexed: false, nullable: true }),
     ]).await?;
 
     // 4. Setup Global PubSub Listener (The Live Ticker)
@@ -79,9 +80,7 @@ async fn main() -> anyhow::Result<()> {
                     let amount = doc.data.get("amount").unwrap().as_f64().unwrap();
                     let total_value = price * amount;
                     
-                    if total_value > 50000.0 {
-                        println!("  [ WHALE ALERT] High-value trade detected: {} worth ${:.2}", symbol, total_value);
-                    }
+                    println!("  [ WHALE ALERT] High-value trade detected: {} worth ${:.2}", symbol, total_value);
                 }
                 _ => {}
             }
@@ -112,8 +111,10 @@ async fn main() -> anyhow::Result<()> {
             // Manual enrichment since we're optimizing the engine logic separately
             trade.insert("total_value".to_string(), Value::Float(price * amount));
             
-            // Background analysis
-            worker_system.enqueue(Job::new("analyze_trade")).await?;
+            // Background analysis — only for high-value trades to avoid 50k jobs
+            if price * amount > 10000.0 {
+                worker_system.enqueue(Job::new("analyze_trade")).await?;
+            }
             
             batch.push(trade);
         }

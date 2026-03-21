@@ -5,9 +5,14 @@
 //!   aggregate · groupBy · cursor pagination · update · delete · subscription
 
 use aurora_db::parser::executor::ExecutionResult;
+use aurora_db::types::Value;
 use aurora_db::{Aurora, AuroraConfig};
 use std::time::Duration;
 use tokio::time::sleep;
+
+fn val(opt: Option<&Value>) -> String {
+    opt.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -80,13 +85,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(update) = watcher.next().await {
             match update {
                 aurora_db::reactive::QueryUpdate::Added(doc) => {
-                    println!("  [watcher] new post: {:?}", doc.data.get("title"));
+                    println!("  [watcher] new post: {}", val(doc.data.get("title")));
                 }
                 aurora_db::reactive::QueryUpdate::Modified { new, .. } => {
-                    println!("  [watcher] post updated: {:?}", new.data.get("title"));
+                    println!("  [watcher] post updated: {}", val(new.data.get("title")));
                 }
                 aurora_db::reactive::QueryUpdate::Removed(doc) => {
-                    println!("  [watcher] post removed: {:?}", doc.data.get("title"));
+                    println!("  [watcher] post removed: {}", val(doc.data.get("title")));
                 }
             }
         }
@@ -202,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let ExecutionResult::Query(q) = result {
         println!("  Active admins >25: {} found", q.documents.len());
         for doc in &q.documents {
-            println!("    {:?}", doc.data.get("username"));
+            println!("    {}", val(doc.data.get("username")));
         }
     }
 
@@ -222,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let ExecutionResult::Query(q) = result {
         println!("  Top 3 published posts by views:");
         for doc in &q.documents {
-            println!("    {:?}  views={:?}", doc.data.get("title"), doc.data.get("views"));
+            println!("    {}  views={}", val(doc.data.get("title")), val(doc.data.get("views")));
         }
     }
 
@@ -238,7 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let ExecutionResult::Query(q) = result {
         println!("  Users page 2 (offset 2, limit 2):");
         for doc in &q.documents {
-            println!("    {:?}", doc.data.get("username"));
+            println!("    {}", val(doc.data.get("username")));
         }
     }
 
@@ -267,9 +272,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(doc) = q.documents.first() {
             if let Some(aurora_db::types::Value::Object(agg)) = doc.data.get("aggregate") {
                 println!("  Order stats:");
-                println!("    count={:?}", agg.get("count"));
-                println!("    total={:?}", agg.get("sum"));
-                println!("    avg  ={:?}", agg.get("avg"));
+                println!("    count={}", val(agg.get("count")));
+                println!("    total={}", val(agg.get("sum")));
+                println!("    avg  ={}", val(agg.get("avg")));
             }
         }
     }
@@ -300,11 +305,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let ExecutionResult::Query(q) = result {
         println!("  Users by role ({} groups):", q.documents.len());
         for doc in &q.documents {
-            println!("    role={:?}  count={:?}  avg_age={:?}",
-                doc.data.get("key"),
-                doc.data.get("count"),
-                doc.data.get("aggregate")
-                    .and_then(|v| if let aurora_db::types::Value::Object(m) = v { m.get("avg") } else { None })
+            println!("    role={}  count={}  avg_age={}",
+                val(doc.data.get("key")),
+                val(doc.data.get("count")),
+                val(doc.data.get("aggregate")
+                    .and_then(|v| if let Value::Object(m) = v { m.get("avg") } else { None }))
             );
         }
     }
@@ -432,7 +437,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "#).await?;
 
             match tokio::time::timeout(Duration::from_secs(2), stream.recv()).await {
-                Ok(Ok(event)) => println!("  Received event: {:?}", event),
+                Ok(Ok(event)) => println!("  Received event:\n{}", event),
                 _ => println!("  No event within timeout"),
             }
         }

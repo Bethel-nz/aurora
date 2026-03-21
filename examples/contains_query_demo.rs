@@ -378,8 +378,13 @@ field, term))
     );
 
     // Calculate query efficiency
-    let docs_per_ms = large_results.len() as f64 / large_duration.as_millis() as f64;
-    println!(" Query efficiency: {:.2} matching docs/ms", docs_per_ms);
+    let millis = large_duration.as_millis();
+    if millis > 0 {
+        let docs_per_ms = large_results.len() as f64 / millis as f64;
+        println!(" Query efficiency: {:.2} matching docs/ms", docs_per_ms);
+    } else {
+        println!(" Query efficiency: <1ms (too fast to measure per-ms rate)");
+    }
     println!();
 
     // Cleanup

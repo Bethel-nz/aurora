@@ -12,21 +12,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Test 1: Default Configuration");
     test_config("Default", AuroraConfig::default()).await?;
 
-    // Test 2: Read-optimized configuration
+    // Test 2: Read-optimized configuration (large hot cache, no write buffer)
     println!("\nTest 2: Read-Optimized Configuration");
-    test_config("Read-Optimized", AuroraConfig::read_optimized()).await?;
+    test_config("Read-Optimized", AuroraConfig {
+        hot_cache_size_mb: 256,
+        enable_write_buffering: false,
+        ..Default::default()
+    }).await?;
 
-    // Test 3: Write-optimized configuration (with write buffering!)
+    // Test 3: Write-optimized configuration (write buffering enabled)
     println!("\nTest 3: Write-Optimized Configuration (Write Buffering Enabled)");
-    test_config("Write-Optimized", AuroraConfig::write_optimized()).await?;
+    test_config("Write-Optimized", AuroraConfig {
+        enable_write_buffering: true,
+        write_buffer_size: 10_000,
+        hot_cache_size_mb: 64,
+        ..Default::default()
+    }).await?;
 
-    // Test 4: Real-time configuration
+    // Test 4: Real-time configuration (small cache, no buffering for low latency)
     println!("\nTest 4: Real-Time Configuration");
-    test_config("Realtime", AuroraConfig::realtime()).await?;
+    test_config("Realtime", AuroraConfig {
+        enable_write_buffering: false,
+        hot_cache_size_mb: 32,
+        ..Default::default()
+    }).await?;
 
     // Test 5: Low memory configuration
     println!("\nTest 5: Low-Memory Configuration");
-    test_config("Low-Memory", AuroraConfig::low_memory()).await?;
+    test_config("Low-Memory", AuroraConfig {
+        hot_cache_size_mb: 8,
+        enable_write_buffering: false,
+        ..Default::default()
+    }).await?;
 
     println!("\nAll tests completed successfully!");
     println!("\n Key Improvements:");
@@ -137,7 +154,10 @@ async fn test_config(
     );
 
     // Cleanup
-    std::fs::remove_dir_all(format!("./test_perf_{}.db", name.to_lowercase())).ok();
+    drop(db);
+    if let Err(e) = std::fs::remove_dir_all(format!("./test_perf_{}.db", name.to_lowercase())) {
+        eprintln!("cleanup failed for {}: {}", name, e);
+    }
 
     Ok(())
 }

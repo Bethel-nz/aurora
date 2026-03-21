@@ -9,7 +9,7 @@ use std::time::Duration;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Aurora PubSub Demo - Real-time Change Notifications\n");
 
-    let db = Aurora::with_config(AuroraConfig::realtime()).await?;
+    let db = Aurora::with_config(AuroraConfig::default()).await?;
 
     // Create collection
     db.new_collection(

@@ -1,4 +1,5 @@
 use aurora_db::{Aurora, FieldType, Value};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -10,9 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Aurora Reactive Queries Demo ===\n");
 
-    // Open database with a 'static Arc wrapper for watch() to work
-    // We leak the Arc to get a 'static reference
-    let db: &'static Aurora = Box::leak(Box::new(Aurora::open("reactive_demo.db").await?));
+    let db = std::sync::Arc::new(Aurora::open("reactive_demo.db").await?);
 
     // Clean up any existing data
     let _ = db.delete_collection("tasks").await;
@@ -53,48 +52,35 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     println!("- Inserted initial tasks\n");
 
     // Spawn a background task that will modify data
+    let writer_db = Arc::clone(&db);
     let writer_handle = tokio::spawn(async move {
+        let db = writer_db;
         sleep(Duration::from_millis(500)).await;
 
         println!("[WRITER] Adding high priority task...");
-        db.insert_into(
-            "tasks",
-            vec![
-                ("title", Value::String("Fix critical bug".into())),
-                ("completed", Value::Bool(false)),
-                ("priority", Value::Int(3)),
-            ],
-        )
-        .await
-        .ok();
+        if let Err(e) = db.insert_into("tasks", vec![
+            ("title", Value::String("Fix critical bug".into())),
+            ("completed", Value::Bool(false)),
+            ("priority", Value::Int(3)),
+        ]).await { eprintln!("[WRITER] insert failed: {}", e); }
 
         sleep(Duration::from_millis(500)).await;
 
         println!("[WRITER] Adding another task...");
-        db.insert_into(
-            "tasks",
-            vec![
-                ("title", Value::String("Review PR".into())),
-                ("completed", Value::Bool(false)),
-                ("priority", Value::Int(2)),
-            ],
-        )
-        .await
-        .ok();
+        if let Err(e) = db.insert_into("tasks", vec![
+            ("title", Value::String("Review PR".into())),
+            ("completed", Value::Bool(false)),
+            ("priority", Value::Int(2)),
+        ]).await { eprintln!("[WRITER] insert failed: {}", e); }
 
         sleep(Duration::from_millis(500)).await;
 
         println!("[WRITER] Adding low priority task...");
-        db.insert_into(
-            "tasks",
-            vec![
-                ("title", Value::String("Update docs".into())),
-                ("completed", Value::Bool(false)),
-                ("priority", Value::Int(1)),
-            ],
-        )
-        .await
-        .ok();
+        if let Err(e) = db.insert_into("tasks", vec![
+            ("title", Value::String("Update docs".into())),
+            ("completed", Value::Bool(false)),
+            ("priority", Value::Int(1)),
+        ]).await { eprintln!("[WRITER] insert failed: {}", e); }
 
         sleep(Duration::from_millis(500)).await;
         println!("[WRITER] Done writing");

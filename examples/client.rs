@@ -1,5 +1,4 @@
 use aurora_db::client::Client;
-use aurora_db::query::SimpleQueryBuilder;
 use aurora_db::types::{FieldType, Value};
 use std::collections::HashMap;
 
@@ -10,14 +9,15 @@ async fn main() -> anyhow::Result<()> {
     println!("Connected!");
 
     // 1. Create a new collection
+    // new_collection expects Vec<(String, FieldType, bool)> where bool = indexed
     println!("\n1. Creating 'products' collection...");
     client
         .new_collection(
             "products",
             vec![
-                ("name".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-                ("price".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true }),
-                ("in_stock".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_BOOL, unique: false, indexed: false, nullable: true }),
+                ("name".to_string(), FieldType::SCALAR_STRING, false),
+                ("price".to_string(), FieldType::SCALAR_FLOAT, false),
+                ("in_stock".to_string(), FieldType::SCALAR_BOOL, false),
             ],
         )
         .await?;
@@ -26,15 +26,15 @@ async fn main() -> anyhow::Result<()> {
     // 2. Insert documents
     println!("\n2. Inserting products...");
     let mut product_data = HashMap::new();
-    product_data.insert("name".to_string(), "Laptop".into());
-    product_data.insert("price".to_string(), 1200.50.into());
-    product_data.insert("in_stock".to_string(), true.into());
+    product_data.insert("name".to_string(), Value::String("Laptop".into()));
+    product_data.insert("price".to_string(), Value::Float(1200.50));
+    product_data.insert("in_stock".to_string(), Value::Bool(true));
     let doc_id = client.insert("products", product_data).await?;
     println!("   -> Inserted Laptop with ID: {}", doc_id);
 
     let mut keyboard_data = HashMap::new();
-    keyboard_data.insert("name".to_string(), "Keyboard".into());
-    keyboard_data.insert("price".to_string(), 75.50.into());
+    keyboard_data.insert("name".to_string(), Value::String("Keyboard".into()));
+    keyboard_data.insert("price".to_string(), Value::Float(75.50));
     keyboard_data.insert("in_stock".to_string(), Value::Bool(true));
     client.insert("products", keyboard_data).await?;
     println!("   -> Inserted Keyboard.");
@@ -42,29 +42,21 @@ async fn main() -> anyhow::Result<()> {
     // 3. Retrieve a document
     println!("\n3. Retrieving product '{}'...", &doc_id);
     let doc = client.get_document("products", &doc_id).await?;
-    println!("   -> Found document: {:?}", doc.unwrap());
-
-    // 4. Query for documents
-    println!("\n4. Querying for in-stock products cheaper than $100...");
-    let query_builder = SimpleQueryBuilder::new("products".to_string())
-        .lt("price", 100.0.into())
-        .eq("in_stock", true.into());
-
-    let docs = client.query(query_builder).await?;
-    println!("   -> Found {} documents:", docs.len());
-    for doc in docs {
-        println!("      - {:?}", doc);
+    if let Some(doc) = doc {
+        println!("   -> Found document: {:?}", doc);
+    } else {
+        println!("   -> Document not found");
     }
 
-    // 5. Transactions
-    println!("\n5. Testing a transaction...");
+    // 4. Transactions
+    println!("\n4. Testing a transaction...");
     client.begin_transaction().await?;
     println!("   -> Beginning transaction...");
 
     let mut tx_product = HashMap::new();
-    tx_product.insert("name".to_string(), "Transactional Item".into());
-    tx_product.insert("price".to_string(), 99.99.into());
-    tx_product.insert("in_stock".to_string(), true.into());
+    tx_product.insert("name".to_string(), Value::String("Transactional Item".into()));
+    tx_product.insert("price".to_string(), Value::Float(99.99));
+    tx_product.insert("in_stock".to_string(), Value::Bool(true));
 
     let tx_id = client.insert("products", tx_product).await?;
     println!("   -> Inserting item '{}' within transaction...", tx_id);
@@ -72,8 +64,8 @@ async fn main() -> anyhow::Result<()> {
     client.commit_transaction().await?;
     println!("   -> Transaction committed.");
 
-    // 6. Deleting a document
-    println!("\n6. Deleting product '{}'...", &doc_id);
+    // 5. Deleting a document
+    println!("\n5. Deleting product '{}'...", &doc_id);
     client.delete(&format!("products:{}", doc_id)).await?;
     println!("   -> Document deleted successfully.");
 
