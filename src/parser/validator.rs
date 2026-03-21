@@ -245,7 +245,7 @@ fn validate_query<S: SchemaProvider>(query: &Query, ctx: &mut ValidationContext<
                 validate_field(field, None, ctx);
             }
             Selection::InlineFragment(inline) => {
-                validate_inline_fragment(inline, ctx);
+                validate_inline_fragment(inline, None, ctx);
             }
             Selection::FragmentSpread(fragment_name) => {
                 // Fragment spreads at query root are invalid — their fields would be
@@ -289,10 +289,29 @@ fn validate_mutation<S: SchemaProvider>(mutation: &Mutation, ctx: &mut Validatio
 }
 
 /// Validate an inline fragment
+///
+/// `expected_collection` is `Some(name)` when the fragment appears inside a
+/// collection selection set — the type condition must match the enclosing
+/// collection. At root level (query/subscription) it is `None`.
 fn validate_inline_fragment<S: SchemaProvider>(
     inline: &ast::InlineFragment,
+    expected_collection: Option<&str>,
     ctx: &mut ValidationContext<'_, S>,
 ) {
+    // When nested inside a collection, the type condition must match it
+    if let Some(enc) = expected_collection {
+        if inline.type_condition != enc {
+            ctx.add_error(
+                ErrorCode::TypeMismatch,
+                format!(
+                    "Inline fragment on '{}' cannot appear inside '{}'",
+                    inline.type_condition, enc
+                ),
+            );
+            return;
+        }
+    }
+
     // Check if type condition refers to a valid collection
     if !ctx.schema.collection_exists(&inline.type_condition) {
         ctx.add_error(
@@ -330,7 +349,7 @@ fn validate_subscription<S: SchemaProvider>(
                 validate_field(field, None, ctx);
             }
             Selection::InlineFragment(inline) => {
-                validate_inline_fragment(inline, ctx);
+                validate_inline_fragment(inline, None, ctx);
             }
             Selection::FragmentSpread(fragment_name) => {
                 if let Some(fragment) = ctx.fragments.get(fragment_name) {
@@ -403,6 +422,7 @@ fn validate_field<S: SchemaProvider>(
                 // Validate filter if present
                 for arg in &field.arguments {
                     if arg.name == "where" || arg.name == "filter" {
+                        report_unknown_filter_ops(&arg.value, ctx);
                         if let Some(filter) = extract_filter_from_value(&arg.value) {
                             validate_filter(&filter, collection, ctx);
                         }
@@ -488,7 +508,7 @@ fn validate_selection_set<S: SchemaProvider>(
                 validate_field(field, Some(collection), ctx);
             }
             Selection::InlineFragment(inline) => {
-                validate_inline_fragment(inline, ctx);
+                validate_inline_fragment(inline, Some(&collection.name), ctx);
             }
             Selection::FragmentSpread(fragment_name) => {
                 validate_fragment_spread(fragment_name, &collection.name, ctx);
@@ -1008,6 +1028,46 @@ fn value_type_name(value: &Value) -> &'static str {
     }
 }
 
+/// Report validation errors for unrecognised filter operators so users get a
+/// clear message for typos instead of silently-dropped conditions.
+fn report_unknown_filter_ops<S: SchemaProvider>(
+    value: &Value,
+    ctx: &mut ValidationContext<'_, S>,
+) {
+    const KNOWN_OPS: &[&str] = &[
+        "eq", "ne", "gt", "gte", "lt", "lte",
+        "in", "nin", "contains", "startsWith", "endsWith",
+        "matches", "isNull", "isNotNull",
+    ];
+    if let Value::Object(map) = value {
+        for (key, val) in map {
+            match key.as_str() {
+                "and" | "or" => {
+                    if let Value::Array(arr) = val {
+                        arr.iter().for_each(|v| report_unknown_filter_ops(v, ctx));
+                    }
+                }
+                "not" => report_unknown_filter_ops(val, ctx),
+                field => {
+                    if let Value::Object(ops) = val {
+                        for op in ops.keys() {
+                            if !KNOWN_OPS.contains(&op.as_str()) {
+                                ctx.add_error(
+                                    ErrorCode::InvalidArgument,
+                                    format!(
+                                        "Unknown filter operator '{}' on field '{}'",
+                                        op, field
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Extract a Filter from an AST Value (for parsing where arguments)
 fn extract_filter_from_value(value: &Value) -> Option<Filter> {
     match value {
@@ -1060,6 +1120,9 @@ fn extract_filter_from_value(value: &Value) -> Option<Filter> {
                                     }
                                     "endsWith" => {
                                         Some(Filter::EndsWith(field.to_string(), op_val.clone()))
+                                    }
+                                    "matches" => {
+                                        Some(Filter::Matches(field.to_string(), op_val.clone()))
                                     }
                                     "isNull" => Some(Filter::IsNull(field.to_string())),
                                     "isNotNull" => Some(Filter::IsNotNull(field.to_string())),
