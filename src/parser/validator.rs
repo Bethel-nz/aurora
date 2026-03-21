@@ -630,6 +630,14 @@ fn validate_fragment_spread<S: SchemaProvider>(
             validate_selection_set(&fragment.selection_set, collection, ctx);
             ctx.validating_fragments.remove(fragment_name);
             ctx.pop_path();
+        } else {
+            ctx.add_error(
+                ErrorCode::UnknownCollection,
+                format!(
+                    "Fragment '{}' references unknown collection '{}'",
+                    fragment_name, expected_collection
+                ),
+            );
         }
     } else {
         ctx.add_error(

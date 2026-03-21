@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ─────────────────────────────────────────────────────────────────────────
     println!("2. Setting up reactive watcher...");
 
-    let (watcher_ready_tx, watcher_ready_rx) = tokio::sync::oneshot::channel::<()>();
+    let (watcher_ready_tx, watcher_ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let watch_db = db.clone();
     tokio::spawn(async move {
         let mut watcher = match watch_db
@@ -84,10 +84,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
         {
             Ok(w) => w,
-            Err(e) => { eprintln!("  watcher setup failed: {e}"); return; }
+            Err(e) => {
+                let _ = watcher_ready_tx.send(Err(format!("watcher setup failed: {e}")));
+                return;
+            }
         };
 
-        let _ = watcher_ready_tx.send(());
+        let _ = watcher_ready_tx.send(Ok(()));
 
         while let Some(update) = watcher.next().await {
             match update {
@@ -104,7 +107,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let _ = watcher_ready_rx.await;
+    match watcher_ready_rx.await {
+        Ok(Ok(())) => {}
+        Ok(Err(msg)) => return Err(msg.into()),
+        Err(_) => return Err("watcher task exited before signaling readiness".into()),
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // 3. INSERTS

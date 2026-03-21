@@ -51,5 +51,5 @@ run_benchmark "Internal Subsystem Benchmarks" "cargo test --lib"
 
 echo "==========================================================" | tee -a "$LOG_FILE"
 echo "ALL BENCHMARKS COMPLETED" | tee -a "$LOG_FILE"
-echo "Full report saved to: "$LOG_FILE"" | tee -a "$LOG_FILE"
+echo "Full report saved to: $LOG_FILE" | tee -a "$LOG_FILE"
 echo "==========================================================" | tee -a "$LOG_FILE"

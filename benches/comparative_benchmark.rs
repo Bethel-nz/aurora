@@ -83,8 +83,8 @@ fn bench_insert(c: &mut Criterion) {
             schema {
                 define collection users {
                     name: String!
-                    email: String!
-                    age: Int
+                    email: String! @indexed
+                    age: Int @indexed
                     active: Boolean
                 }
             }
@@ -415,7 +415,7 @@ fn bench_reactive_subscription(c: &mut Criterion) {
         });
 
         // Create the subscription once — we benchmark notification delivery, not setup cost
-        let _listener = rt.block_on(
+        let mut listener = rt.block_on(
             db.stream(
                 r#"
                 subscription {
@@ -431,7 +431,7 @@ fn bench_reactive_subscription(c: &mut Criterion) {
 
         b.iter(|| {
             rt.block_on(async {
-                // Each iteration only measures insert + notification delivery
+                // Each iteration measures insert + notification delivery
                 db.execute(
                     r#"
                     mutation {
@@ -444,6 +444,7 @@ fn bench_reactive_subscription(c: &mut Criterion) {
                 )
                 .await
                 .unwrap();
+                let _ = listener.recv().await;
             })
         })
     });

@@ -6,7 +6,7 @@
 //! Run with: `cargo bench --bench comparative_fluent_benchmark`
 
 use aurora_db::{Aurora, AuroraConfig, Value};
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use rusqlite::{Connection, params};
 
 use std::time::Duration;
@@ -71,67 +71,67 @@ fn bench_pure_insert(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(5));
 
     let rt = Runtime::new().unwrap();
-    let (aurora_db, _aurora_temp) = rt.block_on(setup_aurora());
-
-    // Use AQL for schema definition (one-time setup)
-    rt.block_on(async {
-        aurora_db
-            .execute(
-                r#"
-            schema {
-                define collection users {
-                    name: String
-                    email: String @indexed
-                    age: Int @indexed
-                    active: Boolean
-                }
-            }
-        "#,
-            )
-            .await
-            .unwrap();
-    });
 
     group.bench_function("aurora_fluent_insert_1000", |b| {
-        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        b.iter(|| {
-            let counter = counter.clone();
-            rt.block_on(async move {
-                for _ in 0..INSERT_COUNT {
-                    let id = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    let doc = vec![
-                        ("name", Value::String(format!("User {}", id))),
-                        ("email", Value::String(format!("user{}@example.com", id))),
-                        ("age", Value::Int(20 + (id % 50) as i64)),
-                        ("active", Value::Bool(id % 2 == 0)),
-                    ];
-                    aurora_db.insert_into("users", doc).await.unwrap();
-                }
-            })
-        })
+        b.iter_batched(
+            || {
+                rt.block_on(async {
+                    let (db, temp) = setup_aurora().await;
+                    db.execute(
+                        r#"
+                        schema {
+                            define collection users {
+                                name: String
+                                email: String @indexed
+                                age: Int @indexed
+                                active: Boolean
+                            }
+                        }
+                    "#,
+                    )
+                    .await
+                    .unwrap();
+                    (db, temp)
+                })
+            },
+            |(db, _temp)| {
+                rt.block_on(async {
+                    for i in 0..INSERT_COUNT {
+                        let doc = vec![
+                            ("name", Value::String(format!("User {}", i))),
+                            ("email", Value::String(format!("user{}@example.com", i))),
+                            ("age", Value::Int(20 + (i % 50) as i64)),
+                            ("active", Value::Bool(i % 2 == 0)),
+                        ];
+                        db.insert_into("users", doc).await.unwrap();
+                    }
+                })
+            },
+            BatchSize::LargeInput,
+        );
     });
 
-    let (sqlite_conn, _sqlite_temp) = setup_sqlite();
-    // Prepare statement outside of loop
-    let mut stmt = sqlite_conn
-        .prepare("INSERT INTO users (name, email, age, active) VALUES (?1, ?2, ?3, ?4)")
-        .unwrap();
-
     group.bench_function("sqlite_prepared_insert_1000", |b| {
-        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        b.iter(|| {
-            // SQLite insertion loop
-            for _i in 0..INSERT_COUNT {
-                let id = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                stmt.execute(params![
-                    format!("User {}", id),
-                    format!("user{}@example.com", id),
-                    20 + (id % 50),
-                    if id % 2 == 0 { 1 } else { 0 }
-                ])
-                .unwrap();
-            }
-        })
+        b.iter_batched(
+            || setup_sqlite(),
+            |(conn, _temp)| {
+                let mut stmt = conn
+                    .prepare(
+                        "INSERT INTO users (name, email, age, active) VALUES (?1, ?2, ?3, ?4)",
+                    )
+                    .unwrap();
+                for i in 0..INSERT_COUNT {
+                    stmt.execute(params![
+                        format!("User {}", i),
+                        format!("user{}@example.com", i),
+                        20 + (i % 50),
+                        if i % 2 == 0 { 1 } else { 0 }
+                    ])
+                    .unwrap();
+                }
+            },
+            BatchSize::LargeInput,
+        );
     });
 
     group.finish();
