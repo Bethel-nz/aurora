@@ -754,7 +754,7 @@ alter_action = {
     modify_action
 }
 
-add_action = { "add" ~ field_definition }
+add_action = { "add" ~ field_definition ~ ("=" ~ value)? }
 drop_action = { "drop" ~ identifier }
 rename_action = { "rename" ~ identifier ~ "to" ~ identifier }
 modify_action = { "modify" ~ field_definition }
@@ -774,7 +774,7 @@ migration_step = {
 }
 
 migration_version = {
-    string
+    string | number | identifier
 }
 
 migration_action = {

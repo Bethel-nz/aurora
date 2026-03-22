@@ -138,7 +138,7 @@ pub fn parse(input: &str) -> Result<Document> {
         // Try to extract the problematic token from the error location
         let user_message = get_helpful_error_message(input, line, col);
 
-        AqlError::new(ErrorCode::ProtocolError, user_message).with_location(line, col)
+        AqlError::new(ErrorCode::InvalidQuery, user_message).with_location(line, col)
     })?;
 
     let mut operations = Vec::new();
@@ -231,6 +231,7 @@ fn parse_operation(pair: pest::iterators::Pair<Rule>) -> Result<Option<Operation
         Rule::introspection_query => Ok(Some(Operation::Introspection(parse_introspection_query(
             pair,
         )?))),
+        Rule::handler_operation => Ok(Some(Operation::Handler(parse_handler_operation(pair)?))),
         Rule::EOI => Ok(None),
         _ => Ok(None),
     }
@@ -374,10 +375,17 @@ fn parse_alter_action(pair: pest::iterators::Pair<Rule>) -> Result<AlterAction> 
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::add_action => {
-                for field in inner.into_inner() {
-                    if field.as_rule() == Rule::field_definition {
-                        return Ok(AlterAction::AddField(parse_field_definition(field)?));
+                let mut field_def = None;
+                let mut default = None;
+                for part in inner.into_inner() {
+                    match part.as_rule() {
+                        Rule::field_definition => field_def = Some(parse_field_definition(part)?),
+                        Rule::value => default = Some(parse_value(part)?),
+                        _ => {}
                     }
+                }
+                if let Some(f) = field_def {
+                    return Ok(AlterAction::AddField { field: f, default });
                 }
             }
             Rule::drop_action => {
@@ -413,7 +421,7 @@ fn parse_alter_action(pair: pest::iterators::Pair<Rule>) -> Result<AlterAction> 
     }
 
     Err(AqlError::new(
-        ErrorCode::ProtocolError,
+        ErrorCode::InvalidQuery,
         format!("Unknown alter action: {}", input_str),
     ))
 }
@@ -480,11 +488,17 @@ fn parse_migration_step(pair: pest::iterators::Pair<Rule>) -> Result<MigrationSt
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::migration_version => {
-                // migration_version -> string
-                if let Some(s_pair) = inner.into_inner().next() {
-                    // Strip quotes
-                    let s = s_pair.as_str();
-                    version = s[1..s.len() - 1].to_string();
+                if let Some(inner_pair) = inner.into_inner().next() {
+                    let raw = inner_pair.as_str();
+                    // Strip surrounding quotes for string literals; use as-is for
+                    // numbers and bare identifiers.
+                    version = if (raw.starts_with('"') && raw.ends_with('"'))
+                        || (raw.starts_with('\'') && raw.ends_with('\''))
+                    {
+                        raw[1..raw.len() - 1].to_string()
+                    } else {
+                        raw.to_string()
+                    };
                 }
             }
             Rule::migration_action => {
@@ -749,6 +763,62 @@ fn parse_filter_operator_to_map(
                 for val in inner.into_inner() {
                     if val.as_rule() == Rule::value {
                         map.insert("endsWith".to_string(), parse_value(val)?);
+                    }
+                }
+            }
+            Rule::contains_any_operator => {
+                for val in inner.into_inner() {
+                    if val.as_rule() == Rule::array {
+                        map.insert("containsAny".to_string(), parse_value(val)?);
+                    }
+                }
+            }
+            Rule::contains_all_operator => {
+                for val in inner.into_inner() {
+                    if val.as_rule() == Rule::array {
+                        map.insert("containsAll".to_string(), parse_value(val)?);
+                    }
+                }
+            }
+            Rule::matches_operator => {
+                for val in inner.into_inner() {
+                    if val.as_rule() == Rule::value {
+                        map.insert("matches".to_string(), parse_value(val)?);
+                    }
+                }
+            }
+            Rule::increment_operator => {
+                for val in inner.into_inner() {
+                    if val.as_rule() == Rule::number {
+                        map.insert("increment".to_string(), parse_value(val)?);
+                    }
+                }
+            }
+            Rule::decrement_operator => {
+                for val in inner.into_inner() {
+                    if val.as_rule() == Rule::number {
+                        map.insert("decrement".to_string(), parse_value(val)?);
+                    }
+                }
+            }
+            Rule::push_operator => {
+                for val in inner.into_inner() {
+                    if val.as_rule() == Rule::value {
+                        map.insert("push".to_string(), parse_value(val)?);
+                    }
+                }
+            }
+            Rule::pull_operator => {
+                for val in inner.into_inner() {
+                    if val.as_rule() == Rule::value {
+                        map.insert("pull".to_string(), parse_value(val)?);
+                    }
+                }
+            }
+            Rule::add_to_set_operator => {
+                for val in inner.into_inner() {
+                    if val.as_rule() == Rule::value {
+                        map.insert("addToSet".to_string(), parse_value(val)?);
                     }
                 }
             }
@@ -1043,6 +1113,66 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                         }
                         Rule::downsample_selection => {
                             name = "downsample".to_string();
+                            for ds_inner in sel.into_inner() {
+                                match ds_inner.as_rule() {
+                                    Rule::downsample_args => {
+                                        let mut strings = Vec::new();
+                                        for a in ds_inner.into_inner() {
+                                            if a.as_rule() == Rule::string {
+                                                let s = a.as_str();
+                                                strings.push(s[1..s.len()-1].to_string());
+                                            }
+                                        }
+                                        if strings.len() >= 2 {
+                                            arguments.push(ast::Argument { name: "interval".to_string(), value: ast::Value::String(strings[0].clone()) });
+                                            arguments.push(ast::Argument { name: "aggregation".to_string(), value: ast::Value::String(strings[1].clone()) });
+                                        }
+                                    }
+                                    Rule::sub_selection => {
+                                        for sub in ds_inner.into_inner() {
+                                            if sub.as_rule() == Rule::selection_set {
+                                                selection_set = parse_selection_set(sub)?;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Rule::window_function => {
+                            // identifier ":" "windowFunc" "(" window_args ")"
+                            let mut parts = sel.into_inner();
+                            // First token is the alias identifier
+                            if let Some(alias_pair) = parts.next() {
+                                if alias_pair.as_rule() == Rule::identifier {
+                                    alias = Some(alias_pair.as_str().to_string());
+                                }
+                            }
+                            name = "windowFunc".to_string();
+                            for part in parts {
+                                if part.as_rule() == Rule::window_args {
+                                    let mut strings: Vec<String> = Vec::new();
+                                    let mut wsize: i64 = 3;
+                                    for arg in part.into_inner() {
+                                        match arg.as_rule() {
+                                            Rule::string => {
+                                                let s = arg.as_str();
+                                                strings.push(s[1..s.len()-1].to_string());
+                                            }
+                                            Rule::number => {
+                                                wsize = arg.as_str().parse().unwrap_or(3);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    // window_args: field, function, windowSize
+                                    if strings.len() >= 2 {
+                                        arguments.push(ast::Argument { name: "field".to_string(), value: ast::Value::String(strings[0].clone()) });
+                                        arguments.push(ast::Argument { name: "function".to_string(), value: ast::Value::String(strings[1].clone()) });
+                                    }
+                                    arguments.push(ast::Argument { name: "windowSize".to_string(), value: ast::Value::Int(wsize) });
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -1218,15 +1348,20 @@ fn parse_mutation_call(pair: pest::iterators::Pair<Rule>) -> Result<(MutationOp,
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::insert_mutation => return parse_insert_mutation(inner),
+            Rule::insert_many_mutation => return parse_insert_many_mutation(inner),
             Rule::update_mutation => return parse_update_mutation(inner),
+            Rule::upsert_mutation => return parse_upsert_mutation(inner),
             Rule::delete_mutation => return parse_delete_mutation(inner),
             Rule::enqueue_job_mutation => return parse_enqueue_job_mutation(inner),
+            Rule::enqueue_jobs_mutation => return parse_enqueue_jobs_mutation(inner),
+            Rule::import_mutation => return parse_import_mutation(inner),
+            Rule::export_mutation => return parse_export_mutation(inner),
             Rule::transaction_block => return parse_transaction_block(inner),
             _ => {}
         }
     }
     Err(AqlError::new(
-        ErrorCode::ProtocolError,
+        ErrorCode::InvalidQuery,
         "Unknown mutation type".to_string(),
     ))
 }
@@ -1265,6 +1400,84 @@ fn parse_insert_mutation(
     }
 
     Ok((MutationOp::Insert { collection, data }, selection_set))
+}
+
+fn parse_insert_many_mutation(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<(MutationOp, Vec<Selection>)> {
+    let mut collection = String::new();
+    let mut data_items: Vec<Value> = Vec::new();
+    let mut selection_set = Vec::new();
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::insert_many_args => {
+                for arg in parse_arguments_list(inner)? {
+                    match arg.name.as_str() {
+                        "collection" => {
+                            if let Value::String(s) = arg.value {
+                                collection = s;
+                            }
+                        }
+                        "data" => {
+                            if let Value::Array(items) = arg.value {
+                                data_items = items;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Rule::sub_selection => {
+                for sel in inner.into_inner() {
+                    if sel.as_rule() == Rule::selection_set {
+                        selection_set = parse_selection_set(sel)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((MutationOp::InsertMany { collection, data: data_items }, selection_set))
+}
+
+fn parse_upsert_mutation(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<(MutationOp, Vec<Selection>)> {
+    let mut collection = String::new();
+    let mut filter = None;
+    let mut data = Value::Null;
+    let mut selection_set = Vec::new();
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::upsert_args => {
+                for arg in parse_arguments_list(inner)? {
+                    match arg.name.as_str() {
+                        "collection" => {
+                            if let Value::String(s) = arg.value {
+                                collection = s;
+                            }
+                        }
+                        "where" => filter = Some(value_to_filter(arg.value)?),
+                        "data" | "set" => data = arg.value,
+                        _ => {}
+                    }
+                }
+            }
+            Rule::sub_selection => {
+                for sel in inner.into_inner() {
+                    if sel.as_rule() == Rule::selection_set {
+                        selection_set = parse_selection_set(sel)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((MutationOp::Upsert { collection, filter, data }, selection_set))
 }
 
 fn parse_update_mutation(
@@ -1434,8 +1647,26 @@ fn parse_arguments(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Argument>> {
         match inner.as_rule() {
             Rule::argument_list => {
                 for arg in inner.into_inner() {
-                    if arg.as_rule() == Rule::argument {
-                        arguments.push(parse_argument(arg)?);
+                    match arg.as_rule() {
+                        Rule::argument => arguments.push(parse_argument(arg)?),
+                        Rule::special_argument => {
+                            for special in arg.into_inner() {
+                                match special.as_rule() {
+                                    Rule::search_args => {
+                                        arguments.push(parse_search_args_to_argument(special)?);
+                                    }
+                                    Rule::validate_args => {
+                                        arguments.push(parse_validate_args_to_argument(special)?);
+                                    }
+                                    Rule::order_by_clause => {
+                                        arguments.push(parse_order_by_clause_to_argument(special)?);
+                                    }
+                                    // where_clause is handled elsewhere via filter_object
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1444,6 +1675,308 @@ fn parse_arguments(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Argument>> {
         }
     }
     Ok(arguments)
+}
+
+fn parse_search_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<Argument> {
+    let mut query = String::new();
+    let mut fields: Vec<Value> = Vec::new();
+    let mut fuzzy = Value::Boolean(false);
+
+    for inner in pair.into_inner() {
+        if inner.as_rule() == Rule::search_options {
+            for opt in inner.into_inner() {
+                if opt.as_rule() == Rule::search_option {
+                    let s = opt.as_str();
+                    if s.starts_with("query") {
+                        for part in opt.into_inner() {
+                            if part.as_rule() == Rule::string {
+                                let raw = part.as_str();
+                                query = raw[1..raw.len()-1].to_string();
+                            }
+                        }
+                    } else if s.starts_with("fields") {
+                        for part in opt.into_inner() {
+                            if part.as_rule() == Rule::array {
+                                if let Ok(Value::Array(arr)) = parse_value(part) {
+                                    fields = arr;
+                                }
+                            }
+                        }
+                    } else if s.starts_with("fuzzy") {
+                        for part in opt.into_inner() {
+                            if part.as_rule() == Rule::boolean {
+                                fuzzy = Value::Boolean(part.as_str() == "true");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut obj = std::collections::HashMap::new();
+    obj.insert("query".to_string(), Value::String(query));
+    obj.insert("fields".to_string(), Value::Array(fields));
+    obj.insert("fuzzy".to_string(), fuzzy);
+
+    Ok(Argument { name: "search".to_string(), value: Value::Object(obj) })
+}
+
+fn parse_validate_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<Argument> {
+    let mut rules_map = std::collections::HashMap::new();
+
+    for inner in pair.into_inner() {
+        if inner.as_rule() == Rule::validation_rules {
+            for rule in inner.into_inner() {
+                if rule.as_rule() == Rule::validation_rule {
+                    let mut field_name = String::new();
+                    let mut constraints_map = std::collections::HashMap::new();
+                    for part in rule.into_inner() {
+                        match part.as_rule() {
+                            Rule::identifier => field_name = part.as_str().to_string(),
+                            Rule::validation_constraints => {
+                                for constraint in part.into_inner() {
+                                    if constraint.as_rule() == Rule::validation_constraint {
+                                        let s = constraint.as_str();
+                                        if s.starts_with("format") {
+                                            for c in constraint.into_inner() {
+                                                if c.as_rule() == Rule::string {
+                                                    let raw = c.as_str();
+                                                    constraints_map.insert("format".to_string(), Value::String(raw[1..raw.len()-1].to_string()));
+                                                }
+                                            }
+                                        } else if s.starts_with("minLength") {
+                                            for c in constraint.into_inner() {
+                                                if c.as_rule() == Rule::number {
+                                                    if let Ok(n) = c.as_str().parse::<i64>() {
+                                                        constraints_map.insert("minLength".to_string(), Value::Int(n));
+                                                    }
+                                                }
+                                            }
+                                        } else if s.starts_with("maxLength") {
+                                            for c in constraint.into_inner() {
+                                                if c.as_rule() == Rule::number {
+                                                    if let Ok(n) = c.as_str().parse::<i64>() {
+                                                        constraints_map.insert("maxLength".to_string(), Value::Int(n));
+                                                    }
+                                                }
+                                            }
+                                        } else if s.starts_with("min") {
+                                            for c in constraint.into_inner() {
+                                                if c.as_rule() == Rule::number {
+                                                    if let Ok(n) = c.as_str().parse::<f64>() {
+                                                        constraints_map.insert("min".to_string(), Value::Float(n));
+                                                    }
+                                                }
+                                            }
+                                        } else if s.starts_with("max") {
+                                            for c in constraint.into_inner() {
+                                                if c.as_rule() == Rule::number {
+                                                    if let Ok(n) = c.as_str().parse::<f64>() {
+                                                        constraints_map.insert("max".to_string(), Value::Float(n));
+                                                    }
+                                                }
+                                            }
+                                        } else if s.starts_with("pattern") {
+                                            for c in constraint.into_inner() {
+                                                if c.as_rule() == Rule::string {
+                                                    let raw = c.as_str();
+                                                    constraints_map.insert("pattern".to_string(), Value::String(raw[1..raw.len()-1].to_string()));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !field_name.is_empty() {
+                        rules_map.insert(field_name, Value::Object(constraints_map));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Argument { name: "validate".to_string(), value: Value::Object(rules_map) })
+}
+
+/// Convert the formal `orderBy: { field: "name", direction: ASC }` (or multiple)
+/// syntax into the same `Argument { name: "orderBy", value: Object({name: Enum("ASC")}) }`
+/// shape that `extract_order_by` in the executor already understands.
+fn parse_order_by_clause_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<Argument> {
+    let mut orderings = std::collections::HashMap::new();
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::order_by_single => {
+                let mut field = String::new();
+                let mut direction = "ASC".to_string();
+                for part in inner.into_inner() {
+                    match part.as_rule() {
+                        Rule::string => {
+                            let s = part.as_str();
+                            field = s[1..s.len() - 1].to_string();
+                        }
+                        Rule::sort_direction => {
+                            direction = part.as_str().to_string();
+                        }
+                        _ => {}
+                    }
+                }
+                if !field.is_empty() {
+                    orderings.insert(field, Value::Enum(direction));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(Argument {
+        name: "orderBy".to_string(),
+        value: Value::Object(orderings),
+    })
+}
+
+fn parse_enqueue_jobs_mutation(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<(MutationOp, Vec<Selection>)> {
+    let mut job_type = String::new();
+    let mut payloads: Vec<Value> = Vec::new();
+    let mut priority = JobPriority::Normal;
+    let mut max_retries = None;
+    let mut selection_set = Vec::new();
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::jobs_args => {
+                for arg in parse_arguments_list(inner)? {
+                    match arg.name.as_str() {
+                        "jobType" => {
+                            if let Value::String(s) = arg.value {
+                                job_type = s;
+                            }
+                        }
+                        "payloads" => {
+                            if let Value::Array(arr) = arg.value {
+                                payloads = arr;
+                            }
+                        }
+                        "priority" => {
+                            if let Value::Enum(s) = arg.value {
+                                priority = match s.as_str() {
+                                    "LOW" => JobPriority::Low,
+                                    "HIGH" => JobPriority::High,
+                                    "CRITICAL" => JobPriority::Critical,
+                                    _ => JobPriority::Normal,
+                                };
+                            }
+                        }
+                        "maxRetries" => {
+                            if let Value::Int(n) = arg.value {
+                                max_retries = Some(n as u32);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Rule::sub_selection => {
+                for sel in inner.into_inner() {
+                    if sel.as_rule() == Rule::selection_set {
+                        selection_set = parse_selection_set(sel)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((
+        MutationOp::EnqueueJobs { job_type, payloads, priority, max_retries },
+        selection_set,
+    ))
+}
+
+fn parse_import_mutation(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<(MutationOp, Vec<Selection>)> {
+    let mut collection = String::new();
+    let mut data: Vec<Value> = Vec::new();
+    let mut selection_set = Vec::new();
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::import_args => {
+                for arg in parse_arguments_list(inner)? {
+                    match arg.name.as_str() {
+                        "collection" => {
+                            if let Value::String(s) = arg.value {
+                                collection = s;
+                            }
+                        }
+                        "data" => {
+                            if let Value::Array(arr) = arg.value {
+                                data = arr;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Rule::sub_selection => {
+                for sel in inner.into_inner() {
+                    if sel.as_rule() == Rule::selection_set {
+                        selection_set = parse_selection_set(sel)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((MutationOp::Import { collection, data }, selection_set))
+}
+
+fn parse_export_mutation(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<(MutationOp, Vec<Selection>)> {
+    let mut collection = String::new();
+    let mut format = "JSON".to_string();
+    let mut selection_set = Vec::new();
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::export_args => {
+                for arg in parse_arguments_list(inner)? {
+                    match arg.name.as_str() {
+                        "collection" => {
+                            if let Value::String(s) = arg.value {
+                                collection = s;
+                            }
+                        }
+                        "format" => {
+                            let fmt = match arg.value {
+                                Value::Enum(s) | Value::String(s) => s,
+                                _ => "JSON".to_string(),
+                            };
+                            format = fmt;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Rule::sub_selection => {
+                for sel in inner.into_inner() {
+                    if sel.as_rule() == Rule::selection_set {
+                        selection_set = parse_selection_set(sel)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((MutationOp::Export { collection, format }, selection_set))
 }
 
 fn parse_arguments_list(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Argument>> {
@@ -1471,6 +2004,47 @@ fn parse_argument(pair: pest::iterators::Pair<Rule>) -> Result<Argument> {
     Ok(Argument { name, value })
 }
 
+/// Unescape AQL string escape sequences: `\\` → `\`, `\"` → `"`,
+/// `\/` → `/`, `\n` → newline, `\r` → CR, `\t` → tab, `\b` → BS,
+/// `\f` → FF, `\uXXXX` → Unicode codepoint.
+fn unescape_string(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            result.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => result.push('"'),
+            Some('\\') => result.push('\\'),
+            Some('/') => result.push('/'),
+            Some('n') => result.push('\n'),
+            Some('r') => result.push('\r'),
+            Some('t') => result.push('\t'),
+            Some('b') => result.push('\x08'),
+            Some('f') => result.push('\x0C'),
+            Some('u') => {
+                let hex: String = chars.by_ref().take(4).collect();
+                if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                    if let Some(uc) = char::from_u32(n) {
+                        result.push(uc);
+                        continue;
+                    }
+                }
+                result.push_str("\\u");
+                result.push_str(&hex);
+            }
+            Some(other) => {
+                result.push('\\');
+                result.push(other);
+            }
+            None => result.push('\\'),
+        }
+    }
+    result
+}
+
 fn parse_value(pair: pest::iterators::Pair<Rule>) -> Result<Value> {
     match pair.as_rule() {
         Rule::value => {
@@ -1486,17 +2060,17 @@ fn parse_value(pair: pest::iterators::Pair<Rule>) -> Result<Value> {
             } else {
                 &s[1..s.len() - 1]
             };
-            Ok(Value::String(unquoted.to_string()))
+            Ok(Value::String(unescape_string(unquoted)))
         }
         Rule::number => {
             let s = pair.as_str();
             if s.contains('.') || s.contains('e') || s.contains('E') {
                 Ok(Value::Float(s.parse().map_err(|e| {
-                    AqlError::new(ErrorCode::ProtocolError, format!("Invalid float: {}", e))
+                    AqlError::new(ErrorCode::InvalidQuery, format!("Invalid float: {}", e))
                 })?))
             } else {
                 Ok(Value::Int(s.parse().map_err(|e| {
-                    AqlError::new(ErrorCode::ProtocolError, format!("Invalid integer: {}", e))
+                    AqlError::new(ErrorCode::InvalidQuery, format!("Invalid integer: {}", e))
                 })?))
             }
         }
@@ -1590,13 +2164,15 @@ fn value_to_filter(value: Value) -> Result<Filter> {
                                     "in" => Filter::In(field.to_string(), op_val),
                                     "nin" => Filter::NotIn(field.to_string(), op_val),
                                     "contains" => Filter::Contains(field.to_string(), op_val),
+                                    "containsAny" => Filter::ContainsAny(field.to_string(), op_val),
+                                    "containsAll" => Filter::ContainsAll(field.to_string(), op_val),
                                     "startsWith" => Filter::StartsWith(field.to_string(), op_val),
                                     "endsWith" => Filter::EndsWith(field.to_string(), op_val),
                                     "isNull" => Filter::IsNull(field.to_string()),
                                     "isNotNull" => Filter::IsNotNull(field.to_string()),
                                     _ => {
                                         return Err(AqlError::new(
-                                            ErrorCode::ProtocolError,
+                                            ErrorCode::InvalidQuery,
                                             format!("Unknown filter operator: {}", op.as_str()),
                                         ));
                                     }
@@ -1614,7 +2190,7 @@ fn value_to_filter(value: Value) -> Result<Filter> {
             }
         }
         _ => Err(AqlError::new(
-            ErrorCode::ProtocolError,
+            ErrorCode::InvalidQuery,
             "Filter must be an object".to_string(),
         )),
     }
@@ -1683,6 +2259,20 @@ fn filter_to_value(filter: &Filter) -> Value {
         Filter::Contains(field, val) => {
             let mut inner = HashMap::new();
             inner.insert("contains".to_string(), val.clone());
+            let mut outer = HashMap::new();
+            outer.insert(field.clone(), Value::Object(inner));
+            Value::Object(outer)
+        }
+        Filter::ContainsAny(field, val) => {
+            let mut inner = HashMap::new();
+            inner.insert("containsAny".to_string(), val.clone());
+            let mut outer = HashMap::new();
+            outer.insert(field.clone(), Value::Object(inner));
+            Value::Object(outer)
+        }
+        Filter::ContainsAll(field, val) => {
+            let mut inner = HashMap::new();
+            inner.insert("containsAll".to_string(), val.clone());
             let mut outer = HashMap::new();
             outer.insert(field.clone(), Value::Object(inner));
             Value::Object(outer)
@@ -1840,7 +2430,7 @@ fn parse_lookup_selection(pair: pest::iterators::Pair<Rule>) -> Result<ast::Look
 
     if collection.is_empty() || local_field.is_empty() || foreign_field.is_empty() {
         return Err(AqlError::new(
-            ErrorCode::ProtocolError,
+            ErrorCode::InvalidQuery,
             "Lookup must specify collection, localField, and foreignField".to_string(),
         ));
     }
@@ -1852,6 +2442,75 @@ fn parse_lookup_selection(pair: pest::iterators::Pair<Rule>) -> Result<ast::Look
         filter,
         selection_set,
     })
+}
+
+/// Parse a handler definition: `define handler "name" { on: "insert coll", action: { ... } }`
+fn parse_handler_operation(pair: pest::iterators::Pair<Rule>) -> Result<ast::HandlerDef> {
+    let mut name = String::new();
+    let mut trigger = ast::HandlerTrigger::Custom(String::new());
+    let mut action: Option<ast::MutationOperation> = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::string => {
+                let s = inner.as_str();
+                name = s[1..s.len() - 1].to_string();
+            }
+            Rule::handler_body => {
+                for body in inner.into_inner() {
+                    match body.as_rule() {
+                        Rule::handler_trigger => {
+                            // `on: "insert users"` or `on: "update users"` etc.
+                            for t in body.into_inner() {
+                                if t.as_rule() == Rule::string {
+                                    let raw = t.as_str();
+                                    let s = &raw[1..raw.len() - 1];
+                                    trigger = parse_trigger_string(s);
+                                }
+                            }
+                        }
+                        Rule::handler_action => {
+                            // `action: { mutation_call }`
+                            for a in body.into_inner() {
+                                if a.as_rule() == Rule::mutation_call {
+                                    if let Ok((op, sel)) = parse_mutation_call(a) {
+                                        action = Some(ast::MutationOperation {
+                                            alias: None,
+                                            operation: op,
+                                            directives: vec![],
+                                            selection_set: sel,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let action = action.ok_or_else(|| {
+        AqlError::new(ErrorCode::InvalidQuery, "Handler must have an action".to_string())
+    })?;
+
+    Ok(ast::HandlerDef { name, trigger, action })
+}
+
+fn parse_trigger_string(s: &str) -> ast::HandlerTrigger {
+    let parts: Vec<&str> = s.splitn(2, ' ').collect();
+    let event_type = parts[0].to_lowercase();
+    let collection = parts.get(1).map(|c| c.to_string());
+    match event_type.as_str() {
+        "insert" => ast::HandlerTrigger::Insert { collection },
+        "update" => ast::HandlerTrigger::Update { collection },
+        "delete" => ast::HandlerTrigger::Delete { collection },
+        "job_completed" | "jobcompleted" => ast::HandlerTrigger::JobCompleted,
+        "job_failed" | "jobfailed" => ast::HandlerTrigger::JobFailed,
+        _ => ast::HandlerTrigger::Custom(s.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -1910,7 +2569,7 @@ mod tests {
 
                 // Check add action
                 match &actions[0] {
-                    AlterAction::AddField(field) => {
+                    AlterAction::AddField { field, .. } => {
                         assert_eq!(field.name, "age");
                         assert_eq!(field.field_type.name, "Int");
                     }

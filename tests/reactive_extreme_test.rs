@@ -65,7 +65,7 @@ async fn run_reactive_benchmark(num_updates: usize) -> (String, f64) {
 
     let collection = "live_data";
     db.new_collection(collection, vec![
-        ("val", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+        ("val", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ] ).await.unwrap();
 
     // Create a watcher that matches everything

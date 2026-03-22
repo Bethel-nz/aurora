@@ -37,6 +37,7 @@ fn create_test_schema() -> MockSchemaProvider {
             unique: false,
             indexed: false,
             nullable: false,
+        ..Default::default()
         },
     );
     fields.insert(
@@ -46,6 +47,7 @@ fn create_test_schema() -> MockSchemaProvider {
             unique: false,
             indexed: false,
             nullable: true,
+        ..Default::default()
         },
     );
 
@@ -153,6 +155,7 @@ fn test_validation_array_type() {
                 unique: false,
                 indexed: false,
                 nullable: true,
+            ..Default::default()
             },
         );
     }

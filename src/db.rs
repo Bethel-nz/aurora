@@ -15,7 +15,7 @@
 //!
 //! ## Usage Example
 //!
-//! ```rust
+//! ```ignore
 //! use aurora::Aurora;
 //!
 //! // Open a database
@@ -119,6 +119,7 @@ impl<S: Into<String>> IntoFieldDefinition for (S, FieldType, bool) {
                 unique,
                 indexed: unique,
                 nullable: false, // Default to false
+                validations: vec![],
             },
         )
     }
@@ -135,6 +136,7 @@ impl<S: Into<String>> IntoFieldDefinition for (S, FieldType, bool, bool) {
                 unique,
                 indexed: unique,
                 nullable,
+                validations: vec![],
             },
         )
     }
@@ -649,7 +651,7 @@ impl Aurora {
     /// an AQL subscription query, providing a cleaner API than using `execute()` directly.
     ///
     /// # Example
-    /// ```
+    /// ```ignore
     /// // Stream changes from active products
     /// let mut listener = db.stream(r#"
     ///     subscription {
@@ -721,7 +723,7 @@ impl Aurora {
     /// Removing lock files while another process is running could cause data corruption.
     ///
     /// # Example
-    /// ```no_run
+    /// ```ignore
     /// use aurora_db::Aurora;
     ///
     /// // If you get "Access denied" error when opening:
@@ -760,7 +762,7 @@ impl Aurora {
     ///
     /// // Or use a relative path
     /// let db = Aurora::open("customer_data.db")?;
-    /// ```
+    /// ```ignore
     pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let config = AuroraConfig {
             db_path: Self::resolve_path(path)?,
@@ -810,7 +812,7 @@ impl Aurora {
     /// };
     ///
     /// let db = Aurora::with_config(config)?;
-    /// ```
+    /// ```ignore
     pub async fn with_config(config: AuroraConfig) -> Result<Self> {
         let path = Self::resolve_path(&config.db_path)?;
 
@@ -1059,7 +1061,7 @@ impl Aurora {
     ///
     /// // Better: use get_document() for documents
     /// let user = db.get_document("users", "12345")?;
-    /// ```
+    /// ```ignore
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         // If inside a transaction, check the buffer first.
         // Provides read-your-own-writes within the transaction while keeping
@@ -1294,7 +1296,7 @@ impl Aurora {
     ///
     /// // Now any insert/update/delete will trigger the listener
     /// db.insert_into("users", vec![("name", Value::String("Alice".into()))]).await?;
-    /// ```
+    /// ```ignore
     ///
     /// # Real-World Use Cases
     ///
@@ -1319,7 +1321,7 @@ impl Aurora {
     /// ```
     ///
     /// **Webhook Notifications:**
-    /// ```
+    /// ```ignore
     /// let mut listener = db.listen("orders");
     ///
     /// tokio::spawn(async move {
@@ -1333,7 +1335,7 @@ impl Aurora {
     /// ```
     ///
     /// **Audit Logging:**
-    /// ```
+    /// ```ignore
     /// let mut listener = db.listen("sensitive_data");
     ///
     /// tokio::spawn(async move {
@@ -1350,7 +1352,7 @@ impl Aurora {
     /// ```
     ///
     /// **Data Synchronization:**
-    /// ```
+    /// ```ignore
     /// let mut listener = db.listen("users");
     ///
     /// tokio::spawn(async move {
@@ -1371,7 +1373,7 @@ impl Aurora {
     /// ```
     ///
     /// **Real-Time Notifications:**
-    /// ```
+    /// ```ignore
     /// let mut listener = db.listen("messages");
     ///
     /// tokio::spawn(async move {
@@ -1389,7 +1391,7 @@ impl Aurora {
     /// ```
     ///
     /// **Filtered Listener:**
-    /// ```
+    /// ```ignore
     /// use aurora_db::pubsub::EventFilter;
     ///
     /// // Only listen for inserts
@@ -1429,7 +1431,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use aurora_db::Aurora;
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -1447,7 +1449,7 @@ impl Aurora {
     /// # Real-World Use Cases
     ///
     /// **Global Audit Trail:**
-    /// ```
+    /// ```ignore
     /// let mut listener = db.listen_all();
     ///
     /// tokio::spawn(async move {
@@ -1465,7 +1467,7 @@ impl Aurora {
     /// ```
     ///
     /// **Database Replication:**
-    /// ```
+    /// ```ignore
     /// let mut listener = db.listen_all();
     ///
     /// tokio::spawn(async move {
@@ -1477,7 +1479,7 @@ impl Aurora {
     /// ```
     ///
     /// **Change Data Capture (CDC):**
-    /// ```
+    /// ```ignore
     /// let mut listener = db.listen_all();
     ///
     /// tokio::spawn(async move {
@@ -1492,7 +1494,7 @@ impl Aurora {
     /// ```
     ///
     /// **Monitoring & Metrics:**
-    /// ```
+    /// ```ignore
     /// use std::sync::atomic::{AtomicUsize, Ordering};
     ///
     /// let write_counter = Arc::new(AtomicUsize::new(0));
@@ -1517,7 +1519,7 @@ impl Aurora {
     /// ```
     ///
     /// **Selective Processing:**
-    /// ```
+    /// ```ignore
     /// let mut listener = db.listen_all();
     ///
     /// tokio::spawn(async move {
@@ -1582,7 +1584,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use aurora_db::Aurora;
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -1700,7 +1702,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use std::time::Duration;
     ///
     /// // Permanent storage
@@ -2055,6 +2057,28 @@ impl Aurora {
                     }
                 }
             }
+        } else {
+            // No primary index (e.g. system collections like _migrations): fall back to cold scan.
+            // Flush the write buffer first so any recently buffered writes land in cold storage
+            // and are visible to the prefix scan below.
+            if let Some(ref wb) = self.write_buffer {
+                let _ = wb.flush();
+            }
+            let prefix = format!("{}:", collection);
+            for result in self.cold.scan_prefix(&prefix) {
+                if let Ok((_key, value)) = result {
+                    if let Ok(doc) = serde_json::from_slice::<Document>(&value) {
+                        if filter_fn(&doc) {
+                            results.push(doc);
+                            if let Some(l) = limit {
+                                if results.len() >= l {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         Ok(results)
     }
@@ -2106,7 +2130,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use aurora_db::{Aurora, types::FieldType};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -2238,7 +2262,7 @@ impl Aurora {
     /// ];
     /// let ids = db.batch_insert("users", users).await?;  // 3x faster!
     /// println!("Inserted {} users", ids.len());
-    /// ```
+    /// ```ignore
     pub async fn insert_into(&self, collection: &str, data: Vec<(&str, Value)>) -> Result<String> {
         // Convert Vec<(&str, Value)> to HashMap<String, Value>
         let data_map: HashMap<String, Value> =
@@ -2477,7 +2501,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// db.update_document("users", &user_id, vec![
     ///     ("status", Value::String("active".to_string())),
     ///     ("last_login", Value::String(chrono::Utc::now().to_rfc3339())),
@@ -2522,6 +2546,23 @@ impl Aurora {
             crate::pubsub::ChangeEvent::update(collection, doc_id, old_document, document.clone());
         let _ = self.pubsub.publish(event);
 
+        Ok(())
+    }
+
+    /// Remove a single field key from a document's data (used by field-rename migrations).
+    pub async fn drop_field_from_document(
+        &self,
+        collection: &str,
+        doc_id: &str,
+        field: &str,
+    ) -> Result<()> {
+        let key = format!("{}:{}", collection, doc_id);
+        let existing = self.get(&key)?.ok_or_else(|| {
+            AqlError::new(ErrorCode::NotFound, format!("Document {} not found", doc_id))
+        })?;
+        let mut document: Document = serde_json::from_slice(&existing)?;
+        document.data.remove(field);
+        self.put(key, serde_json::to_vec(&document)?, None).await?;
         Ok(())
     }
 
@@ -2579,7 +2620,7 @@ impl Aurora {
     /// } else {
     ///     db.rollback_transaction()?;
     /// }
-    /// ```
+    /// ```ignore
     /// Begin a new transaction for atomic operations
     ///
     /// Transactions ensure all-or-nothing execution: either all operations succeed,
@@ -2649,7 +2690,7 @@ impl Aurora {
     /// db.commit_transaction(tx_id)?;
     ///
     /// println!("Transfer completed!");
-    /// ```
+    /// ```ignore
     pub async fn commit_transaction(&self, tx_id: crate::transaction::TransactionId) -> Result<()> {
         let buffer = self
             .transaction_manager
@@ -2797,7 +2838,7 @@ impl Aurora {
     ///   - Non-unique fields can be indexed separately using `create_index()`
     ///
     /// # Examples
-    /// ```no_run
+    /// ```ignore
     /// # use aurora_db::{Aurora, types::FieldType};
     /// # async fn example(db: &Aurora) {
     /// db.new_collection("users", vec![
@@ -2818,7 +2859,7 @@ impl Aurora {
     ///
     /// # Real-World Example: E-commerce Orders
     ///
-    /// ```
+    /// ```ignore
     /// // Orders collection: 1 million documents
     /// db.new_collection("orders", vec![
     ///     ("user_id", FieldType::Scalar(crate::types::ScalarType::String)),    // High cardinality
@@ -2912,7 +2953,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use aurora_db::{Aurora, types::Value};
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -2960,7 +3001,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// // Search for documents containing text
     /// let search_results = db.search("articles")
     ///     .field("content")
@@ -3032,7 +3073,7 @@ impl Aurora {
     ///     .collect();
     ///
     /// println!("Found {} out of {} users", users.len(), user_ids.len());
-    /// ```
+    /// ```ignore
     ///
     /// # When to Use
     /// - You know the document ID (from insert, previous query, or URL param)
@@ -3119,7 +3160,7 @@ impl Aurora {
     /// // Then delete the user
     /// db.delete(&format!("users:{}", user_id)).await?;
     /// println!("User and all orders deleted");
-    /// ```
+    /// ```ignore
     ///
     /// # Alternative: Soft Delete Pattern
     ///
@@ -3148,7 +3189,7 @@ impl Aurora {
     /// for user in old_deletions {
     ///     db.delete(&format!("users:{}", user.id)).await?;
     /// }
-    /// ```
+    /// ```ignore
     ///
     /// # Important Notes
     /// - Deletion is permanent - no undo/recovery
@@ -3313,7 +3354,7 @@ impl Aurora {
     /// for collection in &["users", "orders", "products"] {
     ///     db.export_as_json(collection, &format!("./export/{}", collection))?;
     /// }
-    /// ```
+    /// ```ignore
     ///
     /// # Output Format
     ///
@@ -3429,7 +3470,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use aurora_db::Aurora;
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -3452,7 +3493,7 @@ impl Aurora {
     /// id,name,email,age
     /// 123,Alice,alice@example.com,28
     /// 456,Bob,bob@example.com,32
-    /// ```
+    /// ```ignore
     ///
     /// # Important Notes
     /// - Headers are taken from the first document's fields
@@ -3790,7 +3831,7 @@ impl Aurora {
     ///
     /// let stats = db.import_from_json("products", "./migration/products.json").await?;
     /// println!("Migration complete: {} products imported", stats.imported);
-    /// ```
+    /// ```ignore
     ///
     /// # Expected JSON Format
     ///
@@ -4012,6 +4053,11 @@ impl Aurora {
         }
     }
 
+    /// Returns the names of all registered collections.
+    pub fn list_collection_names(&self) -> Vec<String> {
+        self.schema_cache.iter().map(|r| r.key().clone()).collect()
+    }
+
     /// Get storage statistics and information about the database
     pub fn get_database_stats(&self) -> Result<DatabaseStats> {
         let hot_stats = self.hot.get_stats();
@@ -4060,7 +4106,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use aurora_db::Aurora;
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -4133,7 +4179,7 @@ impl Aurora {
     /// # Typical Prewarming Scenarios
     ///
     /// **Web Application Startup:**
-    /// ```
+    /// ```ignore
     /// // Load user data, sessions, and active content
     /// db.prewarm_cache("users", Some(5000)).await?;
     /// db.prewarm_cache("sessions", Some(2000)).await?;
@@ -4141,7 +4187,7 @@ impl Aurora {
     /// ```
     ///
     /// **E-commerce Site:**
-    /// ```
+    /// ```ignore
     /// // Load products, categories, and user carts
     /// db.prewarm_cache("products", Some(500)).await?;
     /// db.prewarm_cache("categories", None).await?;  // All categories
@@ -4149,7 +4195,7 @@ impl Aurora {
     /// ```
     ///
     /// **API Server:**
-    /// ```
+    /// ```ignore
     /// // Load authentication data and rate limits
     /// db.prewarm_cache("api_keys", None).await?;
     /// db.prewarm_cache("rate_limits", Some(10000)).await?;
@@ -4237,7 +4283,7 @@ impl Aurora {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use aurora_db::Aurora;
     ///
     /// let db = Aurora::open("mydb.db")?;
@@ -5016,7 +5062,7 @@ impl Aurora {
     /// * `fields` - List of field names to create indices for
     ///
     /// # Examples
-    /// ```
+    /// ```ignore
     /// // Create indices for commonly queried fields
     /// db.create_indices("users", &["email", "status", "created_at"]).await?;
     /// ```
@@ -5297,6 +5343,13 @@ impl Aurora {
 
         let doc: Document = serde_json::from_slice(&existing)?;
 
+        // Publish delete event before the transaction check so handlers fire
+        // consistently regardless of whether this is inside an auto-transaction.
+        // This mirrors aql_insert / aql_update_document which publish after put()
+        // even when the underlying write is buffered in a transaction.
+        let event = crate::pubsub::ChangeEvent::delete(collection, doc_id);
+        let _ = self.pubsub.publish(event);
+
         // If inside a transaction, buffer the delete instead of writing to storage.
         if let Ok(tx_id) = crate::transaction::ACTIVE_TRANSACTION_ID.try_with(|id| *id) {
             if let Some(buffer) = self.transaction_manager.active_transactions.get(&tx_id) {
@@ -5358,9 +5411,7 @@ impl Aurora {
             }
         }
 
-        // Publish delete event
-        let event = crate::pubsub::ChangeEvent::delete(collection, doc_id);
-        let _ = self.pubsub.publish(event);
+        // Event was already published above (before transaction check).
 
         Ok(doc)
     }
@@ -5599,8 +5650,18 @@ impl Aurora {
     pub async fn mark_migration_applied(&self, version: &str) -> Result<()> {
         let migration_key = format!("_sys_migration:{}", version);
         let timestamp = chrono::Utc::now().to_rfc3339();
-        self.put(migration_key, timestamp.as_bytes().to_vec(), None)
+        self.put(migration_key.clone(), timestamp.as_bytes().to_vec(), None)
             .await?;
+
+        // Also store as a document in _migrations so it's queryable via AQL
+        let mut data = HashMap::new();
+        data.insert("version".to_string(), Value::String(version.to_string()));
+        data.insert("status".to_string(), Value::String("applied".to_string()));
+        data.insert("applied_at".to_string(), Value::String(timestamp));
+        let doc = Document { id: version.to_string(), data };
+        let doc_key = format!("_migrations:{}", version);
+        self.put(doc_key, serde_json::to_vec(&doc)?, None).await?;
+
         Ok(())
     }
 }

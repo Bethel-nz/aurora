@@ -1,5 +1,5 @@
 use aurora_db::Aurora;
-use aurora_db::types::{AuroraConfig, Value, FieldType};
+use aurora_db::types::{Value, FieldType};
 use std::collections::HashMap;
 use tempfile::tempdir;
 
@@ -8,9 +8,9 @@ async fn setup_test_db() -> (Aurora, tempfile::TempDir) {
     let db = Aurora::open(dir.path().to_str().unwrap()).await.unwrap();
 
     db.new_collection("users", vec![
-        ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-        ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
-        ("city", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+        ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("city", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ]).await.unwrap();
 
     let mut user1 = HashMap::new();

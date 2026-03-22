@@ -32,8 +32,8 @@ async fn test_high_fanout_single_event() {
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
     db.new_collection("events", vec![
-        ("type", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-        ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+        ("type", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ]).await.unwrap();
 
     let num_subscribers = 100;
@@ -131,7 +131,7 @@ async fn test_slow_consumer_backpressure() {
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
     db.new_collection("backpressure", vec![
-        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ]).await.unwrap();
 
     // Create fast and slow consumers
@@ -225,7 +225,7 @@ async fn test_subscriber_churn() {
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
     db.new_collection("churn_test", vec![
-        ("counter", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+        ("counter", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ]).await.unwrap();
 
     let events_published = Arc::new(AtomicUsize::new(0));
@@ -317,7 +317,7 @@ async fn test_event_ordering() {
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
     db.new_collection("ordered", vec![
-        ("seq", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+        ("seq", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ]).await.unwrap();
 
     let mut listener = db.listen("ordered");
@@ -394,7 +394,7 @@ async fn test_massive_fanout_under_load() {
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
     db.new_collection("massive", vec![
-        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ]).await.unwrap();
 
     let num_subscribers = 200;
@@ -491,9 +491,9 @@ async fn test_multiple_collections_pubsub() {
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
     // Create multiple collections
-    db.new_collection("users", vec![("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true })]).await.unwrap();
-    db.new_collection("orders", vec![("order_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true })]).await.unwrap();
-    db.new_collection("products", vec![("product_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true })]).await.unwrap();
+    db.new_collection("users", vec![("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })]).await.unwrap();
+    db.new_collection("orders", vec![("order_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })]).await.unwrap();
+    db.new_collection("products", vec![("product_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })]).await.unwrap();
 
     // Create listeners for each collection
     let mut user_listener = db.listen("users");

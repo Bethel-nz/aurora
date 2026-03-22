@@ -23,8 +23,8 @@ async fn test_any_type_and_nested_query() {
     db.new_collection(
         "test_collection",
         vec![
-            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-            ("meta", aurora_db::types::FieldDefinition { field_type: FieldType::Any, unique: false, indexed: false, nullable: false }),
+            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            ("meta", aurora_db::types::FieldDefinition { field_type: FieldType::Any, unique: false, indexed: false, nullable: false, validations: vec![] }),
         ],
     )
     .await
@@ -100,8 +100,8 @@ async fn test_any_field_caching() {
     db.new_collection(
         "any_collection",
         vec![
-            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-            ("data", aurora_db::types::FieldDefinition { field_type: FieldType::Any, unique: false, indexed: false, nullable: false }),
+            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            ("data", aurora_db::types::FieldDefinition { field_type: FieldType::Any, unique: false, indexed: false, nullable: false, validations: vec![] }),
         ],
     )
     .await
@@ -137,7 +137,7 @@ async fn test_any_field_caching() {
     // 2. Collection without an 'Any' field
     db.new_collection(
         "normal_collection",
-        vec![("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true })],
+        vec![("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })],
     )
     .await
     .unwrap();

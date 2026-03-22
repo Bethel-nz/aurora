@@ -34,10 +34,10 @@ async fn test_aurora_baseline_v2() {
 
     // 1. Setup Collection with Indexing
     db.new_collection("benchmark", vec![
-        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),      // Primary Key
-        ("tag", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),    // Secondary Index (Low Cardinality)
-        ("val", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: true, nullable: true }),       // Secondary Index (High Cardinality - UNIQUE)
-        ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),   // Payload
+        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),      // Primary Key
+        ("tag", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),    // Secondary Index (Low Cardinality)
+        ("val", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: true, nullable: true, validations: vec![] }),       // Secondary Index (High Cardinality - UNIQUE)
+        ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),   // Payload
     ] ).await.unwrap();
 
     // Ensure indices are initialized
