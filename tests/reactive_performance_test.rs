@@ -13,8 +13,8 @@ async fn test_reactive_latency_and_throughput() {
     ));
 
     db.new_collection("market_data", vec![
-        ("symbol", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-        ("price", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true }),
+        ("symbol", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("price", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ] ).await.unwrap();
 
     let symbol = "AUR";

@@ -19,6 +19,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: true,
                     indexed: true,
+                ..Default::default()
                 },
             ),
             (
@@ -28,6 +29,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: false,
                     indexed: false,
+                ..Default::default()
                 },
             ),
             (
@@ -37,6 +39,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: true,
                     indexed: true,
+                ..Default::default()
                 },
             ),
             (
@@ -46,6 +49,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: true,
                     unique: false,
                     indexed: false,
+                ..Default::default()
                 },
             ),
         ]
@@ -64,6 +68,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: true,
                     indexed: true,
+                ..Default::default()
                 },
             ),
             (
@@ -73,6 +78,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: false,
                     indexed: false,
+                ..Default::default()
                 },
             ),
             (
@@ -82,6 +88,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: false,
                     indexed: false,
+                ..Default::default()
                 },
             ),
         ]

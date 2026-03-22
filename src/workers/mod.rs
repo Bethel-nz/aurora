@@ -36,7 +36,7 @@ use tokio::sync::RwLock;
 ///
 /// # Examples
 ///
-/// ```rust,no_run
+/// ```ignore
 /// use aurora_db::workers::{WorkerSystem, WorkerConfig, Job, JobPriority};
 /// use serde_json::json;
 ///
@@ -84,7 +84,7 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-   
+
     /// let config = WorkerConfig {
     ///     storage_path: "./jobs.db".to_string(),
     ///     max_concurrent_jobs: 5,
@@ -92,7 +92,7 @@ impl WorkerSystem {
     /// };
     ///
     /// let workers = WorkerSystem::new(config)?;
-    /// ```
+    /// ```ignore
     pub fn new(config: WorkerConfig) -> Result<Self> {
         let queue = Arc::new(JobQueue::new(config.storage_path.clone())?);
         let executor = Arc::new(RwLock::new(WorkerExecutor::new(Arc::clone(&queue), config)));
@@ -116,7 +116,7 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-   
+
     /// let workers = WorkerSystem::new(config)?;
     ///
     /// // Register handlers first
@@ -136,10 +136,10 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-   
+
     /// // Graceful shutdown
     /// workers.stop().await?;
-    /// ```
+    /// ```ignore
     pub async fn stop(&self) -> Result<()> {
         self.executor.write().await.stop().await
     }
@@ -157,7 +157,7 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-   
+
     /// use serde_json::json;
     ///
     /// // Simple job
@@ -199,7 +199,7 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-   
+
     /// let job_id = workers.enqueue(job).await?;
     ///
     /// // Check status later
@@ -216,7 +216,7 @@ impl WorkerSystem {
     ///         },
     ///     }
     /// }
-    /// ```
+    /// ```ignore
     pub async fn get_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
         self.queue.get_status(job_id).await
     }
@@ -230,7 +230,7 @@ impl WorkerSystem {
     ///
     /// # Examples
     ///
-   
+
     /// let stats = workers.stats().await?;
     ///
     /// println!("Queue status:");

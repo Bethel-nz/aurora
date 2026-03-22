@@ -44,11 +44,11 @@ async fn main() -> anyhow::Result<()> {
     // 3. Define Schema with Computed Fields
     // We auto-calculate 'total_value' (price * amount) and 'fee' (0.1%)
     db.new_collection("trades", vec![
-        ("symbol",      aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-        ("price",       aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT,  unique: false, indexed: false, nullable: true }),
-        ("amount",      aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT,  unique: false, indexed: false, nullable: true }),
-        ("side",        aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-        ("total_value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT,  unique: false, indexed: false, nullable: true }),
+        ("symbol",      aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("price",       aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT,  unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("amount",      aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT,  unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("side",        aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("total_value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT,  unique: false, indexed: false, nullable: true, validations: vec![] }),
     ]).await?;
 
     // 4. Setup Global PubSub Listener (The Live Ticker)
@@ -100,8 +100,8 @@ async fn main() -> anyhow::Result<()> {
             let symbol = symbols[id % symbols.len()];
             // Vary price and amount so total_value spans the 10k and 50k thresholds
             // (some < 10k, some 10k-50k, some > 50k — only true "whales" trigger alerts)
-            let price = 5000.0 + (id as f64 % 50) * 1000.0; // 5_000..54_000
-            let amount = 0.5 + (id as f64 % 5) * 0.4;       // 0.5..2.1
+            let price = 5000.0 + (id as f64 % 50.0) * 1000.0; // 5_000..54_000
+            let amount = 0.5 + (id as f64 % 5.0) * 0.4;       // 0.5..2.1
             
             let mut trade = HashMap::new();
             trade.insert("symbol".to_string(), Value::String(symbol.to_string()));

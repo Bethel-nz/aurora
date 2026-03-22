@@ -20,8 +20,8 @@ async fn test_needle_in_haystack_scaling() {
         // RE-CREATE COLLECTION FOR EACH SCALE (Fixes Unique Constraint Error)
         let _ = db.delete_collection(collection).await;
         db.new_collection(collection, vec![
-            ("email", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }), // Indexed
-            ("status", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }), // Unindexed
+            ("email", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }), // Indexed
+            ("status", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), // Unindexed
         ]).await.unwrap();
 
         // 1. Ingestion
@@ -137,9 +137,9 @@ async fn test_computed_fields_cpu_load() {
 
     let collection = "cpu_test";
     db.new_collection(collection, vec![
-        ("first_name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-        ("last_name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-        ("salary", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+        ("first_name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("last_name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("salary", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ]).await.unwrap();
 
     let num_docs = 100_000;

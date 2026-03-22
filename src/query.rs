@@ -325,6 +325,13 @@ impl<'a> QueryBuilder<'a> {
 
         let mut result = docs[start..end].to_vec();
 
+        // Apply computed fields
+        if let Ok(computed) = self.db.computed.read() {
+            for doc in &mut result {
+                let _ = computed.apply(&self.collection, doc);
+            }
+        }
+
         // Apply field projection when select() was called
         if let Some(ref fields) = self.fields {
             let field_set: std::collections::HashSet<&str> =
@@ -382,6 +389,7 @@ pub struct SearchBuilder<'a> {
     limit: Option<usize>,
     fuzzy: bool,
     distance: u8,
+    search_fields: Option<Vec<String>>,
 }
 
 impl<'a> SearchBuilder<'a> {
@@ -393,6 +401,7 @@ impl<'a> SearchBuilder<'a> {
             limit: None,
             fuzzy: false,
             distance: 0,
+            search_fields: None,
         }
     }
 
@@ -412,6 +421,22 @@ impl<'a> SearchBuilder<'a> {
         self
     }
 
+    /// Restrict search to specific field names (None = all string fields)
+    pub fn fields(mut self, fields: Vec<String>) -> Self {
+        self.search_fields = Some(fields);
+        self
+    }
+
+    /// Like collect() but accepts an optional field filter inline
+    pub async fn collect_with_fields(self, fields: Option<&[String]>) -> Result<Vec<Document>> {
+        let builder = if let Some(f) = fields {
+            Self { search_fields: Some(f.to_vec()), ..self }
+        } else {
+            self
+        };
+        builder.collect().await
+    }
+
     pub async fn collect(self) -> Result<Vec<Document>> {
         let query = self.query.to_lowercase();
         let mut results = Vec::new();
@@ -423,7 +448,13 @@ impl<'a> SearchBuilder<'a> {
                         let matches = if query.is_empty() {
                             true
                         } else {
-                            doc.data.values().any(|v| {
+                            let fields_to_check = self.search_fields.as_deref();
+                            doc.data.iter().any(|(k, v)| {
+                                if let Some(ref allowed) = fields_to_check {
+                                    if !allowed.contains(k) {
+                                        return false;
+                                    }
+                                }
                                 if let crate::types::Value::String(s) = v {
                                     s.to_lowercase().contains(&query)
                                 } else {
@@ -490,6 +521,16 @@ fn get_nested<'a>(doc: &'a Document, field: &str) -> Option<&'a Value> {
     }
 }
 
+/// Like `get_nested` but also handles the virtual `"id"` field which lives in `doc.id`.
+/// Returns an owned `Value` to avoid lifetime issues with the temporary id string.
+fn get_field_owned(doc: &Document, field: &str) -> Option<Value> {
+    if field == "id" && !doc.data.contains_key("id") {
+        Some(Value::String(doc.id.clone()))
+    } else {
+        get_nested(doc, field).cloned()
+    }
+}
+
 fn get_nested_value<'a>(val: &'a Value, path: &str) -> Option<&'a Value> {
     let mut parts = path.splitn(2, '.');
     let first = parts.next()?;
@@ -515,21 +556,21 @@ impl std::ops::Not for Filter {
 impl Filter {
     pub fn matches(&self, doc: &Document) -> bool {
         match self {
-            Filter::Eq(f, v) => get_nested(doc, f) == Some(v),
-            Filter::Ne(f, v) => get_nested(doc, f) != Some(v),
-            Filter::Gt(f, v) => get_nested(doc, f).map_or(false, |dv| dv > v),
-            Filter::Gte(f, v) => get_nested(doc, f).map_or(false, |dv| dv >= v),
-            Filter::Lt(f, v) => get_nested(doc, f).map_or(false, |dv| dv < v),
-            Filter::Lte(f, v) => get_nested(doc, f).map_or(false, |dv| dv <= v),
-            Filter::In(f, v) => get_nested(doc, f).map_or(false, |dv| v.contains(dv)),
-            Filter::Contains(f, v) => get_nested(doc, f).map_or(false, |dv| {
+            Filter::Eq(f, v) => get_field_owned(doc, f).as_ref() == Some(v),
+            Filter::Ne(f, v) => get_field_owned(doc, f).as_ref() != Some(v),
+            Filter::Gt(f, v) => get_field_owned(doc, f).map_or(false, |dv| dv > *v),
+            Filter::Gte(f, v) => get_field_owned(doc, f).map_or(false, |dv| dv >= *v),
+            Filter::Lt(f, v) => get_field_owned(doc, f).map_or(false, |dv| dv < *v),
+            Filter::Lte(f, v) => get_field_owned(doc, f).map_or(false, |dv| dv <= *v),
+            Filter::In(f, v) => get_field_owned(doc, f).map_or(false, |dv| v.contains(&dv)),
+            Filter::Contains(f, v) => get_field_owned(doc, f).map_or(false, |dv| {
                 if let Value::String(s) = dv { s.contains(v.as_str()) } else { false }
             }),
-            Filter::StartsWith(f, v) => get_nested(doc, f).map_or(false, |dv| {
+            Filter::StartsWith(f, v) => get_field_owned(doc, f).map_or(false, |dv| {
                 if let Value::String(s) = dv { s.starts_with(v.as_str()) } else { false }
             }),
-            Filter::IsNull(f) => get_nested(doc, f).map_or(true, |v| matches!(v, Value::Null)),
-            Filter::IsNotNull(f) => get_nested(doc, f).map_or(false, |v| !matches!(v, Value::Null)),
+            Filter::IsNull(f) => get_field_owned(doc, f).map_or(true, |v| matches!(v, Value::Null)),
+            Filter::IsNotNull(f) => get_field_owned(doc, f).map_or(false, |v| !matches!(v, Value::Null)),
             Filter::Not(f) => !f.matches(doc),
             Filter::And(fs) => fs.iter().all(|f| f.matches(doc)),
             Filter::Or(fs) => fs.iter().any(|f| f.matches(doc)),

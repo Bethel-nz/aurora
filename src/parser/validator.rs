@@ -699,9 +699,16 @@ fn validate_mutation_operation<S: SchemaProvider>(
                 );
             }
         }
-        ast::MutationOp::EnqueueJob { .. } => {
-            // Job validation - minimal for now
+        ast::MutationOp::EnqueueJob { .. } => {}
+        ast::MutationOp::EnqueueJobs { .. } => {}
+        ast::MutationOp::Import { collection, data } => {
+            if let Some(col_def) = ctx.schema.get_collection(collection) {
+                for item in data {
+                    validate_object_against_schema(item, col_def, ctx);
+                }
+            }
         }
+        ast::MutationOp::Export { .. } => {}
         ast::MutationOp::Transaction { operations } => {
             for (i, inner_op) in operations.iter().enumerate() {
                 ctx.push_path(&format!("tx[{}]", i));
@@ -914,6 +921,15 @@ fn validate_filter<S: SchemaProvider>(
                 ctx.add_error(
                     ErrorCode::TypeMismatch,
                     format!("Filter 'in'/'notIn' on '{}' requires an array value", field),
+                );
+            }
+            validate_filter_field_exists(field, collection, ctx);
+        }
+        Filter::ContainsAny(field, value) | Filter::ContainsAll(field, value) => {
+            if !matches!(value, Value::Array(_) | Value::Variable(_)) {
+                ctx.add_error(
+                    ErrorCode::TypeMismatch,
+                    format!("containsAny/containsAll on field '{}' expects an array", field),
                 );
             }
             validate_filter_field_exists(field, collection, ctx);
@@ -1240,6 +1256,17 @@ fn resolve_in_mutation_op(
         ast::MutationOp::EnqueueJob { payload, .. } => {
             resolve_in_value(payload, variables)?;
         }
+        ast::MutationOp::EnqueueJobs { payloads, .. } => {
+            for p in payloads {
+                resolve_in_value(p, variables)?;
+            }
+        }
+        ast::MutationOp::Import { data, .. } => {
+            for item in data {
+                resolve_in_value(item, variables)?;
+            }
+        }
+        ast::MutationOp::Export { .. } => {}
         ast::MutationOp::Transaction { operations } => {
             for inner in operations {
                 resolve_in_mutation_op(inner, variables)?;
@@ -1295,6 +1322,7 @@ mod tests {
                 unique: false,
                 indexed: false,
                 nullable: false,
+                ..Default::default()
             },
         );
         users_fields.insert(
@@ -1304,6 +1332,7 @@ mod tests {
                 unique: true,
                 indexed: true,
                 nullable: false,
+                ..Default::default()
             },
         );
         users_fields.insert(
@@ -1313,6 +1342,7 @@ mod tests {
                 unique: false,
                 indexed: false,
                 nullable: false,
+                ..Default::default()
             },
         );
         users_fields.insert(
@@ -1322,6 +1352,7 @@ mod tests {
                 unique: false,
                 indexed: false,
                 nullable: false,
+                ..Default::default()
             },
         );
 

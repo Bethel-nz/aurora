@@ -13,6 +13,8 @@ pub enum CompiledFilter {
     In(String, ast::Value),
     NotIn(String, ast::Value),
     Contains(String, ast::Value),
+    ContainsAny(String, ast::Value),
+    ContainsAll(String, ast::Value),
     StartsWith(String, ast::Value),
     EndsWith(String, ast::Value),
     Matches(String, regex::Regex),
@@ -35,6 +37,8 @@ pub fn compile_filter(filter: &ast::Filter) -> Result<CompiledFilter> {
         ast::Filter::In(f, v) => Ok(CompiledFilter::In(f.clone(), v.clone())),
         ast::Filter::NotIn(f, v) => Ok(CompiledFilter::NotIn(f.clone(), v.clone())),
         ast::Filter::Contains(f, v) => Ok(CompiledFilter::Contains(f.clone(), v.clone())),
+        ast::Filter::ContainsAny(f, v) => Ok(CompiledFilter::ContainsAny(f.clone(), v.clone())),
+        ast::Filter::ContainsAll(f, v) => Ok(CompiledFilter::ContainsAll(f.clone(), v.clone())),
         ast::Filter::StartsWith(f, v) => Ok(CompiledFilter::StartsWith(f.clone(), v.clone())),
         ast::Filter::EndsWith(f, v) => Ok(CompiledFilter::EndsWith(f.clone(), v.clone())),
         ast::Filter::Matches(f, v) => {

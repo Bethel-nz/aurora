@@ -7,6 +7,46 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+/// Validation constraint stored on a field definition.
+/// Applied during insert/update to enforce data integrity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FieldValidationConstraint {
+    Format(String),
+    Min(f64),
+    Max(f64),
+    MinLength(i64),
+    MaxLength(i64),
+    Pattern(String),
+}
+
+impl PartialEq for FieldValidationConstraint {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Format(a), Self::Format(b)) | (Self::Pattern(a), Self::Pattern(b)) => a == b,
+            (Self::Min(a), Self::Min(b)) | (Self::Max(a), Self::Max(b)) => {
+                a.to_bits() == b.to_bits()
+            }
+            (Self::MinLength(a), Self::MinLength(b)) | (Self::MaxLength(a), Self::MaxLength(b)) => {
+                a == b
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for FieldValidationConstraint {}
+
+impl Hash for FieldValidationConstraint {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Format(s) | Self::Pattern(s) => s.hash(state),
+            Self::Min(f) | Self::Max(f) => f.to_bits().hash(state),
+            Self::MinLength(i) | Self::MaxLength(i) => i.hash(state),
+        }
+    }
+}
+
 #[derive(
     Debug,
     Clone,
@@ -129,6 +169,12 @@ impl fmt::Display for AuroraConfig {
     }
 }
 
+impl Default for FieldType {
+    fn default() -> Self {
+        FieldType::Any
+    }
+}
+
 impl FieldType {
     pub const SCALAR_STRING: FieldType = FieldType::Scalar(ScalarType::String);
     pub const SCALAR_INT: FieldType = FieldType::Scalar(ScalarType::Int);
@@ -139,12 +185,15 @@ impl FieldType {
     pub const SCALAR_ARRAY: FieldType = FieldType::Scalar(ScalarType::Array);
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub struct FieldDefinition {
     pub field_type: FieldType,
     pub unique: bool,
     pub indexed: bool,
     pub nullable: bool,
+    /// Validation constraints applied on insert/update.
+    #[serde(default)]
+    pub validations: Vec<FieldValidationConstraint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

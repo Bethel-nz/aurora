@@ -23,8 +23,8 @@ async fn test_brutal_crash_recovery() {
         let db = Aurora::with_config(config.clone()).await.unwrap();
         
         db.new_collection("users", vec![
-            ("email", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }),
-            ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+            ("email", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),
+            ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
         ]).await.unwrap();
 
         for i in 0..num_docs {
@@ -83,7 +83,7 @@ async fn test_partial_wal_recovery() {
     // 1. Initial Load
     {
         let db = Aurora::with_config(config.clone()).await.unwrap();
-        db.new_collection("items", vec![("n", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true })]).await.unwrap();
+        db.new_collection("items", vec![("n", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] })]).await.unwrap();
         
         for i in 0..100 {
             db.insert_into("items", vec![("n", Value::Int(i as i64))]).await.unwrap();

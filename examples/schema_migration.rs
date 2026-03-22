@@ -69,14 +69,16 @@ async fn main() -> aurora_db::Result<()> {
     println!(" VERSION 2: Adding New Fields");
     println!("-----------------------------------------------------------------\n");
 
-    // Extend schema with new fields (age, role)
-    // Existing documents will have null for new fields
+    // Extend schema with new fields (age, role) via versioned migration.
+    // Existing documents will have null for new fields.
     db.execute(
         r#"
-        schema {
-            alter collection users {
-                add age: Int
-                add role: String
+        migrate {
+            "v1.1.0": {
+                alter collection users {
+                    add age: Int
+                    add role: String
+                }
             }
         }
     "#,
@@ -138,15 +140,16 @@ async fn main() -> aurora_db::Result<()> {
     println!(" VERSION 4: Data Migration (Backfill)");
     println!("-----------------------------------------------------------------\n");
 
-    // Backfill: set default role for users without one
+    // Backfill: set default role for users without one via migration.
+    // Running this again later is safe — the version is already recorded.
     db.execute(
         r#"
-        mutation {
-            update(
-                collection: "users",
-                where: { role: { eq: null } },
-                data: { role: "member" }
-            ) { id }
+        migrate {
+            "v1.2.0": {
+                migrate data in users {
+                    set role = "member" where { role: { isNull: true } }
+                }
+            }
         }
     "#,
     )

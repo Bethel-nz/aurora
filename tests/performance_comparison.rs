@@ -12,8 +12,8 @@ async fn test_fluent_vs_aql_optimized() {
 
     // 1. Ingestion Performance (1,000 Inserts)
     db.new_collection("perf", vec![
-        ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-        ("val", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: true, nullable: true }), // Indexed
+        ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("val", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: true, nullable: true, validations: vec![] }), // Indexed
     ]).await.unwrap();
 
     println!("\nIngestion (1,000 Inserts):");

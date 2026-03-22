@@ -12,6 +12,7 @@ pub enum ErrorCode {
     CollectionAlreadyExists,
     UniqueConstraintViolation,
     ProtocolError,
+    InvalidQuery,
     InvalidOperation,
     InvalidInput,
     NotFound,

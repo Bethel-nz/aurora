@@ -31,8 +31,8 @@ async fn test_concurrent_same_key_writes() {
     let db = Arc::new(create_test_db(db_path, true).await.unwrap());
 
     db.new_collection("counter", vec![
-        ("key", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-        ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+        ("key", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ] ).await.unwrap();
 
     let num_writers = 100;
@@ -93,8 +93,8 @@ async fn test_concurrent_reads_and_writes() {
     let db = Arc::new(create_test_db(db_path, true).await.unwrap());
 
     db.new_collection("rw_test", vec![
-        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }), // Not unique!
-        ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), // Not unique!
+        ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ] ).await.unwrap();
     
     // Manually create index since new_collection above doesn't support "indexed but not unique" via the simplified tuple
@@ -187,8 +187,8 @@ async fn test_read_after_write_consistency() {
     let db = Arc::new(create_test_db(db_path, true).await.unwrap());
 
     db.new_collection("consistency_test", vec![
-        ("key", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-        ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+        ("key", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+        ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ] ).await.unwrap();
     
     db.create_index("consistency_test", "key").await.unwrap();
@@ -268,8 +268,8 @@ async fn test_high_contention_scenario() {
     let db = Arc::new(create_test_db(db_path, true).await.unwrap());
 
     db.new_collection("hot_keys", vec![
-        ("key_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }), // NOT unique
-        ("counter", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+        ("key_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), // NOT unique
+        ("counter", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ] ).await.unwrap();
     
     db.create_index("hot_keys", "key_id").await.unwrap();
@@ -348,9 +348,9 @@ async fn test_concurrent_query_operations() {
     let db = Arc::new(create_test_db(db_path, true).await.unwrap());
 
     db.new_collection("products", vec![
-        ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }), 
-        ("price", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),  
-        ("category", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }), 
+        ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), 
+        ("price", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),  
+        ("category", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), 
     ] ).await.unwrap();
     
     db.create_index("products", "name").await.unwrap();
@@ -454,8 +454,8 @@ async fn test_mixed_workload_stress() {
     let db = Arc::new(create_test_db(db_path, false).await.unwrap());
 
     db.new_collection("mixed", vec![
-        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }), 
-        ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), 
+        ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
     ] ).await.unwrap();
     
     // INDEX ENABLED

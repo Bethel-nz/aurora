@@ -76,7 +76,7 @@ pub enum SchemaOp {
 
 #[derive(Debug, Clone)]
 pub enum AlterAction {
-    AddField(FieldDef),
+    AddField { field: FieldDef, default: Option<Value> },
     DropField(String),
     RenameField { from: String, to: String },
     ModifyField(FieldDef),
@@ -226,6 +226,20 @@ pub enum MutationOp {
         scheduled_at: Option<String>,
         max_retries: Option<u32>,
     },
+    EnqueueJobs {
+        job_type: String,
+        payloads: Vec<Value>,
+        priority: JobPriority,
+        max_retries: Option<u32>,
+    },
+    Import {
+        collection: String,
+        data: Vec<Value>,
+    },
+    Export {
+        collection: String,
+        format: String,
+    },
     Transaction {
         operations: Vec<MutationOperation>,
     },
@@ -252,6 +266,8 @@ pub enum Filter {
     In(String, Value),
     NotIn(String, Value),
     Contains(String, Value),
+    ContainsAny(String, Value),
+    ContainsAll(String, Value),
     StartsWith(String, Value),
     EndsWith(String, Value),
     Matches(String, Value),

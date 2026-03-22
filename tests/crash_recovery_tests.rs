@@ -35,8 +35,8 @@ async fn test_crash_recovery_basic() {
         let db = create_test_db(db_path.clone()).await.unwrap();
 
         db.new_collection("users", vec![
-            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-            ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
         ]).await.unwrap();
 
         // Insert some data
@@ -91,8 +91,8 @@ async fn test_crash_during_writes() {
         let db = Arc::new(create_test_db(db_path.clone()).await.unwrap());
 
         db.new_collection("transactions", vec![
-            ("tx_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-            ("amount", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+            ("tx_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            ("amount", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
         ]).await.unwrap();
 
         // Insert data concurrently and crash suddenly
@@ -161,8 +161,8 @@ async fn test_wal_replay_idempotency() {
         let db = create_test_db(db_path.clone()).await.unwrap();
 
         db.new_collection("items", vec![
-            ("item_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true }), // unique
-            ("count", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+            ("item_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }), // unique
+            ("count", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
         ]).await.unwrap();
 
         // Insert specific items
@@ -223,8 +223,8 @@ async fn test_partial_write_crash_recovery() {
         let db = Arc::new(create_test_db(db_path.clone()).await.unwrap());
 
         db.new_collection("batches", vec![
-            ("batch_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
-            ("item_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+            ("batch_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            ("item_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
         ]).await.unwrap();
 
         // Write first batch completely
@@ -297,8 +297,8 @@ async fn test_multiple_crash_cycles() {
         // Create collection on first cycle
         if cycle == 0 {
             db.new_collection("resilient", vec![
-                ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-                ("cycle", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+                ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+                ("cycle", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
             ]).await.unwrap();
         }
 
@@ -369,8 +369,8 @@ async fn test_crash_with_large_documents() {
         let db = create_test_db(db_path.clone()).await.unwrap();
 
         db.new_collection("large_docs", vec![
-            ("doc_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
-            ("large_data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true }),
+            ("doc_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            ("large_data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
         ]).await.unwrap();
 
         // Create large documents (100KB each)
@@ -421,7 +421,7 @@ async fn test_checkpoint_after_crash() {
         let db = Arc::new(create_test_db(db_path.clone()).await.unwrap());
 
         db.new_collection("checkpointed", vec![
-            ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true }),
+            ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
         ]).await.unwrap();
 
         // Insert data
