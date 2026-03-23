@@ -102,16 +102,10 @@ mod tests {
         data.insert("id".to_string(), Value::String("123".into()));
         data.insert("name".to_string(), Value::String("Alice".into()));
 
-        let event = ChangeEvent {
-            collection: "users".to_string(),
-            change_type: ChangeType::Insert,
+        let event = ChangeEvent::insert("users", "123", Document {
             id: "123".to_string(),
-            document: Some(Document {
-                id: "123".to_string(),
-                data,
-            }),
-            old_document: None,
-        };
+            data,
+        });
 
         pubsub.publish(event.clone()).unwrap();
 
@@ -130,13 +124,7 @@ mod tests {
 
         assert_eq!(pubsub.listener_count("users"), 2);
 
-        let event = ChangeEvent {
-            collection: "users".to_string(),
-            change_type: ChangeType::Insert,
-            id: "123".to_string(),
-            document: None,
-            old_document: None,
-        };
+        let event = ChangeEvent::delete("users", "123");
 
         pubsub.publish(event).unwrap();
 
@@ -150,25 +138,8 @@ mod tests {
 
         let mut global_listener = pubsub.listen_all();
 
-        pubsub
-            .publish(ChangeEvent {
-                collection: "users".to_string(),
-                change_type: ChangeType::Insert,
-                id: "1".to_string(),
-                document: None,
-                old_document: None,
-            })
-            .unwrap();
-
-        pubsub
-            .publish(ChangeEvent {
-                collection: "posts".to_string(),
-                change_type: ChangeType::Insert,
-                id: "2".to_string(),
-                document: None,
-                old_document: None,
-            })
-            .unwrap();
+        pubsub.publish(ChangeEvent::delete("users", "1")).unwrap();
+        pubsub.publish(ChangeEvent::delete("posts", "2")).unwrap();
 
         let event1 = global_listener.recv().await.unwrap();
         let event2 = global_listener.recv().await.unwrap();

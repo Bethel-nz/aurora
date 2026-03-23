@@ -33,6 +33,7 @@ pub struct ChangeEvent {
     /// Fields that changed in this event (populated for Update events).
     /// Allows watchers to skip filter evaluation when none of their watched
     /// fields were touched — O(1) early exit instead of full filter traversal.
+    #[serde(default)]
     pub changed_fields: HashSet<String>,
 }
 
@@ -316,7 +317,8 @@ mod tests {
         assert!(event.field_changed("age"));
 
         let changed = event.changed_fields();
-        assert_eq!(changed, vec!["age"]);
+        assert!(changed.contains("age"));
+        assert_eq!(changed.len(), 1);
     }
 
     #[test]

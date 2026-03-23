@@ -43,7 +43,12 @@ impl ChangeListener {
     /// listener.watch_fields(vec!["status", "role"])
     /// ```
     pub fn watch_fields(mut self, fields: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.watched_fields = Some(fields.into_iter().map(|f| f.into()).collect());
+        let set: HashSet<String> = fields.into_iter().map(|f| f.into()).collect();
+        // Empty set is disjoint with everything — would silently skip all updates.
+        // Treat empty input as no fast-path (same as not calling watch_fields).
+        if !set.is_empty() {
+            self.watched_fields = Some(set);
+        }
         self
     }
 
