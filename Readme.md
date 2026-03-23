@@ -10,7 +10,7 @@
 
 ## Why Aurora?
 
-Storage, indexing, pub/sub, reactive queries, and a job queue — in a single embedded crate. No external services, no separate processes.
+An embedded database for Rust — persistent storage, a query language, real-time change events, and a job queue in a single crate. No server, no external dependencies.
 
 ---
 
