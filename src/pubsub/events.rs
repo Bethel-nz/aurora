@@ -1,5 +1,6 @@
 use crate::types::{Document, Value};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt;
 
 #[cfg(test)]
@@ -29,6 +30,10 @@ pub struct ChangeEvent {
     pub document: Option<Document>,
     /// Previous document (for Update only)
     pub old_document: Option<Document>,
+    /// Fields that changed in this event (populated for Update events).
+    /// Allows watchers to skip filter evaluation when none of their watched
+    /// fields were touched — O(1) early exit instead of full filter traversal.
+    pub changed_fields: HashSet<String>,
 }
 
 impl fmt::Display for ChangeEvent {
@@ -60,6 +65,7 @@ impl ChangeEvent {
             id: id.into(),
             document: Some(document),
             old_document: None,
+            changed_fields: HashSet::new(),
         }
     }
 
@@ -70,12 +76,26 @@ impl ChangeEvent {
         old_document: Document,
         new_document: Document,
     ) -> Self {
+        // Compute changed fields eagerly once at publish time so all receivers
+        // can do O(1) field-intersection checks without re-diffing the docs.
+        let mut changed = HashSet::new();
+        for (field, new_val) in &new_document.data {
+            if old_document.data.get(field) != Some(new_val) {
+                changed.insert(field.clone());
+            }
+        }
+        for field in old_document.data.keys() {
+            if !new_document.data.contains_key(field) {
+                changed.insert(field.clone());
+            }
+        }
         Self {
             collection: collection.into(),
             change_type: ChangeType::Update,
             id: id.into(),
             document: Some(new_document),
             old_document: Some(old_document),
+            changed_fields: changed,
         }
     }
 
@@ -87,6 +107,7 @@ impl ChangeEvent {
             id: id.into(),
             document: None,
             old_document: None,
+            changed_fields: HashSet::new(),
         }
     }
 
@@ -112,39 +133,16 @@ impl ChangeEvent {
         old_value != new_value
     }
 
-    /// Get the list of changed fields (for updates)
-    pub fn changed_fields(&self) -> Vec<String> {
-        if self.change_type != ChangeType::Update {
-            return vec![];
-        }
+    /// Get the set of changed fields (for updates).
+    /// Pre-computed at event creation — free to call repeatedly.
+    pub fn changed_fields(&self) -> &HashSet<String> {
+        &self.changed_fields
+    }
 
-        let old_doc = match &self.old_document {
-            Some(doc) => doc,
-            None => return vec![],
-        };
-
-        let new_doc = match &self.document {
-            Some(doc) => doc,
-            None => return vec![],
-        };
-
-        let mut changed = Vec::new();
-
-        // Check all fields in new document
-        for (field, new_value) in &new_doc.data {
-            if old_doc.data.get(field) != Some(new_value) {
-                changed.push(field.clone());
-            }
-        }
-
-        // Check for deleted fields
-        for field in old_doc.data.keys() {
-            if !new_doc.data.contains_key(field) {
-                changed.push(field.clone());
-            }
-        }
-
-        changed
+    /// Returns true if this update event touched the given field.
+    /// O(1) hash lookup. Always false for non-Update events.
+    pub fn touches_field(&self, field: &str) -> bool {
+        self.change_type == ChangeType::Update && self.changed_fields.contains(field)
     }
 }
 
