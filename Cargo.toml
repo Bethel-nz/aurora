@@ -74,6 +74,10 @@ path = "examples/contains_query_demo.rs"
 name = "reactive_demo"
 path = "examples/reactive_demo.rs"
 
+[[bin]]
+name = "chaos"
+path = "src/bin/chaos.rs"
+
 [[bench]]
 name = "aurora_benchmarks"
 harness = false
