@@ -1,117 +1,77 @@
 # Aurora DB
 
-> A lightweight, real-time embedded database for modern Rust applications.
-
 [![Crates.io](https://img.shields.io/crates/v/aurora-db.svg)](https://crates.io/crates/aurora-db)
 [![Documentation](https://docs.rs/aurora-db/badge.svg)](https://docs.rs/aurora-db)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
----
-
-## Why Aurora?
-
-Most embedded databases make you choose: raw key-value stores with manual everything, or heavy SQL engines with complex setup. Aurora fills the gap for building **real-time applications** without external services — combining storage, indexing, pub/sub, reactive queries, and background workers into a single embedded crate.
-
-- **Real-time by default.** Changes propagate instantly via built-in PubSub and reactive query watchers.
-- **Two query styles.** Fluent Rust builder API for type safety, or AQL (Aurora Query Language) for flexible GraphQL-style queries.
-- **Hybrid storage.** Hot data lives in memory (LRU cache); the rest persists to disk via Sled with WAL crash recovery.
-
----
-
-## Installation
+An embedded database for Rust. Persistent storage, a GraphQL-style query language (AQL), pub/sub change events, reactive query watchers, and a background job queue — no external services required.
 
 ```toml
 [dependencies]
-aurora-db = "5.1.0"
+aurora-db = "0.5.1"
 tokio = { version = "1", features = ["full"] }
-```
-
-Optional features:
-
-```toml
-# REST API via Actix-web
-aurora-db = { version = "5.1.0", features = ["http"] }
 ```
 
 ---
 
-## Opening a Database
+## Opening a database
 
 ```rust
 use aurora_db::{Aurora, AuroraConfig};
 
-// Simple open
 let db = Aurora::open("myapp.db").await?;
 
-// With full configuration
+// with config
 let db = Aurora::with_config(AuroraConfig {
     db_path: "myapp.db".into(),
     hot_cache_size_mb: 256,
     enable_wal: true,
-    enable_write_buffering: true,
-    write_buffer_size: 10_000,
     ..Default::default()
 }).await?;
 ```
 
 ---
 
-## Two Query APIs
+## Queries
 
-### Option 1 — Fluent Rust API
+Two styles — pick whichever fits the context.
 
-Best for type-safe, direct integration in Rust code.
+### Fluent API
 
 ```rust
-use aurora_db::{Aurora, AuroraConfig, FieldType, Value};
+use aurora_db::{Aurora, FieldType, Value};
 use aurora_db::types::FieldDefinition;
 
-// Define schema
 db.new_collection("users", vec![
     ("name",  FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: false }),
     ("email", FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: true,  indexed: true,  nullable: false }),
     ("age",   FieldDefinition { field_type: FieldType::SCALAR_INT,    unique: false, indexed: true,  nullable: true  }),
 ]).await?;
 
-// Insert
 let id = db.insert_into("users", vec![
     ("name",  Value::String("Alice".into())),
     ("email", Value::String("alice@example.com".into())),
     ("age",   Value::Int(30)),
 ]).await?;
 
-// Query
 let users = db.query("users")
     .filter(|f| f.gt("age", Value::Int(25)))
-    .order_by("age", false)   // false = DESC
+    .order_by("age", false)
     .limit(10)
     .collect()
     .await?;
 
-// First match
-let user = db.query("users")
-    .filter(|f| f.eq("email", Value::String("alice@example.com".into())))
-    .first_one()
-    .await?;
-
-// Count
 let total = db.query("users").count().await?;
 
-// Delete matching
-let deleted = db.query("users")
+db.query("users")
     .filter(|f| f.eq("active", Value::Bool(false)))
     .delete()
     .await?;
 ```
 
-**Filter operators available on `FilterBuilder`:**
-`eq` · `ne` · `gt` · `gte` · `lt` · `lte` · `in_values` · `contains` · `starts_with` · `between` · `And` · `Or`
+Filter operators: `eq` `ne` `gt` `gte` `lt` `lte` `in_values` `contains` `starts_with` `between` `And` `Or`
 
----
-
-### Option 2 — AQL (Aurora Query Language)
-
-GraphQL-style syntax. Best for flexible queries, scripts, or network APIs.
+### AQL (Aurora Query Language)
 
 ```rust
 use aurora_db::parser::executor::ExecutionResult;
@@ -139,9 +99,9 @@ if let ExecutionResult::Query(q) = result {
 
 ---
 
-## AQL Reference
+## AQL reference
 
-### Schema Definition
+### Schema
 
 ```graphql
 schema {
@@ -155,12 +115,10 @@ schema {
 }
 ```
 
-**Field types:** `String` · `Int` · `Float` · `Boolean` · `Uuid` · `Object` · `[Type]` (arrays)
-**Directives:** `@unique` enforces uniqueness · `@indexed` builds a secondary index for fast lookups
+Field types: `String` `Int` `Float` `Boolean` `Uuid` `Object` `[Type]`
+Directives: `@unique` enforces uniqueness · `@indexed` builds a secondary index
 
----
-
-### Insert
+### Mutations
 
 ```graphql
 mutation {
@@ -168,56 +126,61 @@ mutation {
         username: "alice",
         email:    "alice@example.com",
         age:      28,
-        active:   true,
-        tags:     ["rust", "databases"]
+        active:   true
     }) { id }
+}
+
+mutation {
+    update(
+        collection: "users",
+        data:  { active: false },
+        where: { email: { eq: "alice@example.com" } }
+    ) { id username }
+}
+
+mutation {
+    deleteFrom(
+        collection: "orders",
+        where: { status: { eq: "cancelled" } }
+    ) { id }
 }
 ```
 
----
-
-### Query with Filters
+### Filters
 
 ```graphql
 query {
     users(
         where: {
             and: [
-                { role:   { eq:  "admin" } },
-                { active: { eq:  true    } },
-                { age:    { gte: 18      } }
+                { role:   { eq: "admin" } },
+                { active: { eq: true   } },
+                { age:    { gte: 18    } }
             ]
         },
         orderBy: { age: DESC },
-        limit:   20,
-        offset:  0
+        limit: 20,
+        offset: 0
     ) {
-        username
-        email
-        age
+        username email age
     }
 }
 ```
 
-**Supported filter operators:**
-
-| Operator | Description |
+| Operator | |
 |---|---|
-| `eq` / `ne` | Equal / not equal |
-| `gt` / `gte` / `lt` / `lte` | Numeric comparisons |
-| `in` | Value in list |
-| `contains` | Substring match |
-| `startsWith` / `endsWith` | Prefix / suffix match |
-| `isNull` / `isNotNull` | Null checks |
-| `and` / `or` | Logical combinators |
+| `eq` / `ne` | equality |
+| `gt` / `gte` / `lt` / `lte` | comparison |
+| `in` | value in list |
+| `contains` / `startsWith` / `endsWith` | string matching |
+| `isNull` / `isNotNull` | null checks |
+| `and` / `or` | combinators |
 
----
-
-### Cursor Pagination
+### Pagination
 
 ```graphql
 query {
-    users(first: 10, after: "<cursor-id>", orderBy: { age: ASC }) {
+    users(first: 10, after: "<cursor>", orderBy: { age: ASC }) {
         edges {
             cursor
             node { username age }
@@ -229,8 +192,6 @@ query {
     }
 }
 ```
-
----
 
 ### Aggregations
 
@@ -248,8 +209,6 @@ query {
 }
 ```
 
----
-
 ### Group By
 
 ```graphql
@@ -258,40 +217,28 @@ query {
         groupBy(field: "role") {
             key
             count
-            aggregate {
-                avg(field: "age")
-            }
-            nodes {
-                username
-                age
-            }
+            aggregate { avg(field: "age") }
+            nodes { username age }
         }
     }
 }
 ```
 
----
-
-### Update & Delete
+### Fragments
 
 ```graphql
-mutation {
-    update(
-        collection: "users",
-        data:  { active: false },
-        where: { email: { eq: "alice@example.com" } }
-    ) { id username }
+fragment UserFields on users {
+    id username email
 }
 
-mutation {
-    deleteFrom(
-        collection: "orders",
-        where: { status: { eq: "cancelled" } }
-    ) { id }
+query {
+    users(where: { active: { eq: true } }) {
+        ...UserFields
+    }
 }
 ```
 
-### Enqueue a Background Job
+### Background jobs
 
 ```graphql
 mutation {
@@ -304,33 +251,13 @@ mutation {
 }
 ```
 
-**Priority values:** `LOW` · `NORMAL` · `HIGH` · `CRITICAL`
-
----
-
-### Fragments
-
-Reusable field selections — Aurora validates fragment cycles and unknown type conditions at parse time.
-
-```graphql
-fragment UserFields on users {
-    id
-    username
-    email
-}
-
-query {
-    users(where: { active: { eq: true } }) {
-        ...UserFields
-    }
-}
-```
+Priority values: `LOW` `NORMAL` `HIGH` `CRITICAL`
 
 ---
 
 ## Migrations
 
-Aurora tracks schema changes with versioned migration blocks. Each version is recorded in an internal `_sys_migration` store — running the same migration file multiple times is safe, already-applied versions are skipped automatically.
+Versioned migration blocks. Applied versions are tracked in `_sys_migration` — running the same file multiple times is safe.
 
 ```graphql
 migrate {
@@ -356,28 +283,20 @@ migrate {
 }
 ```
 
-**Alter actions:** `add field: Type` · `drop field` · `rename old_name to new_name` · `modify field: NewType`
-
-**`migrate data` expressions:**
-- String literal: `"value"`
-- Number: `42` / `3.14`
-- Boolean: `true` / `false`
-- Field reference: `other_field` (copies from that field on the same document)
-
-**Result:**
+Alter actions: `add field: Type` · `drop field` · `rename old to new` · `modify field: NewType`
 
 ```rust
 if let ExecutionResult::Migration(m) = result {
-    println!("Applied {} version(s), last: {}", m.steps_applied, m.version);
+    println!("applied {} version(s)", m.steps_applied);
     // m.status → "applied" | "skipped"
 }
 ```
 
 ---
 
-## Reactive Queries
+## Reactive queries
 
-Watch a query live — fires instantly when matching documents are inserted, updated, or deleted.
+Watch a query live — fires on insert, update, or delete.
 
 ```rust
 use aurora_db::reactive::QueryUpdate;
@@ -391,9 +310,9 @@ let mut watcher = db.query("orders")
 tokio::spawn(async move {
     while let Some(update) = watcher.next().await {
         match update {
-            QueryUpdate::Added(doc)              => println!("New order: {}", doc.id),
-            QueryUpdate::Modified { old, new }   => println!("Updated:   {}", new.id),
-            QueryUpdate::Removed(doc)            => println!("Removed:   {}", doc.id),
+            QueryUpdate::Added(doc)            => println!("new:     {}", doc.id),
+            QueryUpdate::Modified { old, new } => println!("updated: {}", new.id),
+            QueryUpdate::Removed(doc)          => println!("removed: {}", doc.id),
         }
     }
 });
@@ -403,31 +322,32 @@ tokio::spawn(async move {
 
 ## PubSub
 
-Low-level broadcast channel for document changes.
-
 ```rust
-// Listen to a single collection
+// collection-scoped
 let mut listener = db.listen("orders");
 
-// Listen to all collections
+// all collections
 let mut listener = db.listen_all();
 
-tokio::spawn(async move {
-    while let Ok(event) = listener.recv().await {
-        println!("{:?} on {} — id: {}", event.change_type, event.collection, event.id);
-    }
-});
+while let Ok(event) = listener.recv().await {
+    println!("{:?} on {} — {}", event.change_type, event.collection, event.id);
+}
 ```
 
-### AQL Subscription
+Watch specific fields — update events that don't touch those fields are skipped before filter evaluation:
+
+```rust
+let mut listener = db.listen("users")
+    .watch_fields(["status", "role"]);
+```
+
+### AQL subscription
 
 ```rust
 let mut stream = db.stream(r#"
     subscription {
         orders(where: { status: { eq: "pending" } }) {
-            id
-            user_id
-            amount
+            id user_id amount
         }
     }
 "#).await?;
@@ -439,9 +359,7 @@ while let Ok(event) = stream.recv().await {
 
 ---
 
-## Background Workers
-
-Durable, prioritised job queue with persistent state.
+## Background workers
 
 ```rust
 use aurora_db::workers::{WorkerSystem, WorkerConfig, Job, JobPriority};
@@ -454,8 +372,7 @@ let workers = WorkerSystem::new(WorkerConfig {
 })?;
 
 workers.register_handler("send_email", |job| async move {
-    let to = job.payload.get("to").unwrap();
-    println!("Sending email to {}", to);
+    println!("sending to {}", job.payload.get("to").unwrap());
     Ok(())
 }).await;
 
@@ -470,38 +387,32 @@ workers.enqueue(
 workers.stop().await?;
 ```
 
-**Job priorities:** `Low` · `Normal` · `High` · `Critical`
-**Job statuses:** `Pending` · `Running` · `Completed` · `Failed` · `DeadLetter`
+Job statuses: `Pending` · `Running` · `Completed` · `Failed` · `DeadLetter`
 
 ---
 
-## Configuration Reference
+## Configuration
 
 ```rust
 AuroraConfig {
-    // Storage
     db_path:                        PathBuf,         // required
     hot_cache_size_mb:              usize,            // default: 256
     eviction_policy:                EvictionPolicy,   // default: LRU
     cold_cache_capacity_mb:         usize,            // default: 1024
     cold_mode:                      ColdStoreMode,    // HighThroughput | LowSpace
 
-    // Write buffering
     enable_write_buffering:         bool,             // default: true
     write_buffer_size:              usize,            // default: 10_000
     write_buffer_flush_interval_ms: u64,              // default: 1_000
 
-    // Durability / WAL
     enable_wal:                     bool,             // default: true
     durability_mode:                DurabilityMode,   // None | WAL | Strict | Synchronous
     checkpoint_interval_ms:         u64,              // default: 10_000
 
-    // Maintenance
     auto_compact:                   bool,             // default: true
     compact_interval_mins:          u64,              // default: 60
 
-    // Audit logging
-    audit_log_path:                 Option<String>,   // writes JSONL entries when set
+    audit_log_path:                 Option<String>,   // JSONL audit log when set
 }
 ```
 
@@ -517,26 +428,26 @@ AuroraConfig {
 ├──────────────────────────────────────────────┤
 │       AQL Engine      │  Fluent Rust API     │
 ├──────────────────────────────────────────────┤
-│  Hot Cache (In-Memory LRU)  │   Indexes      │
-├─────────────────────────────┴────────────────┤
+│  Hot Cache (LRU)  │  Indexes (Roaring Bitmap)│
+├───────────────────┴──────────────────────────┤
 │          WAL  +  Cold Storage (Sled)         │
 └──────────────────────────────────────────────┘
 ```
 
-| Layer | Role |
+| Layer | |
 |---|---|
-| **Hot Cache** | LRU in-memory store for recently accessed documents |
-| **Cold Storage** | Sled-backed persistent store for all durable data |
-| **WAL** | Write-ahead log; replayed on startup for crash recovery |
-| **Write Buffer** | Batches writes in memory for high-throughput ingestion |
-| **Indexes** | Bitmap + secondary indexes for fast filtered queries |
-| **AQL Engine** | Parses and executes GraphQL-style queries with validation |
-| **PubSub** | Broadcast channel for low-latency change events |
-| **Reactive** | Query watchers that diff results on each mutation |
-| **Workers** | Persistent priority job queue with durable state |
+| Hot Cache | LRU in-memory store for recently accessed documents |
+| Cold Storage | Sled-backed persistent store |
+| WAL | Write-ahead log replayed on startup for crash recovery |
+| Write Buffer | Batches writes in memory; flushes periodically |
+| Indexes | Roaring bitmap secondary indexes for fast filtered queries |
+| AQL Engine | Parses and executes GraphQL-style queries |
+| PubSub | Broadcast channels with field-level change fingerprinting |
+| Reactive | Query watchers that diff results on each mutation |
+| Workers | Persistent priority job queue |
 
 ---
 
 ## License
 
-MIT — see [LICENSE](./LICENSE) for details.
+MIT
