@@ -1,6 +1,6 @@
 [package]
 name = "aurora-db"
-version = "5.1.0"
+version = "5.2.0"
 edition = "2024"
 authors = ["Bethel Nzekea <bethelnzekea@gmail.com>"]
 description = "A lightweight, real-time embedded database with built-in PubSub, reactive queries, background workers, and intelligent caching."

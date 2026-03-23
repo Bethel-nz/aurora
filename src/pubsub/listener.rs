@@ -1,4 +1,5 @@
-use super::events::{ChangeEvent, EventFilter};
+use super::events::{ChangeEvent, ChangeType, EventFilter};
+use std::collections::HashSet;
 use tokio::sync::broadcast;
 
 /// Listener for change events on a collection
@@ -7,6 +8,10 @@ pub struct ChangeListener {
     collection: String,
     receiver: broadcast::Receiver<ChangeEvent>,
     filter: Option<EventFilter>,
+    /// Fields this watcher actually cares about. When set, update events that
+    /// touch none of these fields are skipped before filter evaluation — O(1)
+    /// fast-path that keeps CPU flat under high write throughput.
+    watched_fields: Option<HashSet<String>>,
 }
 
 impl ChangeListener {
@@ -15,28 +20,65 @@ impl ChangeListener {
             collection,
             receiver,
             filter: None,
+            watched_fields: None,
         }
     }
 
-    /// Add a filter to this listener
-    /// Only events matching the filter will be received
+    /// Add a filter to this listener.
+    /// Only events matching the filter will be received.
     pub fn filter(mut self, filter: EventFilter) -> Self {
         self.filter = Some(filter);
         self
     }
 
-    /// Receive the next change event
-    /// Blocks until an event is available or the channel is closed
+    /// Declare which fields this watcher cares about.
+    ///
+    /// Update events that don't touch any of these fields are skipped entirely
+    /// before filter evaluation. This keeps reactive query overhead O(1) for
+    /// writes that don't affect the watched fields, regardless of how many
+    /// active watchers exist.
+    ///
+    /// # Example
+    /// ```no_run
+    /// listener.watch_fields(vec!["status", "role"])
+    /// ```
+    pub fn watch_fields(mut self, fields: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        let set: HashSet<String> = fields.into_iter().map(|f| f.into()).collect();
+        // Empty set is disjoint with everything — would silently skip all updates.
+        // Treat empty input as no fast-path (same as not calling watch_fields).
+        if !set.is_empty() {
+            self.watched_fields = Some(set);
+        }
+        self
+    }
+
+    /// Returns true if this event should be skipped based on the watched fields
+    /// fast-path. Only skips Update events where none of the watched fields changed.
+    fn should_skip(&self, event: &ChangeEvent) -> bool {
+        if event.change_type != ChangeType::Update {
+            return false;
+        }
+        if let Some(ref watched) = self.watched_fields {
+            return event.changed_fields().is_disjoint(watched);
+        }
+        false
+    }
+
+    /// Receive the next change event.
+    /// Blocks until an event is available or the channel is closed.
     pub async fn recv(&mut self) -> Result<ChangeEvent, broadcast::error::RecvError> {
         loop {
             let event = self.receiver.recv().await?;
 
-            // If there's a filter, only return matching events
+            // Fast-path: skip update events that didn't touch watched fields
+            if self.should_skip(&event) {
+                continue;
+            }
+
             if let Some(ref filter) = self.filter {
                 if filter.matches(&event) {
                     return Ok(event);
                 }
-                // Non-matching event, continue to next
                 continue;
             }
 
@@ -44,18 +86,21 @@ impl ChangeListener {
         }
     }
 
-    /// Try to receive an event without blocking
-    /// Returns None if no event is available
+    /// Try to receive an event without blocking.
+    /// Returns None if no event is available.
     pub fn try_recv(&mut self) -> Result<ChangeEvent, broadcast::error::TryRecvError> {
         loop {
             let event = self.receiver.try_recv()?;
 
-            // If there's a filter, only return matching events
+            // Fast-path: skip update events that didn't touch watched fields
+            if self.should_skip(&event) {
+                continue;
+            }
+
             if let Some(ref filter) = self.filter {
                 if filter.matches(&event) {
                     return Ok(event);
                 }
-                // Non-matching event, continue to next
                 continue;
             }
 
