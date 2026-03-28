@@ -2529,7 +2529,10 @@ fn build_field_def(field: &ast::FieldDef) -> FieldDefinition {
     for directive in &field.directives {
         match directive.name.as_str() {
             "indexed" | "index" => indexed = true,
-            "unique" => unique = true,
+            "unique" => {
+                unique = true;
+                indexed = true;
+            }
             "primary" => {
                 indexed = true;
                 unique = true;
