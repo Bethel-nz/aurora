@@ -50,4 +50,13 @@ async fn test_unique_field_aql_schema_equality() {
     } else {
         panic!("Expected Query result");
     }
+
+    // Attempt to insert a second document with the same unique email, which should fail
+    let duplicate_insert_query = r#"
+        mutation {
+            insertInto(collection: "User", data: { email: "test@example.com", name: "Bob" })
+        }
+    "#;
+    let duplicate_res = db.execute(duplicate_insert_query).await;
+    assert!(duplicate_res.is_err(), "Expected unique constraint violation error on duplicate insert");
 }
