@@ -149,13 +149,10 @@ pub async fn execute(db: &Aurora, aql: &str, options: ExecutionOptions) -> Resul
 
         // Skip the fast plan path for search queries — execute_plan doesn't
         // handle the `search:` argument; route through execute_document instead.
-        let has_search = query.selection_set.iter().any(|sel| {
-            if let ast::Selection::Field(f) = sel {
-                f.arguments.iter().any(|a| a.name == "search")
-            } else {
-                false
-            }
-        });
+        // Use collect_fields() so inline fragments and fragment spreads are
+        // traversed the same way QueryPlan::from_query() traverses them.
+        let root_fields = collect_fields(&query.selection_set, &fragments, &vars, None)?;
+        let has_search = root_fields.iter().any(|f| f.arguments.iter().any(|a| a.name == "search"));
 
         if !has_search {
             let plans = QueryPlan::from_query(query, &fragments, &vars)?;
