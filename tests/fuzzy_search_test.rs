@@ -130,11 +130,8 @@ async fn test_aql_fuzzy_returns_close_matches() {
     "#).await.unwrap();
 
     let ExecutionResult::Query(q) = result else { panic!("expected Query result") };
-    assert!(!q.documents.is_empty(), "expected fuzzy match for 'programing'");
-    assert!(
-        q.documents.iter().any(|d| matches!(d.data.get("title"), Some(Value::String(s)) if s.contains("rust"))),
-        "expected rust book in results"
-    );
+    assert_eq!(q.documents.len(), 1, "only the rust book should match");
+    assert!(matches!(q.documents[0].data.get("title"), Some(Value::String(s)) if s.contains("rust")));
 }
 
 #[tokio::test]
