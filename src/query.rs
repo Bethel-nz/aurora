@@ -392,6 +392,30 @@ pub struct SearchBuilder<'a> {
     search_fields: Option<Vec<String>>,
 }
 
+/// Score a document against tokenised query terms using per-word Levenshtein distance.
+/// Returns 0.0 if no query token is within `max_dist` edits of any doc token.
+fn fuzzy_score(doc: &Document, query_tokens: &[&str], max_dist: usize, fields: Option<&[String]>) -> f32 {
+    let mut score = 0.0f32;
+    for (field, value) in &doc.data {
+        if let Some(allowed) = fields {
+            if !allowed.contains(field) { continue; }
+        }
+        if let crate::types::Value::String(text) = value {
+            let doc_tokens: Vec<String> = text.split_whitespace().map(|t| t.to_lowercase()).collect();
+            for q in query_tokens {
+                for d in &doc_tokens {
+                    let dist = crate::search::levenshtein_distance(q, d);
+                    if dist <= max_dist {
+                        // Closer match = higher score; exact hit scores 1.0
+                        score += 1.0 / (1.0 + dist as f32 * 0.3);
+                    }
+                }
+            }
+        }
+    }
+    score
+}
+
 impl<'a> SearchBuilder<'a> {
     pub fn new(db: &'a Aurora, collection: &str) -> Self {
         Self {
@@ -442,31 +466,55 @@ impl<'a> SearchBuilder<'a> {
         let mut results = Vec::new();
 
         if let Some(index) = self.db.primary_indices.get(&self.collection) {
-            for entry in index.iter() {
-                if let Some(data) = self.db.get(entry.key())? {
-                    if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
-                        let matches = if query.is_empty() {
-                            true
-                        } else {
-                            let fields_to_check = self.search_fields.as_deref();
-                            doc.data.iter().any(|(k, v)| {
-                                if let Some(ref allowed) = fields_to_check {
-                                    if !allowed.contains(k) {
-                                        return false;
+            if self.fuzzy && !query.is_empty() {
+                // Fuzzy path: score each doc, exclude zero-score matches, sort by relevance.
+                let query_tokens: Vec<&str> = query.split_whitespace().collect();
+                let max_dist = self.distance as usize;
+                let fields = self.search_fields.as_deref();
+                let mut scored: Vec<(f32, Document)> = Vec::new();
+
+                for entry in index.iter() {
+                    if let Some(data) = self.db.get(entry.key())? {
+                        if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                            let score = fuzzy_score(&doc, &query_tokens, max_dist, fields);
+                            if score > 0.0 {
+                                scored.push((score, doc));
+                            }
+                        }
+                    }
+                }
+
+                scored.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+                for (_, doc) in scored {
+                    results.push(doc);
+                    if let Some(l) = self.limit {
+                        if results.len() >= l { break; }
+                    }
+                }
+            } else {
+                // Exact / substring path (unchanged).
+                for entry in index.iter() {
+                    if let Some(data) = self.db.get(entry.key())? {
+                        if let Ok(doc) = serde_json::from_slice::<Document>(&data) {
+                            let matches = if query.is_empty() {
+                                true
+                            } else {
+                                let fields_to_check = self.search_fields.as_deref();
+                                doc.data.iter().any(|(k, v)| {
+                                    if let Some(ref allowed) = fields_to_check {
+                                        if !allowed.contains(k) { return false; }
                                     }
-                                }
-                                if let crate::types::Value::String(s) = v {
-                                    s.to_lowercase().contains(&query)
-                                } else {
-                                    false
-                                }
-                            })
-                        };
-                        if matches {
-                            results.push(doc);
-                            if let Some(l) = self.limit {
-                                if results.len() >= l {
-                                    break;
+                                    if let crate::types::Value::String(s) = v {
+                                        s.to_lowercase().contains(&query)
+                                    } else {
+                                        false
+                                    }
+                                })
+                            };
+                            if matches {
+                                results.push(doc);
+                                if let Some(l) = self.limit {
+                                    if results.len() >= l { break; }
                                 }
                             }
                         }
