@@ -49,7 +49,6 @@ use unicode_segmentation::UnicodeSegmentation;
 /// - Efficient fuzzy search using Finite State Transducers
 /// - Thread-safe concurrent access
 /// - Memory-optimized data structures
-#[allow(dead_code)]
 /// Compute edit distance between two strings (used for inline fuzzy scoring).
 pub fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     let s1: Vec<char> = s1.chars().collect();
