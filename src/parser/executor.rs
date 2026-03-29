@@ -120,6 +120,7 @@ pub async fn execute(db: &Aurora, aql: &str, options: ExecutionOptions) -> Resul
         .collect();
 
     // HIGH-SPEED PATH: Check for pre-compiled Query Plan
+    // Search queries are never cached — execute_plan doesn't handle `search:`.
     if let Some(plan) = db.plan_cache.get(&query_key) {
         plan.validate(&vars)?;
         return execute_plan(db, &plan, &vars, &options).await;
@@ -146,13 +147,25 @@ pub async fn execute(db: &Aurora, aql: &str, options: ExecutionOptions) -> Resul
             })
             .collect();
 
-        let plans = QueryPlan::from_query(query, &fragments, &vars)?;
-        if plans.len() == 1 {
-            let plan = Arc::new(plans[0].clone());
-            plan.validate(&vars)?;
-            db.plan_cache.insert(query_key, Arc::clone(&plan));
+        // Skip the fast plan path for search queries — execute_plan doesn't
+        // handle the `search:` argument; route through execute_document instead.
+        let has_search = query.selection_set.iter().any(|sel| {
+            if let ast::Selection::Field(f) = sel {
+                f.arguments.iter().any(|a| a.name == "search")
+            } else {
+                false
+            }
+        });
 
-            return execute_plan(db, &plan, &vars, &options).await;
+        if !has_search {
+            let plans = QueryPlan::from_query(query, &fragments, &vars)?;
+            if plans.len() == 1 {
+                let plan = Arc::new(plans[0].clone());
+                plan.validate(&vars)?;
+                db.plan_cache.insert(query_key, Arc::clone(&plan));
+
+                return execute_plan(db, &plan, &vars, &options).await;
+            }
         }
     }
 
