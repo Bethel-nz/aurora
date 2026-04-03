@@ -67,7 +67,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::File as StdFile;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::fs::File;
@@ -203,6 +203,9 @@ pub struct Aurora {
     pub workers: Option<Arc<crate::workers::WorkerSystem>>,
     // Asynchronous WAL Writer Channel
     wal_writer: Option<tokio::sync::mpsc::UnboundedSender<WalOperation>>,
+    /// Set to true when the WAL writer task hits a terminal error. put() checks
+    /// this before sending so it skips the closed channel and degrades gracefully.
+    wal_disabled: Arc<AtomicBool>,
     // Computed fields manager
     pub computed: Arc<RwLock<crate::computed::ComputedFields>>,
     /// LRU cache for parsed AQL AST
@@ -257,6 +260,7 @@ impl Clone for Aurora {
             wal_shutdown: self.wal_shutdown.clone(),
             workers: self.workers.clone(),
             wal_writer: self.wal_writer.clone(),
+            wal_disabled: Arc::clone(&self.wal_disabled),
             computed: Arc::clone(&self.computed),
             ast_cache: Arc::clone(&self.ast_cache),
             plan_cache: Arc::clone(&self.plan_cache),
@@ -1023,14 +1027,21 @@ impl Aurora {
 
         // --- FIX: Initialize Background WAL Writer ---
         // Only enable WAL writer if WAL was successfully initialized
+        let wal_disabled_flag = Arc::new(AtomicBool::new(false));
         let wal_writer = if enable_wal && wal.is_some() {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<WalOperation>();
             let wal_clone = wal.clone();
+            let wal_disabled_task = Arc::clone(&wal_disabled_flag);
 
             // Spawn a single dedicated thread/task for writing WAL sequentially
             tokio::spawn(async move {
                 if let Some(wal) = wal_clone {
                     while let Some(op) = rx.recv().await {
+                        // If WAL has been disabled due to a prior error, drain messages silently.
+                        if wal_disabled_task.load(Ordering::Relaxed) {
+                            continue;
+                        }
+
                         let wal = wal.clone();
                         // Move blocking I/O to a blocking thread
                         let result = tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
@@ -1058,11 +1069,12 @@ impl Aurora {
                             Err(e) if e.is_cancelled() => break,
                             Err(e) => {
                                 eprintln!("WAL task panicked: {}. Durability disabled for this session.", e);
-                                break;
+                                wal_disabled_task.store(true, Ordering::SeqCst);
+                                // Keep draining so callers never see a closed-channel error.
                             }
                             Ok(Err(msg)) => {
                                 eprintln!("CRITICAL WAL write error: {}. Durability disabled for this session.", msg);
-                                break;
+                                wal_disabled_task.store(true, Ordering::SeqCst);
                             }
                             Ok(Ok(())) => {}
                         }
@@ -1181,6 +1193,7 @@ impl Aurora {
             ast_cache: Arc::new(MokaCache::new(1000)),
             plan_cache: Arc::new(MokaCache::new(1000)),
             building_indices: Arc::new(DashMap::new()),
+            wal_disabled: wal_disabled_flag,
         };
 
         if !wal_entries.is_empty() {
@@ -1916,6 +1929,7 @@ impl Aurora {
         // --- 1. WAL Write (Non-blocking send of Arcs) ---
         if let Some(ref sender) = self.wal_writer
             && self.config.durability_mode != DurabilityMode::None
+            && !self.wal_disabled.load(Ordering::Relaxed)
         {
             sender
                 .send(WalOperation::Put {
@@ -1995,6 +2009,14 @@ impl Aurora {
                     primary_index
                         .entry(key)
                         .or_insert_with(|| DiskLocation::new(value.len()));
+
+                    // Rebuild the _sid ↔ internal-u32 mapping so that bitmaps
+                    // loaded from the checkpoint can be translated back to real
+                    // external IDs via get_external_id(). Without this, every
+                    // u32 in a persisted bitmap maps to None after restart.
+                    if let Ok(doc) = self.deserialize_internal::<Document>(&value) {
+                        let _ = self.get_or_create_internal_id(&doc._sid);
+                    }
                 }
             }
         }
@@ -3390,9 +3412,9 @@ impl Aurora {
         if let Some(doc) = document {
             self.remove_from_indices(collection, &doc)?;
         } else {
-            // Fallback: at least remove from primary index
+            // Fallback: at least remove from primary index using the full sled key.
             if let Some(index) = self.primary_indices.get_mut(collection) {
-                index.remove(id);
+                index.remove(key);
             }
         }
 
@@ -3432,9 +3454,9 @@ impl Aurora {
     }
 
     fn remove_from_indices(&self, collection: &str, doc: &Document) -> Result<()> {
-        // Remove from primary index
+        // Remove from primary index — key format is "collection:sid" (the full sled key).
         if let Some(index) = self.primary_indices.get(collection) {
-            index.remove(&doc._sid);
+            index.remove(&format!("{}:{}", collection, doc._sid));
         }
 
         let u = self.parse_external_id(&doc._sid);
