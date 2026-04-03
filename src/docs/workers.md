@@ -6,6 +6,23 @@ This guide covers Aurora's durable worker system for background job processing.
 
 Durable workers allow you to offload heavy tasks (email sending, image processing) to the background. Jobs are persisted, retried automatically on failure, and can be scheduled for the future.
 
+## Enabling the Worker System
+
+By default, the background worker system is disabled to save resources. To use workers or handlers, you must explicitly enable them in your `AuroraConfig`.
+
+```rust
+let config = AuroraConfig {
+    workers_enabled: true,   // Arm the system
+    worker_threads: 8,       // Number of concurrent processing threads
+    ..AuroraConfig::default()
+};
+
+let db = Aurora::with_config(config).await?;
+```
+
+*   **`workers_enabled`**: If `false`, `enqueueJob` and `define handler` will fail with an initialization error.
+*   **`worker_threads`**: Defaults to 4. Higher values allow for more simultaneous background task processing.
+
 ## Enqueuing Jobs
 
 You can enqueue jobs directly from AQL using the `enqueueJob` mutation.

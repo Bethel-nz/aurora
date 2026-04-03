@@ -202,7 +202,7 @@ async fn test_variable_in_lookup_where_filter() {
         .unwrap();
 
     let alice_id = if let ExecutionResult::Mutation(res) = alice_result {
-        res.returned_documents[0].id.clone()
+        res.returned_documents[0]._sid.clone()
     } else {
         panic!("Expected mutation result");
     };
@@ -215,7 +215,7 @@ async fn test_variable_in_lookup_where_filter() {
         .unwrap();
 
     let bob_id = if let ExecutionResult::Mutation(res) = bob_result {
-        res.returned_documents[0].id.clone()
+        res.returned_documents[0]._sid.clone()
     } else {
         panic!("Expected mutation result");
     };
@@ -240,7 +240,7 @@ async fn test_variable_in_lookup_where_filter() {
                 user: lookup(
                     collection: "users",
                     localField: "user_id",
-                    foreignField: "id",
+                    foreignField: "_sid",
                     where: { active: { eq: $onlyActive } }
                 ) {
                     name

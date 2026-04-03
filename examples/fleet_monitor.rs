@@ -49,8 +49,8 @@ async fn main() -> anyhow::Result<()> {
         while let Ok(event) = dashboard_stream.recv().await {
             // Live stream of telemetry events
             if matches!(event.change_type, aurora_db::pubsub::events::ChangeType::Insert) {
-                // Check the status field for critical events (event.id is a UUID, not status)
-                // println!("  [DASHBOARD]  New telemetry event: {}", event.id);
+                // Check the status field for critical events (event._sid is a UUID, not status)
+                // println!("  [DASHBOARD]  New telemetry event: {}", event._sid);
             }
         }
     });

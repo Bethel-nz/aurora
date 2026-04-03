@@ -252,7 +252,7 @@ impl<'a> QueryBuilder<'a> {
 
                     if id_only && self.filters.is_empty() {
                         // ULTRA FAST PATH: No filters and id only
-                        final_docs.push(Document { id: external_id, data: HashMap::new() });
+                        final_docs.push(Document { _sid: external_id, data: HashMap::new() });
                         continue;
                     }
 
@@ -273,7 +273,7 @@ impl<'a> QueryBuilder<'a> {
                     if let Some(external_id) = key.strip_prefix(&prefix) {
                         
                         // If it's already in final_docs (from bitmap index), skip it
-                        if final_docs.iter().any(|d| d.id == external_id) {
+                        if final_docs.iter().any(|d| d._sid == external_id) {
                             continue;
                         }
 
@@ -355,7 +355,7 @@ impl<'a> QueryBuilder<'a> {
         let docs = self.collect().await?;
         let count = docs.len();
         for doc in docs {
-            let _ = db.aql_delete_document(&collection, &doc.id).await;
+            let _ = db.aql_delete_document(&collection, &doc._sid).await;
         }
         Ok(count)
     }
@@ -569,11 +569,11 @@ fn get_nested<'a>(doc: &'a Document, field: &str) -> Option<&'a Value> {
     }
 }
 
-/// Like `get_nested` but also handles the virtual `"id"` field which lives in `doc.id`.
+/// Like `get_nested` but also handles the virtual `"id"` field which lives in `doc._sid`.
 /// Returns an owned `Value` to avoid lifetime issues with the temporary id string.
 fn get_field_owned(doc: &Document, field: &str) -> Option<Value> {
-    if field == "id" && !doc.data.contains_key("id") {
-        Some(Value::String(doc.id.clone()))
+    if field == "_sid" {
+        Some(Value::String(doc._sid.clone()))
     } else {
         get_nested(doc, field).cloned()
     }

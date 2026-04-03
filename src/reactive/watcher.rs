@@ -65,12 +65,12 @@ impl QueryWatcher {
                             }
                             crate::pubsub::ChangeType::Update => {
                                 if let Some(new_doc) = event.document {
-                                    state_clone.update(&event.id, new_doc).await
+                                    state_clone.update(&event._sid, new_doc).await
                                 } else {
                                     None
                                 }
                             }
-                            crate::pubsub::ChangeType::Delete => state_clone.remove(&event.id).await,
+                            crate::pubsub::ChangeType::Delete => state_clone.remove(&event._sid).await,
                         };
 
                         if let Some(u) = update && sender_clone.send(u).is_err() {
@@ -228,7 +228,7 @@ mod tests {
         let mut data = HashMap::new();
         data.insert("active".to_string(), Value::Bool(true));
         data.insert("name".to_string(), Value::String("Alice".into()));
-        let doc = Document { id: "1".to_string(), data };
+        let doc = Document { _sid: "1".to_string(), data };
         db.pubsub.publish(ChangeEvent::insert("users", "1", doc)).unwrap();
         let update = watcher.next().await.unwrap();
         assert!(matches!(update, QueryUpdate::Added(_)));

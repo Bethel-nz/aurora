@@ -23,6 +23,7 @@ async fn setup_db() -> (Aurora, tempfile::TempDir) {
         db_path: dir.path().join("test.aurora"),
         enable_write_buffering: false,
         enable_wal: false,
+        workers_enabled: true,
         ..Default::default()
     })
     .await
@@ -246,7 +247,7 @@ async fn test_define_handler_on_insert_fires() {
         .unwrap();
 
     let user_id = if let ExecutionResult::Mutation(m) = insert_res {
-        m.returned_documents[0].id.clone()
+        m.returned_documents[0]._sid.clone()
     } else {
         panic!("expected mutation result");
     };
@@ -324,7 +325,7 @@ async fn test_define_handler_on_update_fires() {
         .unwrap();
 
     let product_id = if let ExecutionResult::Mutation(m) = insert_res {
-        m.returned_documents[0].id.clone()
+        m.returned_documents[0]._sid.clone()
     } else {
         panic!();
     };
@@ -396,7 +397,7 @@ async fn test_define_handler_on_delete_fires() {
         .unwrap();
 
     let session_id = if let ExecutionResult::Mutation(m) = insert_res {
-        m.returned_documents[0].id.clone()
+        m.returned_documents[0]._sid.clone()
     } else { panic!(); };
 
     // Delete the session by token (filter by data field, not id)

@@ -156,7 +156,7 @@ mod tests {
                 "users",
                 "1",
                 Document {
-                    id: "1".to_string(),
+                    _sid: "1".to_string(),
                     data: data.clone(),
                 },
             ))
@@ -171,7 +171,7 @@ mod tests {
             event.change_type,
             super::super::events::ChangeType::Insert
         ));
-        assert_eq!(event.id, "1");
+        assert_eq!(event._sid, "1");
     }
 
     #[tokio::test]
@@ -193,7 +193,7 @@ mod tests {
                 "users",
                 "1",
                 Document {
-                    id: "1".to_string(),
+                    _sid: "1".to_string(),
                     data: active_data,
                 },
             ))
@@ -208,7 +208,7 @@ mod tests {
                 "users",
                 "2",
                 Document {
-                    id: "2".to_string(),
+                    _sid: "2".to_string(),
                     data: inactive_data,
                 },
             ))
@@ -216,7 +216,7 @@ mod tests {
 
         // Should only receive active user
         let event = listener.recv().await.unwrap();
-        assert_eq!(event.id, "1");
+        assert_eq!(event._sid, "1");
         assert_eq!(event.get_field("active"), Some(&Value::Bool(true)));
     }
 }

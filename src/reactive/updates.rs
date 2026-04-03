@@ -46,7 +46,7 @@ impl QueryUpdate {
 
     /// Get the document ID
     pub fn id(&self) -> &str {
-        &self.document().id
+        &self.document()._sid
     }
 }
 
@@ -62,7 +62,7 @@ mod tests {
         data.insert("name".to_string(), Value::String("Test".into()));
 
         let doc = Document {
-            id: "1".to_string(),
+            _sid: "1".to_string(),
             data: data.clone(),
         };
 

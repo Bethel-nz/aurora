@@ -50,7 +50,7 @@ impl Index {
 
     pub fn insert(&self, doc: &Document) -> Result<()> {
         let key = self.extract_key(doc)?;
-        let doc_id = doc.id.clone();
+        let doc_id = doc._sid.clone();
 
         // Get or create the SkipSet for this key atomically, then insert the doc ID.
         // For unique fields we check *after* inserting: if the set now contains more
@@ -85,7 +85,7 @@ impl Index {
     pub fn remove(&self, doc: &Document) -> Result<()> {
         let key = self.extract_key(doc)?;
         if let Some(entry) = self.data.get(&key) {
-            entry.value().remove(&doc.id);
+            entry.value().remove(&doc._sid);
             // Prune the entry when the set becomes empty to avoid memory growth
             if entry.value().is_empty() {
                 self.data.remove(&key);

@@ -396,7 +396,7 @@ impl FullTextIndex {
     pub fn index_document(&self, doc: &Document) -> Result<()> {
         if let Some(Value::String(text)) = doc.data.get(&self.field) {
             // Remove existing document if it exists
-            self.remove_document_internal(&doc.id);
+            self.remove_document_internal(&doc._sid);
 
             let terms = self.tokenize(text);
             if terms.is_empty() {
@@ -405,7 +405,7 @@ impl FullTextIndex {
 
             // Store document length for BM25 calculation
             let doc_length = terms.len();
-            self.doc_lengths.insert(doc.id.clone(), doc_length);
+            self.doc_lengths.insert(doc._sid.clone(), doc_length);
             self.document_count.fetch_add(1, Ordering::Relaxed);
             self.total_term_count
                 .fetch_add(doc_length as u64, Ordering::Relaxed);
@@ -418,7 +418,7 @@ impl FullTextIndex {
                 self.index
                     .entry(term.clone())
                     .or_default()
-                    .push((doc.id.clone(), freq));
+                    .push((doc._sid.clone(), freq));
             }
 
             // Rebuild FST for fuzzy search (async in production, sync for simplicity here)
@@ -808,7 +808,7 @@ mod tests {
 
         // Test documents with different lengths for BM25
         let doc1 = Document {
-            id: "1".to_string(),
+            _sid: "1".to_string(),
             data: {
                 let mut map = HashMap::new();
                 map.insert(
@@ -820,7 +820,7 @@ mod tests {
         };
 
         let doc2 = Document {
-            id: "2".to_string(),
+            _sid: "2".to_string(),
             data: {
                 let mut map = HashMap::new();
                 map.insert("content".to_string(), Value::String(
@@ -856,7 +856,7 @@ mod tests {
         let index = FullTextIndex::new("test", "content");
 
         let doc = Document {
-            id: "1".to_string(),
+            _sid: "1".to_string(),
             data: {
                 let mut map = HashMap::new();
                 map.insert(
@@ -884,7 +884,7 @@ mod tests {
         let index = FullTextIndex::new("test", "content");
 
         let doc = Document {
-            id: "1".to_string(),
+            _sid: "1".to_string(),
             data: {
                 let mut map = HashMap::new();
                 map.insert(
@@ -925,7 +925,7 @@ mod tests {
         let index = FullTextIndex::new("test", "content");
 
         let doc1 = Document {
-            id: "1".to_string(),
+            _sid: "1".to_string(),
             data: {
                 let mut map = HashMap::new();
                 map.insert(
@@ -937,7 +937,7 @@ mod tests {
         };
 
         let doc2 = Document {
-            id: "2".to_string(),
+            _sid: "2".to_string(),
             data: {
                 let mut map = HashMap::new();
                 map.insert(

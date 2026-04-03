@@ -40,7 +40,7 @@ impl ReactiveQueryState {
     pub async fn add_if_matches(&self, doc: Document) -> Option<QueryUpdate> {
         if self.matches(&doc) {
             let mut results = self.results.write().await;
-            let id = doc.id.clone();
+            let id = doc._sid.clone();
 
             match results.entry(id) {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
@@ -111,7 +111,7 @@ impl ReactiveQueryState {
         let mut next_results = HashMap::new();
         for doc in new_docs {
             if self.matches(&doc) {
-                next_results.insert(doc.id.clone(), doc);
+                next_results.insert(doc._sid.clone(), doc);
             }
         }
 
@@ -162,7 +162,7 @@ mod tests {
         let mut data = HashMap::new();
         data.insert("active".to_string(), Value::Bool(true));
         let doc = Document {
-            id: "1".to_string(),
+            _sid: "1".to_string(),
             data,
         };
 
@@ -180,14 +180,14 @@ mod tests {
         let mut active_data = HashMap::new();
         active_data.insert("active".to_string(), Value::Bool(true));
         let active_doc = Document {
-            id: "1".to_string(),
+            _sid: "1".to_string(),
             data: active_data,
         };
 
         let mut inactive_data = HashMap::new();
         inactive_data.insert("active".to_string(), Value::Bool(false));
         let inactive_doc = Document {
-            id: "2".to_string(),
+            _sid: "2".to_string(),
             data: inactive_data,
         };
 
@@ -210,7 +210,7 @@ mod tests {
         let mut data = HashMap::new();
         data.insert("active".to_string(), Value::Bool(true));
         let doc = Document {
-            id: "1".to_string(),
+            _sid: "1".to_string(),
             data,
         };
         state.add_if_matches(doc).await;
@@ -219,7 +219,7 @@ mod tests {
         let mut inactive_data = HashMap::new();
         inactive_data.insert("active".to_string(), Value::Bool(false));
         let inactive_doc = Document {
-            id: "1".to_string(),
+            _sid: "1".to_string(),
             data: inactive_data,
         };
 

@@ -204,14 +204,15 @@ pub struct Collection {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
-    pub id: String,
+    #[serde(rename = "_sid")]
+    pub _sid: String,
     pub data: HashMap<String, Value>,
 }
 
 impl Document {
     pub fn new() -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            _sid: Uuid::now_v7().to_string(),
             data: HashMap::new(),
         }
     }
@@ -364,6 +365,8 @@ pub struct AuroraConfig {
     pub enable_wal: bool,
     pub checkpoint_interval_ms: u64,
     pub audit_log_path: Option<String>,
+    pub workers_enabled: bool,
+    pub worker_threads: usize,
 }
 
 impl Default for AuroraConfig {
@@ -387,6 +390,8 @@ impl Default for AuroraConfig {
             enable_wal: true,
             checkpoint_interval_ms: 10000,
             audit_log_path: None,
+            workers_enabled: false,
+            worker_threads: 4,
         }
     }
 }

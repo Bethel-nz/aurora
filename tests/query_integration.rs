@@ -66,7 +66,7 @@ async fn test_platform_style_query_chain() {
         .unwrap();
 
     assert_eq!(target_users.len(), 1);
-    assert_eq!(target_users[0].id, id_charlie);
+    assert_eq!(target_users[0]._sid, id_charlie);
 }
 
 #[tokio::test]
