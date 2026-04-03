@@ -3010,7 +3010,7 @@ pub fn matches_filter(
         CompiledFilter::Eq(f, v) => {
             if let Some(dv) = doc.data.get(f) {
                 values_equal(dv, v, vars)
-            } else if f == "_sid" || f == "id" {
+            } else if f == "_sid" {
                 values_equal(&Value::String(doc._sid.clone()), v, vars)
             } else {
                 false
@@ -3019,7 +3019,7 @@ pub fn matches_filter(
         CompiledFilter::Ne(f, v) => {
             if let Some(dv) = doc.data.get(f) {
                 !values_equal(dv, v, vars)
-            } else if f == "_sid" || f == "id" {
+            } else if f == "_sid" {
                 !values_equal(&Value::String(doc._sid.clone()), v, vars)
             } else {
                 true
@@ -3171,15 +3171,15 @@ pub fn matches_filter(
             }
         }
         CompiledFilter::IsNull(f) => {
-            if (f == "_sid" || f == "id") && !doc.data.contains_key(f) {
-                false // _sid/id is never null if it acts as identity
+            if f == "_sid" {
+                false // _sid is never null
             } else {
                 doc.data.get(f).map_or(true, |v| matches!(v, Value::Null))
             }
         }
         CompiledFilter::IsNotNull(f) => {
-            if (f == "_sid" || f == "id") && !doc.data.contains_key(f) {
-                true // _sid/id is always non-null
+            if f == "_sid" {
+                true // _sid is always non-null
             } else {
                 doc.data.get(f).map_or(false, |v| !matches!(v, Value::Null))
             }

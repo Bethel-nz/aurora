@@ -495,67 +495,83 @@ impl Aurora {
             .map(|(key, _)| key.trim_start_matches("_collection:").to_string())
             .collect();
 
+        // Group missing index keys by collection so we do ONE scan per collection,
+        // not one scan per field (which would re-scan the same docs N times).
+        let mut missing_by_collection: HashMap<String, Vec<String>> = HashMap::new();
+
         for collection_name in collection_names {
             let Ok(col_def) = self.get_collection_definition(&collection_name) else {
                 continue;
             };
 
+            // Always include the auto-indexed "id" field — it's not schema-derived
+            // but index_value() indexes it automatically if present in doc.data.
+            let auto_id_key = format!("{}:id", collection_name);
+            if !self.has_index(&collection_name, "id") {
+                self.building_indices.insert(auto_id_key.clone(), ());
+                missing_by_collection
+                    .entry(collection_name.clone())
+                    .or_default()
+                    .push(auto_id_key);
+            }
+
             for (field_name, field_def) in &col_def.fields {
                 if !field_def.indexed && !field_def.unique {
                     continue;
                 }
-
                 let index_key = format!("{}:{}", collection_name, field_name);
-
-                // Already hydrated from checkpoint — nothing to do.
-                if self.secondary_indices.contains_key(&index_key) {
+                if self.has_index(&collection_name, field_name) {
                     continue;
                 }
-
-                // Mark as building so queries degrade to full scan until ready.
                 self.building_indices.insert(index_key.clone(), ());
-
-                let db = self.clone();
-                let coll = collection_name.clone();
-                let idx_key = index_key.clone();
-
-                tokio::spawn(async move {
-                    db.rebuild_index_for_field(&coll, &idx_key).await;
-                });
+                missing_by_collection
+                    .entry(collection_name.clone())
+                    .or_default()
+                    .push(index_key);
             }
+        }
+
+        // One rebuild task per collection — single scan, indexes all missing fields.
+        for (collection_name, index_keys) in missing_by_collection {
+            let db = self.clone();
+            tokio::spawn(async move {
+                db.rebuild_collection_indices(&collection_name, index_keys).await;
+            });
         }
     }
 
-    /// Background rebuild: scan every document in `collection` and (re-)index it.
-    /// Clears the building flag and checkpoints when done.
-    async fn rebuild_index_for_field(&self, collection: &str, index_key: &str) {
+    /// Background rebuild: one full collection scan that rebuilds ALL missing index keys.
+    /// Using a single scan avoids redundant I/O when multiple fields are missing.
+    async fn rebuild_collection_indices(&self, collection: &str, index_keys: Vec<String>) {
         let db = self.clone();
         let coll = collection.to_string();
-        let idx_key = index_key.to_string();
+        let keys_clone = index_keys.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let prefix = format!("{}:", coll);
             for entry in db.cold.scan_prefix(&prefix).flatten() {
                 let (key, value) = entry;
-                // Skip system keys (schema definitions etc.)
                 if key.starts_with('_') {
                     continue;
                 }
-                // index_value is idempotent — safe to call for every doc.
+                // index_value is idempotent and covers all indexed fields in one pass.
                 let _ = db.index_value(&coll, &key, &value, None);
             }
         })
         .await;
 
-        // Whether the scan succeeded or the task panicked, clear the flag so
-        // subsequent queries stop degrading to full scan.
-        self.building_indices.remove(&idx_key);
+        // Clear all building flags for this collection's keys regardless of outcome.
+        for key in &index_keys {
+            self.building_indices.remove(key);
+        }
 
         if result.is_ok() {
-            // Persist the freshly-built index so the next restart loads it instantly.
             let _ = self.save_index_checkpoint();
         } else {
-            eprintln!("Index rebuild panicked for {idx_key}; index will rebuild on next query cycle.");
+            eprintln!(
+                "Index rebuild panicked for collection '{}' (keys: {:?}); will retry on next query cycle.",
+                collection, keys_clone
+            );
         }
     }
 
@@ -1352,13 +1368,21 @@ impl Aurora {
     }
 
     pub fn has_index(&self, collection: &str, field: &str) -> bool {
-        if field == "id" || field == "_sid" {
+        // _sid is the primary key — always an O(1) lookup, no secondary index needed.
+        if field == "_sid" {
             return true;
         }
-        if let Ok(collection_def) = self.get_collection_definition(collection) {
-            if let Some(field_def) = collection_def.fields.get(field) {
-                return field_def.indexed || field_def.unique;
-            }
+        // For all other fields (including auto-indexed "id"), only claim the index
+        // exists if there is actual data in the hot map or cold manifest.
+        // This prevents the indexed fast-path from firing on a post-crash empty index
+        // and returning zero results instead of falling back to a full scan.
+        let index_key = format!("{}:{}", collection, field);
+        if self.secondary_indices.contains_key(&index_key) {
+            return true;
+        }
+        let cold_prefix = format!("{}:", index_key);
+        if self.index_manifest.iter().any(|e| e.key().starts_with(&cold_prefix)) {
+            return true;
         }
         false
     }

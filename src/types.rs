@@ -204,7 +204,7 @@ pub struct Collection {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
-    #[serde(rename = "_sid")]
+    #[serde(rename = "_sid", alias = "id")]
     pub _sid: String,
     pub data: HashMap<String, Value>,
 }
