@@ -3424,13 +3424,7 @@ async fn apply_projection_with_lookups(
 }
 
 fn values_equal_db(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::String(s1), Value::String(s2)) => s1 == s2,
-        (Value::Int(i1), Value::Int(i2)) => i1 == i2,
-        (Value::Float(f1), Value::Float(f2)) => (f1 - f2).abs() < f64::EPSILON,
-        (Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
-        _ => false,
-    }
+    a == b
 }
 
 pub fn aql_value_to_db_value(v: &ast::Value, vars: &HashMap<String, ast::Value>) -> Result<Value> {

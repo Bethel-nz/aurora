@@ -224,7 +224,7 @@ impl fmt::Display for Document {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Value {
     Null,
@@ -236,6 +236,25 @@ pub enum Value {
     DateTime(DateTime<Utc>),
     Array(Vec<Value>),
     Object(HashMap<String, Value>),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Null, Value::Null) => true,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => (a - b).abs() < f64::EPSILON,
+            (Value::String(a), Value::String(b)) => a == b,
+            (Value::Uuid(a), Value::Uuid(b)) => a == b,
+            (Value::Uuid(u), Value::String(s)) => &u.to_string() == s,
+            (Value::String(s), Value::Uuid(u)) => s == &u.to_string(),
+            (Value::DateTime(a), Value::DateTime(b)) => a == b,
+            (Value::Array(a), Value::Array(b)) => a == b,
+            (Value::Object(a), Value::Object(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 impl Eq for Value {}

@@ -852,7 +852,7 @@ fn validate_value_against_type(value: &Value, expected: &FieldType) -> bool {
         (FieldType::Scalar(ScalarType::Float), Value::Float(_)) => true,
         (FieldType::Scalar(ScalarType::Float), Value::Int(_)) => true,
         (FieldType::Scalar(ScalarType::Bool), Value::Boolean(_)) => true,
-        (FieldType::Scalar(ScalarType::Uuid), Value::String(_)) => true,
+        (FieldType::Scalar(ScalarType::Uuid), Value::String(s)) => uuid::Uuid::parse_str(s).is_ok(),
 
         // Handle Array Types
         (FieldType::Array(scalar_inner), Value::Array(items)) => {
@@ -1032,7 +1032,7 @@ fn is_type_compatible(field_type: &FieldType, value: &Value) -> bool {
         (FieldType::Scalar(ScalarType::Object), Value::Object(_)) => true, // Support for ScalarType::Object
         (FieldType::Scalar(ScalarType::Array), Value::Array(_)) => true, // Support for ScalarType::Array
         (FieldType::Scalar(ScalarType::Any), _) => true, // Any type accepts all values
-        (FieldType::Scalar(ScalarType::Uuid), Value::String(_)) => true, // UUIDs are often passed as strings
+        (FieldType::Scalar(ScalarType::Uuid), Value::String(s)) => uuid::Uuid::parse_str(s).is_ok(), // Check string is valid UUID
         _ => false,
     }
 }
