@@ -35,7 +35,7 @@ async fn test_rich_query_operators() {
     // Test 1: Multi-ID Lookup (IN operator via FilterBuilder)
     let ids = vec![alice_id.clone(), charlie_id.clone()];
     let results = db.query("users")
-        .filter(move |f: &aurora_db::query::FilterBuilder| f.in_values("id", &ids))
+        .filter(move |f: &aurora_db::query::FilterBuilder| f.in_values("_sid", &ids))
         .collect()
         .await
         .unwrap();

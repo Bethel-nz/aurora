@@ -43,12 +43,22 @@ let db = Aurora::open("myapp.db").await?;
 let db = Aurora::with_config(AuroraConfig {
     db_path: "myapp.db".into(),
     hot_cache_size_mb: 256,
+    workers_enabled: true,    // Enable background job processing
+    worker_threads: 8,        // Parallel processing power
     enable_wal: true,
-    enable_write_buffering: true,
-    write_buffer_size: 10_000,
     ..Default::default()
 }).await?;
 ```
+
+---
+
+## Data Purity & System IDs
+
+Aurora maintains a decoupled internal tracking system to ensure your application data remains "pure."
+
+*   **`_sid` (System ID)**: Every document has a private internal UUIDv7 tracking key used for optimized storage and pagination. This is hidden from AQL results by default.
+*   **Application `id`**: Your user-provided `id` is stored safely as a standard field in your data object. Aurora never overwrites or maps it to the internal system ID.
+*   **Audit Mode**: Enable `debug_audit: true` in your execution options to expose `_sid` in query results.
 
 ---
 
@@ -387,9 +397,9 @@ let mut watcher = db.query("orders")
 tokio::spawn(async move {
     while let Some(update) = watcher.next().await {
         match update {
-            QueryUpdate::Added(doc)              => println!("New order: {}", doc.id),
-            QueryUpdate::Modified { old, new }   => println!("Updated:   {}", new.id),
-            QueryUpdate::Removed(doc)            => println!("Removed:   {}", doc.id),
+            QueryUpdate::Added(doc)              => println!("New order: {}", doc._sid),
+            QueryUpdate::Modified { old, new }   => println!("Updated:   {}", new._sid),
+            QueryUpdate::Removed(doc)            => println!("Removed:   {}", doc._sid),
         }
     }
 });
@@ -410,7 +420,7 @@ let mut listener = db.listen_all();
 
 tokio::spawn(async move {
     while let Ok(event) = listener.recv().await {
-        println!("{:?} on {} — id: {}", event.change_type, event.collection, event.id);
+        println!("{:?} on {} — id: {}", event.change_type, event.collection, event._sid);
     }
 });
 ```
@@ -473,7 +483,6 @@ workers.stop().await?;
 
 ## Configuration Reference
 
-```rust
 AuroraConfig {
     // Storage
     db_path:                        PathBuf,         // required
@@ -482,7 +491,12 @@ AuroraConfig {
     cold_cache_capacity_mb:         usize,            // default: 1024
     cold_mode:                      ColdStoreMode,    // HighThroughput | LowSpace
 
+    // Workers
+    workers_enabled:                bool,             // default: false
+    worker_threads:                 usize,            // default: 4
+
     // Write buffering
+...
     enable_write_buffering:         bool,             // default: true
     write_buffer_size:              usize,            // default: 10_000
     write_buffer_flush_interval_ms: u64,              // default: 1_000

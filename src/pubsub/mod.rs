@@ -103,7 +103,7 @@ mod tests {
         data.insert("name".to_string(), Value::String("Alice".into()));
 
         let event = ChangeEvent::insert("users", "123", Document {
-            id: "123".to_string(),
+            _sid: "123".to_string(),
             data,
         });
 
@@ -111,7 +111,7 @@ mod tests {
 
         let received = listener.recv().await.unwrap();
         assert_eq!(received.collection, "users");
-        assert_eq!(received.id, "123");
+        assert_eq!(received._sid, "123");
         assert!(matches!(received.change_type, ChangeType::Insert));
     }
 

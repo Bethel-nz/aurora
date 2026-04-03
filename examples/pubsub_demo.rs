@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Listener received event #{}", i + 1);
                 println!("     Collection: {}", event.collection);
                 println!("     Type: {:?}", event.change_type);
-                println!("     ID: {}", event.id);
+                println!("     ID: {}", event._sid);
 
                 if let Some(doc) = &event.document {
                     if let Some(name) = doc.data.get("name") {
@@ -116,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Ok(event) = active_listener.recv().await {
             println!("  Received active user event!");
-            println!("     ID: {}", event.id);
+            println!("     ID: {}", event._sid);
             if let Some(doc) = &event.document {
                 if let Some(name) = doc.data.get("name") {
                     println!("     Name: {:?}", name);
@@ -172,13 +172,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let task1 = tokio::spawn(async move {
         if let Ok(event) = listener1.recv().await {
-            println!("   Listener 1 received: {}", event.id);
+            println!("   Listener 1 received: {}", event._sid);
         }
     });
 
     let task2 = tokio::spawn(async move {
         if let Ok(event) = listener2.recv().await {
-            println!("  Listener 2 received: {}", event.id);
+            println!("  Listener 2 received: {}", event._sid);
         }
     });
 
@@ -228,7 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "  Global event #{}: Collection = {}, ID = {}",
                     i + 1,
                     event.collection,
-                    event.id
+                    event._sid
                 );
             }
         }
@@ -276,7 +276,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Delete Listener: Waiting for delete events...");
 
         if let Ok(event) = delete_listener.recv().await {
-            println!("  User deleted: {}", event.id);
+            println!("  User deleted: {}", event._sid);
         }
     });
 

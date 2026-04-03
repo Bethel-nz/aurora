@@ -24,8 +24,8 @@ pub struct ChangeEvent {
     pub collection: String,
     /// Type of change
     pub change_type: ChangeType,
-    /// Document ID
-    pub id: String,
+    /// Document System ID
+    pub _sid: String,
     /// New/current document (None for Delete)
     pub document: Option<Document>,
     /// Previous document (for Update only)
@@ -57,13 +57,13 @@ impl ChangeEvent {
     /// Create an insert event
     pub fn insert(
         collection: impl Into<String>,
-        id: impl Into<String>,
+        sid: impl Into<String>,
         document: Document,
     ) -> Self {
         Self {
             collection: collection.into(),
             change_type: ChangeType::Insert,
-            id: id.into(),
+            _sid: sid.into(),
             document: Some(document),
             old_document: None,
             changed_fields: HashSet::new(),
@@ -73,7 +73,7 @@ impl ChangeEvent {
     /// Create an update event
     pub fn update(
         collection: impl Into<String>,
-        id: impl Into<String>,
+        sid: impl Into<String>,
         old_document: Document,
         new_document: Document,
     ) -> Self {
@@ -93,7 +93,7 @@ impl ChangeEvent {
         Self {
             collection: collection.into(),
             change_type: ChangeType::Update,
-            id: id.into(),
+            _sid: sid.into(),
             document: Some(new_document),
             old_document: Some(old_document),
             changed_fields: changed,
@@ -101,11 +101,11 @@ impl ChangeEvent {
     }
 
     /// Create a delete event
-    pub fn delete(collection: impl Into<String>, id: impl Into<String>) -> Self {
+    pub fn delete(collection: impl Into<String>, sid: impl Into<String>) -> Self {
         Self {
             collection: collection.into(),
             change_type: ChangeType::Delete,
-            id: id.into(),
+            _sid: sid.into(),
             document: None,
             old_document: None,
             changed_fields: HashSet::new(),
@@ -278,14 +278,14 @@ mod tests {
         data.insert("name".to_string(), Value::String("Alice".into()));
 
         let doc = Document {
-            id: "123".to_string(),
+            _sid: "123".to_string(),
             data,
         };
 
         let event = ChangeEvent::insert("users", "123", doc);
 
         assert_eq!(event.collection, "users");
-        assert_eq!(event.id, "123");
+        assert_eq!(event._sid, "123");
         assert!(matches!(event.change_type, ChangeType::Insert));
         assert!(event.document.is_some());
         assert!(event.old_document.is_none());
@@ -302,12 +302,12 @@ mod tests {
         new_data.insert("age".to_string(), Value::Int(26));
 
         let old_doc = Document {
-            id: "123".to_string(),
+            _sid: "123".to_string(),
             data: old_data,
         };
 
         let new_doc = Document {
-            id: "123".to_string(),
+            _sid: "123".to_string(),
             data: new_data,
         };
 
@@ -327,7 +327,7 @@ mod tests {
         data.insert("active".to_string(), Value::Bool(true));
 
         let doc = Document {
-            id: "123".to_string(),
+            _sid: "123".to_string(),
             data,
         };
 
@@ -351,7 +351,7 @@ mod tests {
         data.insert("email".to_string(), Value::String("alice@example.com".into()));
         data.insert("score".to_string(), Value::Int(42));
 
-        let doc = Document { id: "1".to_string(), data };
+        let doc = Document { _sid: "1".to_string(), data };
         let event = ChangeEvent::insert("users", "1", doc);
 
         // Matching pattern

@@ -43,8 +43,9 @@ use tokio::sync::RwLock;
 /// // Create worker system
 /// let config = WorkerConfig {
 ///     storage_path: "./workers.db".to_string(),
-///     max_concurrent_jobs: 10,
+///     concurrency: 10,
 ///     poll_interval_ms: 100,
+///     cleanup_interval_seconds: 3600,
 /// };
 ///
 /// let workers = WorkerSystem::new(config)?;
@@ -87,8 +88,9 @@ impl WorkerSystem {
 
     /// let config = WorkerConfig {
     ///     storage_path: "./jobs.db".to_string(),
-    ///     max_concurrent_jobs: 5,
+    ///     concurrency: 5,
     ///     poll_interval_ms: 100,
+    ///     cleanup_interval_seconds: 3600,
     /// };
     ///
     /// let workers = WorkerSystem::new(config)?;

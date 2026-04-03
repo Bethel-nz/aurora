@@ -67,7 +67,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::File as StdFile;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::fs::File;
@@ -180,9 +180,9 @@ pub struct Aurora {
     pub(crate) mmap_index: Arc<RwLock<Option<memmap2::Mmap>>>,
     pub(crate) index_manifest: Arc<DashMap<String, (usize, usize)>>,
     /// Mapping from external u128 ID to internal u32 ID (Ticket 1)
-    id_dictionary: Arc<crossbeam_skiplist::SkipMap<u128, u32>>,
+    _sid_dictionary: Arc<crossbeam_skiplist::SkipMap<u128, u32>>,
     /// Mapping from internal u32 ID back to external u128 ID (O(1) lookup)
-    reverse_id_dictionary: Arc<RwLock<Vec<u128>>>,
+    reverse_sid_dictionary: Arc<RwLock<Vec<u128>>>,
     /// Bitset of deleted internal IDs available for recycling (Ticket 3)
     deleted_ids: Arc<RwLock<RoaringBitmap>>,
     next_internal_id: Arc<AtomicU32>,
@@ -203,12 +203,19 @@ pub struct Aurora {
     pub workers: Option<Arc<crate::workers::WorkerSystem>>,
     // Asynchronous WAL Writer Channel
     wal_writer: Option<tokio::sync::mpsc::UnboundedSender<WalOperation>>,
+    /// Set to true when the WAL writer task hits a terminal error. put() checks
+    /// this before sending so it skips the closed channel and degrades gracefully.
+    wal_disabled: Arc<AtomicBool>,
     // Computed fields manager
     pub computed: Arc<RwLock<crate::computed::ComputedFields>>,
     /// LRU cache for parsed AQL AST
     ast_cache: Arc<MokaCache<u64, crate::parser::ast::Document>>,
     /// LRU cache for query plans
     pub plan_cache: Arc<MokaCache<u64, Arc<crate::parser::executor::QueryPlan>>>,
+    /// Set of "collection:field" index keys currently being rebuilt in the background.
+    /// Queries hitting a building index fall back to full scan instead of returning
+    /// incorrect empty results from a half-populated index.
+    pub(crate) building_indices: Arc<DashMap<String, ()>>,
 }
 
 impl fmt::Debug for Aurora {
@@ -236,8 +243,8 @@ impl Clone for Aurora {
             secondary_indices: Arc::clone(&self.secondary_indices),
             mmap_index: Arc::clone(&self.mmap_index),
             index_manifest: Arc::clone(&self.index_manifest),
-            id_dictionary: Arc::clone(&self.id_dictionary),
-            reverse_id_dictionary: Arc::clone(&self.reverse_id_dictionary),
+            _sid_dictionary: Arc::clone(&self._sid_dictionary),
+            reverse_sid_dictionary: Arc::clone(&self.reverse_sid_dictionary),
             deleted_ids: Arc::clone(&self.deleted_ids),
             next_internal_id: Arc::clone(&self.next_internal_id),
             indices_initialized: Arc::clone(&self.indices_initialized),
@@ -253,9 +260,11 @@ impl Clone for Aurora {
             wal_shutdown: self.wal_shutdown.clone(),
             workers: self.workers.clone(),
             wal_writer: self.wal_writer.clone(),
+            wal_disabled: Arc::clone(&self.wal_disabled),
             computed: Arc::clone(&self.computed),
             ast_cache: Arc::clone(&self.ast_cache),
             plan_cache: Arc::clone(&self.plan_cache),
+            building_indices: Arc::clone(&self.building_indices),
         }
     }
 }
@@ -317,7 +326,7 @@ impl Aurora {
         let u = self.parse_external_id(external_id);
         
         // 1. Check dictionary for existing mapping
-        if let Some(entry) = self.id_dictionary.get(&u) {
+        if let Some(entry) = self._sid_dictionary.get(&u) {
             return *entry.value();
         }
 
@@ -342,8 +351,8 @@ impl Aurora {
         };
 
         // 4. Update dictionaries
-        self.id_dictionary.insert(u, internal_id);
-        if let Ok(mut reverse) = self.reverse_id_dictionary.write() {
+        self._sid_dictionary.insert(u, internal_id);
+        if let Ok(mut reverse) = self.reverse_sid_dictionary.write() {
             if (internal_id as usize) >= reverse.len() {
                 reverse.resize((internal_id as usize) + 1, 0);
             }
@@ -376,7 +385,7 @@ impl Aurora {
 
     /// Convert an internal u32 ID back to an external String ID
     pub fn get_external_id(&self, internal_id: u32) -> Option<String> {
-        let reverse_dict = self.reverse_id_dictionary.read().ok()?;
+        let reverse_dict = self.reverse_sid_dictionary.read().ok()?;
         reverse_dict.get(internal_id as usize).map(|u| {
             uuid::Uuid::from_u128(*u).to_string()
         })
@@ -404,6 +413,9 @@ impl Aurora {
         self.indices_initialized.get_or_try_init(|| async {
             self.load_index_checkpoint()
         }).await?;
+        // Cross-check schema against checkpoint: spawn rebuilds for any index
+        // that was missing from the checkpoint (e.g. after a crash).
+        self.init_schema_indices().await;
         Ok(())
     }
 
@@ -429,7 +441,142 @@ impl Aurora {
             *guard = Some(mmap);
         }
 
+        // 3. Hydrate secondary_indices from checkpoint so the hot map is not
+        //    empty after a crash/restart. Without this every indexed lookup
+        //    falls through to a full scan until the next checkpoint fires.
+        //
+        //    Manifest key format: "collection:field:value"
+        //    index_key           = "collection:field"   (split on 2nd colon)
+        let mmap_guard = self.mmap_index.read().ok();
+        if let Some(ref guard) = mmap_guard {
+            if let Some(ref mmap) = **guard {
+                for entry in self.index_manifest.iter() {
+                    let full_key = entry.key();
+                    let (offset, len) = *entry.value();
+
+                    // Split on the second ':' to recover index_key vs value_str
+                    let colon2 = full_key.match_indices(':').nth(1).map(|(i, _)| i);
+                    let (index_key, val_str) = match colon2 {
+                        Some(pos) => (&full_key[..pos], &full_key[pos + 1..]),
+                        None => continue,
+                    };
+
+                    if let Some(bytes) = mmap.get(offset..offset + len) {
+                        if let Ok(bitmap) = RoaringBitmap::deserialize_from(bytes) {
+                            let index = self.secondary_indices
+                                .entry(index_key.to_string())
+                                .or_default();
+                            index.insert(
+                                val_str.to_string(),
+                                Arc::new(std::sync::RwLock::new(IndexStorage::Bitmap(bitmap))),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    /// Returns true if the secondary index for `collection:field` is currently
+    /// being rebuilt in the background. Callers should fall back to a full scan.
+    pub fn is_index_building(&self, collection: &str, field: &str) -> bool {
+        let key = format!("{}:{}", collection, field);
+        self.building_indices.contains_key(&key)
+    }
+
+    /// Scan every collection defined in the schema. For any indexed/unique field
+    /// whose index is absent from the checkpoint, mark it as building and spawn
+    /// a background task to rebuild it from the cold store.
+    ///
+    /// Called once during `ensure_indices_initialized`, after `load_index_checkpoint`.
+    async fn init_schema_indices(&self) {
+        let collection_names: Vec<String> = self
+            .cold
+            .scan_prefix("_collection:")
+            .filter_map(|r| r.ok())
+            .map(|(key, _)| key.trim_start_matches("_collection:").to_string())
+            .collect();
+
+        // Group missing index keys by collection so we do ONE scan per collection,
+        // not one scan per field (which would re-scan the same docs N times).
+        let mut missing_by_collection: HashMap<String, Vec<String>> = HashMap::new();
+
+        for collection_name in collection_names {
+            let Ok(col_def) = self.get_collection_definition(&collection_name) else {
+                continue;
+            };
+
+            // Always include the auto-indexed "id" field — it's not schema-derived
+            // but index_value() indexes it automatically if present in doc.data.
+            let auto_id_key = format!("{}:id", collection_name);
+            if !self.has_index(&collection_name, "id") {
+                self.building_indices.insert(auto_id_key.clone(), ());
+                missing_by_collection
+                    .entry(collection_name.clone())
+                    .or_default()
+                    .push(auto_id_key);
+            }
+
+            for (field_name, field_def) in &col_def.fields {
+                if !field_def.indexed && !field_def.unique {
+                    continue;
+                }
+                let index_key = format!("{}:{}", collection_name, field_name);
+                if self.has_index(&collection_name, field_name) {
+                    continue;
+                }
+                self.building_indices.insert(index_key.clone(), ());
+                missing_by_collection
+                    .entry(collection_name.clone())
+                    .or_default()
+                    .push(index_key);
+            }
+        }
+
+        // One rebuild task per collection — single scan, indexes all missing fields.
+        for (collection_name, index_keys) in missing_by_collection {
+            let db = self.clone();
+            tokio::spawn(async move {
+                db.rebuild_collection_indices(&collection_name, index_keys).await;
+            });
+        }
+    }
+
+    /// Background rebuild: one full collection scan that rebuilds ALL missing index keys.
+    /// Using a single scan avoids redundant I/O when multiple fields are missing.
+    async fn rebuild_collection_indices(&self, collection: &str, index_keys: Vec<String>) {
+        let db = self.clone();
+        let coll = collection.to_string();
+        let keys_clone = index_keys.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let prefix = format!("{}:", coll);
+            for entry in db.cold.scan_prefix(&prefix).flatten() {
+                let (key, value) = entry;
+                if key.starts_with('_') {
+                    continue;
+                }
+                // index_value is idempotent and covers all indexed fields in one pass.
+                let _ = db.index_value(&coll, &key, &value, None);
+            }
+        })
+        .await;
+
+        // Clear all building flags for this collection's keys regardless of outcome.
+        for key in &index_keys {
+            self.building_indices.remove(key);
+        }
+
+        if result.is_ok() {
+            let _ = self.save_index_checkpoint();
+        } else {
+            eprintln!(
+                "Index rebuild panicked for collection '{}' (keys: {:?}); will retry on next query cycle.",
+                collection, keys_clone
+            );
+        }
     }
 
     /// Persist dense secondary indices to disk and re-mmap the result.
@@ -590,8 +737,22 @@ impl Aurora {
             .insert(key.to_string(), location);
 
         if let Ok(doc) = self.deserialize_internal::<Document>(value) {
-            let internal_id = self.get_or_create_internal_id(&doc.id);
+            let internal_id = self.get_or_create_internal_id(&doc._sid);
             let collection_def = self.get_collection_definition(collection)?;
+
+            // PERFORMANCE: Automatically index 'id' if present in data
+            if let Some(id_val) = doc.data.get("id") {
+                let index_key = format!("{}:id", collection);
+                let val_str = id_val.to_string();
+                let index = self.secondary_indices.entry(index_key).or_default();
+                index.entry(val_str)
+                    .and_modify(|existing| {
+                        if let Ok(mut storage) = existing.write() {
+                            storage.add(internal_id);
+                        }
+                    })
+                    .or_insert_with(|| Arc::new(RwLock::new(IndexStorage::Single(internal_id))));
+            }
 
             for (field_name, field_val) in doc.data {
                 if collection_def.fields.get(&field_name).map_or(false, |f| f.indexed) {
@@ -664,7 +825,7 @@ impl Aurora {
     ///
     /// // Receive real-time events
     /// while let Ok(event) = listener.recv().await {
-    ///     println!("Change: {:?} on {}", event.change_type, event.id);
+    ///     println!("Change: {:?} on {}", event.change_type, event._sid);
     /// }
     /// ```
     pub async fn stream(&self, aql: &str) -> Result<crate::pubsub::ChangeListener> {
@@ -866,54 +1027,56 @@ impl Aurora {
 
         // --- FIX: Initialize Background WAL Writer ---
         // Only enable WAL writer if WAL was successfully initialized
+        let wal_disabled_flag = Arc::new(AtomicBool::new(false));
         let wal_writer = if enable_wal && wal.is_some() {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<WalOperation>();
             let wal_clone = wal.clone();
+            let wal_disabled_task = Arc::clone(&wal_disabled_flag);
 
             // Spawn a single dedicated thread/task for writing WAL sequentially
             tokio::spawn(async move {
                 if let Some(wal) = wal_clone {
                     while let Some(op) = rx.recv().await {
+                        // If WAL has been disabled due to a prior error, drain messages silently.
+                        if wal_disabled_task.load(Ordering::Relaxed) {
+                            continue;
+                        }
+
                         let wal = wal.clone();
                         // Move blocking I/O to a blocking thread
-                        let result = tokio::task::spawn_blocking(move || {
-                            // Properly handle the RwLock write guard
+                        let result = tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
                             match wal.write() {
                                 Ok(mut guard) => {
-                                    let result = match op {
+                                    let wal_result = match op {
                                         WalOperation::Put { key, value } => {
-                                            // Deref Arc to pass slices
                                             guard.append(Operation::Put, &key, Some(value.as_ref()))
                                         }
                                         WalOperation::Delete { key } => {
                                             guard.append(Operation::Delete, &key, None)
                                         }
                                     };
-                                    if let Err(e) = result {
-                                        eprintln!(
-                                            "CRITICAL: Failed to append to WAL: {}. Shutting down.",
-                                            e
-                                        );
-                                        // A failed WAL write is a catastrophic failure.
-                                        std::process::exit(1);
-                                    }
+                                    wal_result.map_err(|e| format!("WAL append failed: {}", e))
                                 }
                                 Err(e) => {
-                                    // This likely means the lock is poisoned, which is a critical state.
-                                    eprintln!(
-                                        "CRITICAL: Failed to acquire WAL lock: {}. Shutting down.",
-                                        e
-                                    );
-                                    std::process::exit(1);
+                                    // Lock is poisoned — degrade gracefully, do not kill the process.
+                                    Err(format!("WAL lock poisoned: {}", e))
                                 }
                             }
                         })
                         .await;
 
-                        if let Err(e) = result {
-                            eprintln!("WAL blocking task failed: {}", e);
-                            // If the blocking task panics or is cancelled, that's critical
-                            std::process::exit(1);
+                        match result {
+                            Err(e) if e.is_cancelled() => break,
+                            Err(e) => {
+                                eprintln!("WAL task panicked: {}. Durability disabled for this session.", e);
+                                wal_disabled_task.store(true, Ordering::SeqCst);
+                                // Keep draining so callers never see a closed-channel error.
+                            }
+                            Ok(Err(msg)) => {
+                                eprintln!("CRITICAL WAL write error: {}. Durability disabled for this session.", msg);
+                                wal_disabled_task.store(true, Ordering::SeqCst);
+                            }
+                            Ok(Ok(())) => {}
                         }
                     }
                 }
@@ -988,14 +1151,19 @@ impl Aurora {
             None
         };
 
-        let workers_path = path.join("workers.db");
-        let worker_config = crate::workers::WorkerConfig {
-            storage_path: workers_path.to_string_lossy().into_owned(),
-            ..Default::default()
+        let workers = if config.workers_enabled {
+            let workers_path = path.join("workers.db");
+            let worker_config = crate::workers::WorkerConfig {
+                storage_path: workers_path.to_string_lossy().into_owned(),
+                concurrency: config.worker_threads,
+                ..Default::default()
+            };
+            crate::workers::WorkerSystem::new(worker_config)
+                .map(Arc::new)
+                .ok()
+        } else {
+            None
         };
-        let workers = crate::workers::WorkerSystem::new(worker_config)
-            .map(Arc::new)
-            .ok();
 
         let db = Self {
             hot,
@@ -1004,8 +1172,8 @@ impl Aurora {
             secondary_indices: Arc::new(DashMap::new()),
             mmap_index: Arc::new(RwLock::new(None)),
             index_manifest: Arc::new(DashMap::new()),
-            id_dictionary: Arc::new(crossbeam_skiplist::SkipMap::new()),
-            reverse_id_dictionary: Arc::new(RwLock::new(Vec::new())),
+            _sid_dictionary: Arc::new(crossbeam_skiplist::SkipMap::new()),
+            reverse_sid_dictionary: Arc::new(RwLock::new(Vec::new())),
             deleted_ids: Arc::new(RwLock::new(RoaringBitmap::new())),
             next_internal_id: Arc::new(AtomicU32::new(0)),
             indices_initialized: Arc::new(OnceCell::new()),
@@ -1024,6 +1192,8 @@ impl Aurora {
             computed: Arc::new(RwLock::new(crate::computed::ComputedFields::new())),
             ast_cache: Arc::new(MokaCache::new(1000)),
             plan_cache: Arc::new(MokaCache::new(1000)),
+            building_indices: Arc::new(DashMap::new()),
+            wal_disabled: wal_disabled_flag,
         };
 
         if !wal_entries.is_empty() {
@@ -1211,10 +1381,21 @@ impl Aurora {
     }
 
     pub fn has_index(&self, collection: &str, field: &str) -> bool {
-        if let Ok(collection_def) = self.get_collection_definition(collection) {
-            if let Some(field_def) = collection_def.fields.get(field) {
-                return field_def.indexed || field_def.unique;
-            }
+        // _sid is the primary key — always an O(1) lookup, no secondary index needed.
+        if field == "_sid" {
+            return true;
+        }
+        // For all other fields (including auto-indexed "id"), only claim the index
+        // exists if there is actual data in the hot map or cold manifest.
+        // This prevents the indexed fast-path from firing on a post-crash empty index
+        // and returning zero results instead of falling back to a full scan.
+        let index_key = format!("{}:{}", collection, field);
+        if self.secondary_indices.contains_key(&index_key) {
+            return true;
+        }
+        let cold_prefix = format!("{}:", index_key);
+        if self.index_manifest.iter().any(|e| e.key().starts_with(&cold_prefix)) {
+            return true;
         }
         false
     }
@@ -1289,7 +1470,7 @@ impl Aurora {
     ///         match event.change_type {
     ///             ChangeType::Insert => println!("New user: {:?}", event.document),
     ///             ChangeType::Update => println!("Updated user: {:?}", event.document),
-    ///             ChangeType::Delete => println!("Deleted user ID: {}", event.id),
+    ///             ChangeType::Delete => println!("Deleted user ID: {}", event._sid),
     ///         }
     ///     }
     /// });
@@ -1314,8 +1495,8 @@ impl Aurora {
     /// tokio::spawn(async move {
     ///     while let Ok(event) = listener.recv().await {
     ///         // Invalidate cache entry when product changes
-    ///         cache_clone.write().await.remove(&event.id);
-    ///         println!("Cache invalidated for product: {}", event.id);
+    ///         cache_clone.write().await.remove(&event._sid);
+    ///         println!("Cache invalidated for product: {}", event._sid);
     ///     }
     /// });
     /// ```
@@ -1344,7 +1525,7 @@ impl Aurora {
     ///         db.insert_into("audit_log", vec![
     ///             ("collection", Value::String("sensitive_data".into())),
     ///             ("action", Value::String(format!("{:?}", event.change_type))),
-    ///             ("document_id", Value::String(event.id.clone())),
+    ///             ("document_id", Value::String(event._sid.clone())),
     ///             ("timestamp", Value::String(chrono::Utc::now().to_rfc3339())),
     ///         ]).await?;
     ///     }
@@ -1365,7 +1546,7 @@ impl Aurora {
     ///                 }
     ///             },
     ///             ChangeType::Delete => {
-    ///                 external_api.delete_user(&event.id).await?;
+    ///                 external_api.delete_user(&event._sid).await?;
     ///             },
     ///         }
     ///     }
@@ -1459,7 +1640,7 @@ impl Aurora {
     ///             timestamp: chrono::Utc::now(),
     ///             collection: event.collection,
     ///             action: event.change_type,
-    ///             document_id: event.id,
+    ///             document_id: event._sid,
     ///             user_id: get_current_user_id(),
     ///         }).await;
     ///     }
@@ -1748,6 +1929,7 @@ impl Aurora {
         // --- 1. WAL Write (Non-blocking send of Arcs) ---
         if let Some(ref sender) = self.wal_writer
             && self.config.durability_mode != DurabilityMode::None
+            && !self.wal_disabled.load(Ordering::Relaxed)
         {
             sender
                 .send(WalOperation::Put {
@@ -1827,6 +2009,14 @@ impl Aurora {
                     primary_index
                         .entry(key)
                         .or_insert_with(|| DiskLocation::new(value.len()));
+
+                    // Rebuild the _sid ↔ internal-u32 mapping so that bitmaps
+                    // loaded from the checkpoint can be translated back to real
+                    // external IDs via get_external_id(). Without this, every
+                    // u32 in a persisted bitmap maps to None after restart.
+                    if let Ok(doc) = self.deserialize_internal::<Document>(&value) {
+                        let _ = self.get_or_create_internal_id(&doc._sid);
+                    }
                 }
             }
         }
@@ -2274,7 +2464,7 @@ impl Aurora {
 
         let doc_id = Uuid::now_v7().to_string();
         let document = Document {
-            id: doc_id.clone(),
+            _sid: doc_id.clone(),
             data: data_map,
         };
 
@@ -2302,7 +2492,7 @@ impl Aurora {
 
         let doc_id = Uuid::now_v7().to_string();
         let document = Document {
-            id: doc_id.clone(),
+            _sid: doc_id.clone(),
             data,
         };
 
@@ -2439,7 +2629,7 @@ impl Aurora {
 
             let doc_id = Uuid::now_v7().to_string();
             let document = Document {
-                id: doc_id.clone(),
+                _sid: doc_id.clone(),
                 data,
             };
 
@@ -2655,7 +2845,7 @@ impl Aurora {
     /// ```
     pub async fn begin_transaction(&self) -> crate::transaction::TransactionId {
         let buffer = self.transaction_manager.begin();
-        buffer.id
+        buffer._sid
     }
 
     /// Commit a transaction, making all changes permanent
@@ -3041,7 +3231,7 @@ impl Aurora {
     ///
     /// // Basic retrieval
     /// if let Some(user) = db.get_document("users", &user_id)? {
-    ///     println!("Found user: {}", user.id);
+    ///     println!("Found user: {}", user._sid);
     ///
     ///     // Access fields safely
     ///     if let Some(Value::String(name)) = user.data.get("name") {
@@ -3084,8 +3274,8 @@ impl Aurora {
     /// - Searching by other fields → Use `query().filter()` instead
     /// - Need multiple documents by criteria → Use `query().collect()` instead
     /// - Don't know the ID → Use `find_by_field()` or `query()` instead
-    pub fn get_document(&self, collection: &str, id: &str) -> Result<Option<Document>> {
-        let key = format!("{}:{}", collection, id);
+    pub fn get_document(&self, collection: &str, sid: &str) -> Result<Option<Document>> {
+        let key = format!("{}:{}", collection, sid);
         if let Some(data) = self.get(&key)? {
             Ok(Some(serde_json::from_slice(&data)?))
         } else {
@@ -3154,7 +3344,7 @@ impl Aurora {
     ///     .await?;
     ///
     /// for order in orders {
-    ///     db.delete(&format!("orders:{}", order.id)).await?;
+    ///     db.delete(&format!("orders:{}", order._sid)).await?;
     /// }
     ///
     /// // Then delete the user
@@ -3187,7 +3377,7 @@ impl Aurora {
     ///     .await?;
     ///
     /// for user in old_deletions {
-    ///     db.delete(&format!("users:{}", user.id)).await?;
+    ///     db.delete(&format!("users:{}", user._sid)).await?;
     /// }
     /// ```ignore
     ///
@@ -3222,9 +3412,9 @@ impl Aurora {
         if let Some(doc) = document {
             self.remove_from_indices(collection, &doc)?;
         } else {
-            // Fallback: at least remove from primary index
+            // Fallback: at least remove from primary index using the full sled key.
             if let Some(index) = self.primary_indices.get_mut(collection) {
-                index.remove(id);
+                index.remove(key);
             }
         }
 
@@ -3264,13 +3454,13 @@ impl Aurora {
     }
 
     fn remove_from_indices(&self, collection: &str, doc: &Document) -> Result<()> {
-        // Remove from primary index
+        // Remove from primary index — key format is "collection:sid" (the full sled key).
         if let Some(index) = self.primary_indices.get(collection) {
-            index.remove(&doc.id);
+            index.remove(&format!("{}:{}", collection, doc._sid));
         }
 
-        let u = self.parse_external_id(&doc.id);
-        let internal_id = self.id_dictionary.get(&u).map(|e| *e.value());
+        let u = self.parse_external_id(&doc._sid);
+        let internal_id = self._sid_dictionary.get(&u).map(|e| *e.value());
 
         // Remove from secondary indices
         for (field, value) in &doc.data {
@@ -3406,7 +3596,7 @@ impl Aurora {
             // Recursively convert every Value to a JsonValue — no silent drops.
             let mut obj = serde_json::Map::new();
             // Always include the document id field
-            obj.insert("_id".to_string(), JsonValue::String(doc.id));
+            obj.insert("_id".to_string(), JsonValue::String(doc._sid));
             for (k, v) in doc.data {
                 obj.insert(k, Self::value_to_json(v));
             }
@@ -3561,7 +3751,7 @@ impl Aurora {
                 .iter()
                 .map(|col| {
                     if col == "_id" {
-                        return doc.id.clone();
+                        return doc._sid.clone();
                     }
                     match doc.data.get(col) {
                         None => String::new(),
@@ -3706,7 +3896,7 @@ impl Aurora {
                 .await?;
 
             let document = Document {
-                id: id.to_string(),
+                _sid: id.to_string(),
                 data: data_map,
             };
 
@@ -3770,7 +3960,7 @@ impl Aurora {
         let mut deleted_count = 0;
 
         for doc in docs {
-            let key = format!("{}:{}", collection, doc.id);
+            let key = format!("{}:{}", collection, doc._sid);
             self.delete(&key).await?;
             deleted_count += 1;
         }
@@ -3964,12 +4154,12 @@ impl Aurora {
 
         // Create and insert document
         let document = Document {
-            id: doc_id,
+            _sid: doc_id,
             data: data_map,
         };
 
         self.put(
-            format!("{}:{}", collection, document.id),
+            format!("{}:{}", collection, document._sid),
             serde_json::to_vec(&document)?,
             None,
         )
@@ -4169,7 +4359,7 @@ impl Aurora {
     ///     // Manually populate cache with hot data
     ///     for session in active_sessions {
     ///         // Reading automatically caches
-    ///         db.get_document("sessions", &session.id)?;
+    ///         db.get_document("sessions", &session._sid)?;
     ///     }
     ///
     ///     Ok(())
@@ -4314,7 +4504,7 @@ impl Aurora {
     /// let pairs: Vec<(String, Vec<u8>)> = custom_data
     ///     .iter()
     ///     .map(|data| {
-    ///         let key = format!("binary:{}", data.id);
+    ///         let key = format!("binary:{}", data._sid);
     ///         let value = bincode::serialize(data).unwrap();
     ///         (key, value)
     ///     })
@@ -5207,7 +5397,7 @@ impl Aurora {
                         // Compare by internal ID to avoid the round-trip through
                         // string formatting (custom IDs like "user2" hash to a u128
                         // that formats as a different UUID string).
-                        let exclude_internal = self.id_dictionary
+                        let exclude_internal = self._sid_dictionary
                             .get(&self.parse_external_id(exclude_id))
                             .map(|e| *e.value());
                         if let Ok(storage) = doc_ids_arc.value().read() {
@@ -5266,21 +5456,23 @@ impl Aurora {
         // Validate unique constraints before inserting
         self.validate_unique_constraints(collection, &data).await?;
 
-        let doc_id = Uuid::now_v7().to_string();
+        // Generate a fresh UUIDv7 for the internal system ID
+        let sid = Uuid::now_v7().to_string();
+
         let document = Document {
-            id: doc_id.clone(),
+            _sid: sid.clone(),
             data,
         };
 
         self.put(
-            format!("{}:{}", collection, doc_id),
+            format!("{}:{}", collection, sid),
             serde_json::to_vec(&document)?,
             None,
         )
         .await?;
 
         // Publish insert event
-        let event = crate::pubsub::ChangeEvent::insert(collection, &doc_id, document.clone());
+        let event = crate::pubsub::ChangeEvent::insert(collection, &sid, document.clone());
         let _ = self.pubsub.publish(event);
 
         Ok(document)
@@ -5394,7 +5586,7 @@ impl Aurora {
                 };
                 if let Some(doc_ids_arc) = index.get(&value_str) {
                     let external_u128 = self.parse_external_id(doc_id);
-                    if let Some(internal_id_entry) = self.id_dictionary.get(&external_u128) {
+                    if let Some(internal_id_entry) = self._sid_dictionary.get(&external_u128) {
                         if let Ok(mut storage) = doc_ids_arc.value().write() {
                             storage.remove(*internal_id_entry.value());
                         }
@@ -5405,7 +5597,7 @@ impl Aurora {
 
         // Return the internal ID to the recycling pool
         let external_u128 = self.parse_external_id(doc_id);
-        if let Some(internal_id_entry) = self.id_dictionary.get(&external_u128) {
+        if let Some(internal_id_entry) = self._sid_dictionary.get(&external_u128) {
             if let Ok(mut deleted) = self.deleted_ids.write() {
                 deleted.insert(*internal_id_entry.value());
             }
@@ -5658,7 +5850,7 @@ impl Aurora {
         data.insert("version".to_string(), Value::String(version.to_string()));
         data.insert("status".to_string(), Value::String("applied".to_string()));
         data.insert("applied_at".to_string(), Value::String(timestamp));
-        let doc = Document { id: version.to_string(), data };
+        let doc = Document { _sid: version.to_string(), data };
         let doc_key = format!("_migrations:{}", version);
         self.put(doc_key, serde_json::to_vec(&doc)?, None).await?;
 

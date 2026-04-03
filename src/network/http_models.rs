@@ -47,8 +47,9 @@ pub struct QueryPayload {
 /// Converts an internal `Document` into a clean, client-friendly `serde_json::Value`.
 pub fn document_to_json(doc: &Document) -> JsonValue {
     let mut map = serde_json::Map::new();
-    // Always include the ID in the output
-    map.insert("id".to_string(), json!(doc.id));
+    
+    // Inject _sid at the top level of the JSON response, matching MongoDB's _id behaviour
+    map.insert("_sid".to_string(), json!(doc._sid));
 
     for (key, value) in &doc.data {
         map.insert(key.clone(), value_to_json(value));

@@ -17,10 +17,12 @@ mutation {
             active: true
         }
     ) {
-        id # Return the ID of the created document
+        id # Returns the ID provided in data (or generated internal _sid if missing)
     }
 }
 ```
+
+> **Note on IDs**: Aurora uses a decoupled internal System ID (`_sid`) for tracking. When you request `id` in a selection set, Aurora returns the value from your JSON data object. This ensures data purity. For more details, see [Schema Management](./schema.md#system-id--data-purity).
 
 ### Batch Inserts
 

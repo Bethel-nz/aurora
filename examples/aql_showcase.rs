@@ -342,7 +342,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let ExecutionResult::Query(q) = seed {
         if let Some(cursor_doc) = q.documents.first() {
-            let cursor_id = &cursor_doc.id;
+            let cursor_id = &cursor_doc._sid;
             let aql = format!(r#"
                 query {{
                     users(first: 3, after: "{cursor_id}", orderBy: {{ age: ASC }}) {{

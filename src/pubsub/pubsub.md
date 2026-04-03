@@ -148,7 +148,7 @@ let mut listener = db.stream(r#"
 "#).await?;
 
 while let Ok(event) = listener.recv().await {
-    println!("Change: {:?} on {}", event.change_type, event.id);
+    println!("Change: {:?} on {}", event.change_type, event._sid);
 }
 ```
 
@@ -171,7 +171,7 @@ let mut listener = db.listen("orders")
 
 tokio::spawn(async move {
     while let Ok(event) = listener.recv().await {
-        println!("[{}] {:?}", event.id, event.change_type);
+        println!("[{}] {:?}", event._sid, event.change_type);
     }
 });
 ```

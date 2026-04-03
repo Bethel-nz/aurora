@@ -79,7 +79,7 @@ async fn test_deep_pagination_and_projections() {
     // Find the 500,000th document ID to use as a cursor
     let mid_offset = 500_000;
     let mid_docs = db.query(collection).limit(1).offset(mid_offset).collect().await.unwrap();
-    let cursor_id = mid_docs[0].id.clone();
+    let cursor_id = mid_docs[0]._sid.clone();
     
     let start = Instant::now();
     let aql = format!(r#"

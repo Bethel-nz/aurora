@@ -132,7 +132,7 @@ async fn test_fluent_vs_aql_parity() {
     println!("Checking Update Parity...");
     
     // Fluent Update
-    db.update_document("fluent_coll", &fluent_results[0].id, vec![("age", Value::Int(100))]).await.unwrap();
+    db.update_document("fluent_coll", &fluent_results[0]._sid, vec![("age", Value::Int(100))]).await.unwrap();
 
     // AQL Update
     let aql_update = format!(

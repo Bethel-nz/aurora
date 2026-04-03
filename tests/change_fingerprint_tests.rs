@@ -9,15 +9,15 @@
 /// - non-update events (insert/delete) always pass through watch_fields fast-path
 
 use aurora_db::pubsub::events::{ChangeEvent, ChangeType, EventFilter};
-use aurora_db::{Aurora, AuroraConfig, FieldType, Value};
+use aurora_db::{Aurora, AuroraConfig, Document, FieldType, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
-fn make_doc(id: &str, fields: Vec<(&str, Value)>) -> aurora_db::types::Document {
-    aurora_db::types::Document {
-        id: id.to_string(),
+fn make_doc(sid: &str, fields: Vec<(&str, Value)>) -> aurora_db::types::Document {
+    Document {
+        _sid: sid.to_string(),
         data: fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
     }
 }

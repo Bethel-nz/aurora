@@ -41,16 +41,16 @@ impl TransactionId {
 
 #[derive(Debug, Clone)]
 pub struct TransactionBuffer {
-    pub id: TransactionId,
+    pub _sid: TransactionId,
     pub writes: DashMap<String, Vec<u8>>,
     pub deletes: DashMap<String, ()>,
     pub events: Arc<tokio::sync::Mutex<Vec<crate::pubsub::ChangeEvent>>>,
 }
 
 impl TransactionBuffer {
-    pub fn new(id: TransactionId) -> Self {
+    pub fn new(_sid: TransactionId) -> Self {
         Self {
-            id,
+            _sid,
             writes: DashMap::new(),
             deletes: DashMap::new(),
             events: Arc::new(tokio::sync::Mutex::new(Vec::new())),
@@ -153,7 +153,7 @@ mod tests {
         let tx1 = manager.begin();
         let tx2 = manager.begin();
 
-        assert_ne!(tx1.id, tx2.id);
+        assert_ne!(tx1._sid, tx2._sid);
         assert_eq!(manager.active_count(), 2);
 
         tx1.write("key1".to_string(), b"value1".to_vec());
@@ -162,10 +162,10 @@ mod tests {
         assert_eq!(tx1.writes.get("key1").unwrap().as_slice(), b"value1");
         assert_eq!(tx2.writes.get("key1").unwrap().as_slice(), b"value2");
 
-        manager.commit(tx1.id).unwrap();
+        manager.commit(tx1._sid).unwrap();
         assert_eq!(manager.active_count(), 1);
 
-        manager.rollback(tx2.id).unwrap();
+        manager.rollback(tx2._sid).unwrap();
         assert_eq!(manager.active_count(), 0);
     }
 }

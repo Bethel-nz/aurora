@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if !fluent_results.is_empty() {
         println!("\nSample Match:");
-        println!("  ID: {}", fluent_results[0].id);
+        println!("  ID: {}", fluent_results[0]._sid);
         println!("  Name: {:?}", fluent_results[0].data.get("name"));
     }
 
