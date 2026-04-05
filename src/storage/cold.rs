@@ -63,6 +63,10 @@ impl ColdStore {
         Ok(Self { db, db_path })
     }
 
+    pub fn open_tree(&self, name: &str) -> Result<sled::Tree> {
+        Ok(self.db.open_tree(name)?)
+    }
+
     pub fn try_remove_stale_lock(db_path: &str) -> Result<bool> {
         use std::path::Path;
 

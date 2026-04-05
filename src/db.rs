@@ -177,6 +177,7 @@ pub struct Aurora {
     pub(crate) cold: Arc<ColdStore>,
     pub(crate) primary_indices: Arc<DashMap<String, PrimaryIndex>>,
     pub(crate) secondary_indices: Arc<DashMap<String, SecondaryIndex>>,
+    pub(crate) sys_id_mapping: sled::Tree,
     pub(crate) mmap_index: Arc<RwLock<Option<memmap2::Mmap>>>,
     pub(crate) index_manifest: Arc<DashMap<String, (usize, usize)>>,
     /// Mapping from external u128 ID to internal u32 ID (Ticket 1)
@@ -241,6 +242,7 @@ impl Clone for Aurora {
             cold: Arc::clone(&self.cold),
             primary_indices: Arc::clone(&self.primary_indices),
             secondary_indices: Arc::clone(&self.secondary_indices),
+            sys_id_mapping: self.sys_id_mapping.clone(),
             mmap_index: Arc::clone(&self.mmap_index),
             index_manifest: Arc::clone(&self.index_manifest),
             _sid_dictionary: Arc::clone(&self._sid_dictionary),
@@ -352,6 +354,10 @@ impl Aurora {
 
         // 4. Update dictionaries
         self._sid_dictionary.insert(u, internal_id);
+        
+        // 5. Persist mapping to Sled for cross-session stability
+        let _ = self.sys_id_mapping.insert(u.to_be_bytes(), &internal_id.to_be_bytes());
+
         if let Ok(mut reverse) = self.reverse_sid_dictionary.write() {
             if (internal_id as usize) >= reverse.len() {
                 reverse.resize((internal_id as usize) + 1, 0);
@@ -360,6 +366,36 @@ impl Aurora {
         }
 
         internal_id
+    }
+
+    /// Load persisted internal ID mappings from Sled at startup
+    fn load_id_mapping_from_sled(&self) -> Result<()> {
+        let mut max_id = 0u32;
+        let mut reverse_guard = self.reverse_sid_dictionary.write().unwrap();
+        
+        for result in self.sys_id_mapping.iter() {
+            let (k, v) = result?;
+            if k.len() != 16 || v.len() != 4 { continue; }
+            
+            let u = u128::from_be_bytes(k.as_ref().try_into().map_err(|_| AqlError::new(ErrorCode::InternalError, "ID mapping key corrupt".to_string()))?);
+            let id = u32::from_be_bytes(v.as_ref().try_into().map_err(|_| AqlError::new(ErrorCode::InternalError, "ID mapping value corrupt".to_string()))?);
+            
+            self._sid_dictionary.insert(u, id);
+            
+            if (id as usize) >= reverse_guard.len() {
+                reverse_guard.resize((id as usize) + 1, 0);
+            }
+            reverse_guard[id as usize] = u;
+            
+            max_id = max_id.max(id);
+        }
+        
+        // Ensure the counter starts AFTER the highest loaded ID
+        if max_id > 0 || !self._sid_dictionary.is_empty() {
+             self.next_internal_id.store(max_id + 1, Ordering::SeqCst);
+        }
+        
+        Ok(())
     }
 
     /// Get a secondary index by name
@@ -1165,11 +1201,14 @@ impl Aurora {
             None
         };
 
+        let sys_id_mapping = cold.open_tree("_sys_id_mapping")?;
+
         let db = Self {
             hot,
             cold,
             primary_indices: Arc::new(DashMap::new()),
             secondary_indices: Arc::new(DashMap::new()),
+            sys_id_mapping,
             mmap_index: Arc::new(RwLock::new(None)),
             index_manifest: Arc::new(DashMap::new()),
             _sid_dictionary: Arc::new(crossbeam_skiplist::SkipMap::new()),
@@ -1195,6 +1234,9 @@ impl Aurora {
             building_indices: Arc::new(DashMap::new()),
             wal_disabled: wal_disabled_flag,
         };
+
+        // 0. Load persisted ID mappings from Sled so that internal IDs are stable
+        db.load_id_mapping_from_sled()?;
 
         // 1. Load index checkpoint immediately from disk
         db.load_index_checkpoint()?;
@@ -3489,6 +3531,15 @@ impl Aurora {
 
         // Return the internal ID to the recycling pool so it can be reused
         if let Some(id) = internal_id {
+            // Remove mapping from dictionaries and Sled
+            self._sid_dictionary.remove(&u);
+            if let Ok(mut reverse) = self.reverse_sid_dictionary.write() {
+                if let Some(r) = reverse.get_mut(id as usize) {
+                    *r = 0; // Clear the reverse mapping
+                }
+            }
+            let _ = self.sys_id_mapping.remove(u.to_be_bytes());
+
             if let Ok(mut deleted) = self.deleted_ids.write() {
                 deleted.insert(id);
             }

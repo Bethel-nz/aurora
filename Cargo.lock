@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "aurora-db"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "actix-web",
  "anyhow",
