@@ -423,8 +423,11 @@ impl Aurora {
     pub fn get_external_id(&self, internal_id: u32) -> Option<String> {
         let reverse_dict = self.reverse_sid_dictionary.read().ok()?;
         reverse_dict.get(internal_id as usize).map(|u| {
-            uuid::Uuid::from_u128(*u).to_string()
-        })
+            if *u == 0 {
+                return String::new(); // Or handle as None if 0 is used for empty
+            }
+            self.format_external_id(*u)
+        }).filter(|s| !s.is_empty())
     }
 
     /// Convert an external String ID to its binary u128 representation
