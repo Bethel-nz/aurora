@@ -186,6 +186,8 @@ pub struct Aurora {
     reverse_sid_dictionary: Arc<RwLock<Vec<u128>>>,
     /// Bitset of deleted internal IDs available for recycling (Ticket 3)
     deleted_ids: Arc<RwLock<RoaringBitmap>>,
+    /// IDs that have been cleared from all persistent bitmaps and are safe to reuse
+    recyclable_ids: Arc<RwLock<RoaringBitmap>>,
     next_internal_id: Arc<AtomicU32>,
     indices_initialized: Arc<OnceCell<()>>,
     pub(crate) transaction_manager: crate::transaction::TransactionManager,
@@ -248,6 +250,7 @@ impl Clone for Aurora {
             _sid_dictionary: Arc::clone(&self._sid_dictionary),
             reverse_sid_dictionary: Arc::clone(&self.reverse_sid_dictionary),
             deleted_ids: Arc::clone(&self.deleted_ids),
+            recyclable_ids: Arc::clone(&self.recyclable_ids),
             next_internal_id: Arc::clone(&self.next_internal_id),
             indices_initialized: Arc::clone(&self.indices_initialized),
             transaction_manager: self.transaction_manager.clone(),
@@ -333,10 +336,10 @@ impl Aurora {
         }
 
         // 2. Try to recycle a deleted ID
-        let recycled_id = if let Ok(mut deleted) = self.deleted_ids.write() {
-            if !deleted.is_empty() {
-                let id = deleted.min().unwrap();
-                deleted.remove(id);
+        let recycled_id = if let Ok(mut recyclable) = self.recyclable_ids.write() {
+            if !recyclable.is_empty() {
+                let id = recyclable.min().unwrap();
+                recyclable.remove(id);
                 Some(id)
             } else {
                 None
@@ -754,6 +757,37 @@ impl Aurora {
             *guard = Some(mmap);
         }
 
+        // 4. Finalize ID recycling: move from pending (deleted_ids) to recyclable
+        // This ensures IDs are only reused AFTER they have been wiped from all cold bitmaps
+        if !deleted_snap.is_empty() {
+            if let Ok(mut pending) = self.deleted_ids.write() {
+                *pending -= &deleted_snap;
+            }
+            if let Ok(mut recyclable) = self.recyclable_ids.write() {
+                *recyclable |= &deleted_snap;
+                // Persist recyclable IDs so they survive restart
+                let _ = self.save_recyclable_ids(&recyclable);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn save_recyclable_ids(&self, bitmap: &RoaringBitmap) -> Result<()> {
+        let mut buf = Vec::new();
+        bitmap.serialize_into(&mut buf).map_err(|e| AqlError::new(ErrorCode::IoError, e.to_string()))?;
+        self.cold.set("_sys:recyclable_ids".to_string(), buf)?;
+        Ok(())
+    }
+
+    fn load_recyclable_ids(&self) -> Result<()> {
+        if let Some(data) = self.cold.get("_sys:recyclable_ids")? {
+            if let Ok(bitmap) = RoaringBitmap::deserialize_from(&data[..]) {
+                if let Ok(mut recyclable) = self.recyclable_ids.write() {
+                    *recyclable = bitmap;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1217,6 +1251,7 @@ impl Aurora {
             _sid_dictionary: Arc::new(crossbeam_skiplist::SkipMap::new()),
             reverse_sid_dictionary: Arc::new(RwLock::new(Vec::new())),
             deleted_ids: Arc::new(RwLock::new(RoaringBitmap::new())),
+            recyclable_ids: Arc::new(RwLock::new(RoaringBitmap::new())),
             next_internal_id: Arc::new(AtomicU32::new(0)),
             indices_initialized: Arc::new(OnceCell::new()),
             transaction_manager: crate::transaction::TransactionManager::new(),
@@ -1240,6 +1275,9 @@ impl Aurora {
 
         // 0. Load persisted ID mappings from Sled so that internal IDs are stable
         db.load_id_mapping_from_sled()?;
+        
+        // 0.1 Load recyclable IDs
+        db.load_recyclable_ids()?;
 
         // 1. Load index checkpoint immediately from disk
         db.load_index_checkpoint()?;
