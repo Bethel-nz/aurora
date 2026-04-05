@@ -1196,11 +1196,22 @@ impl Aurora {
             wal_disabled: wal_disabled_flag,
         };
 
+        // 1. Load index checkpoint immediately from disk
+        db.load_index_checkpoint()?;
+
+        // 2. Replay WAL entries on top of the checkpoint state
         if !wal_entries.is_empty() {
             db.replay_wal(wal_entries).await?;
         }
 
-        // Always rebuild primary index from cold storage after startup.
+        // 3. Mark indices as initialized so lazy calls don't re-run load_index_checkpoint
+        let _ = db.indices_initialized.set(());
+
+        // 4. Trigger background rebuilds for indices missing from checkpoint
+        //    (Done after WAL replay so Sled is up to date)
+        db.init_schema_indices().await;
+
+        // 5. Always rebuild primary index from cold storage after startup.
         // WAL replay only covers entries written since the last flush; documents
         // that were already checkpointed to cold storage (WAL truncated) must be
         // reloaded here so queries see all persisted data.
