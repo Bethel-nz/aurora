@@ -5398,19 +5398,46 @@ impl Aurora {
                             .get(&self.parse_external_id(exclude_id))
                             .map(|e| *e.value());
                             
-                        println!("DEBUG: Found value in secondary_indices! exclude_internal={:?}, storage_len={}", exclude_internal, doc_ids_arc.value().read().unwrap().len());
-                        
                         if let Ok(storage) = doc_ids_arc.value().read() {
-                            for internal_id in storage.iter() {
-                                if Some(internal_id) != exclude_internal {
-                                    return Err(AqlError::new(
-                                        ErrorCode::UniqueConstraintViolation,
-                                        format!(
-                                            "Unique constraint violation on field '{}' with value '{}'",
-                                            unique_field, value_str
-                                        ),
-                                    ));
+                            let has_violation = if let Some(exc) = exclude_internal {
+                                // Normal path: dictionary populated, use bitmap exclusion.
+                                storage.iter().any(|id| id != exc)
+                            } else {
+                                // _sid_dictionary not yet populated (first update after
+                                // restart — the dictionary is rebuilt lazily, not from the
+                                // checkpoint). Fall back to a cold-store ownership check:
+                                // if the document being updated already holds this exact
+                                // unique value, it is NOT a violation.
+                                let cold_key = format!("{}:{}", collection, exclude_id);
+                                let doc_owns_value = self.get(&cold_key)
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|raw| serde_json::from_slice::<Document>(&raw).ok())
+                                    .and_then(|doc| doc.data.get(unique_field).cloned())
+                                    .map(|existing_val| match &existing_val {
+                                        Value::String(s) => *s == value_str,
+                                        _ => existing_val.to_string() == value_str,
+                                    })
+                                    .unwrap_or(false);
+
+                                if doc_owns_value {
+                                    // Warm up the dictionary so subsequent checks on this
+                                    // document use the fast path instead of cold storage.
+                                    self.get_or_create_internal_id(exclude_id);
+                                    false
+                                } else {
+                                    !storage.is_empty()
                                 }
+                            };
+
+                            if has_violation {
+                                return Err(AqlError::new(
+                                    ErrorCode::UniqueConstraintViolation,
+                                    format!(
+                                        "Unique constraint violation on field '{}' with value '{}'",
+                                        unique_field, value_str
+                                    ),
+                                ));
                             }
                         }
                     }
