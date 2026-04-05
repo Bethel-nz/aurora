@@ -5394,23 +5394,50 @@ impl Aurora {
                         _ => value.to_string(),
                     };
                     if let Some(doc_ids_arc) = index.get(&value_str) {
-                        // Compare by internal ID to avoid the round-trip through
-                        // string formatting (custom IDs like "user2" hash to a u128
-                        // that formats as a different UUID string).
                         let exclude_internal = self._sid_dictionary
                             .get(&self.parse_external_id(exclude_id))
                             .map(|e| *e.value());
+                            
                         if let Ok(storage) = doc_ids_arc.value().read() {
-                            for internal_id in storage.iter() {
-                                if Some(internal_id) != exclude_internal {
-                                    return Err(AqlError::new(
-                                        ErrorCode::UniqueConstraintViolation,
-                                        format!(
-                                            "Unique constraint violation on field '{}' with value '{}'",
-                                            unique_field, value_str
-                                        ),
-                                    ));
+                            let has_violation = if let Some(exc) = exclude_internal {
+                                // Normal path: dictionary populated, use bitmap exclusion.
+                                storage.iter().any(|id| id != exc)
+                            } else {
+                                // _sid_dictionary not yet populated (first update after
+                                // restart — the dictionary is rebuilt lazily, not from the
+                                // checkpoint). Fall back to a cold-store ownership check:
+                                // if the document being updated already holds this exact
+                                // unique value, it is NOT a violation.
+                                let cold_key = format!("{}:{}", collection, exclude_id);
+                                let doc_owns_value = self.get(&cold_key)
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|raw| serde_json::from_slice::<Document>(&raw).ok())
+                                    .and_then(|doc| doc.data.get(unique_field).cloned())
+                                    .map(|existing_val| match &existing_val {
+                                        Value::String(s) => *s == value_str,
+                                        _ => existing_val.to_string() == value_str,
+                                    })
+                                    .unwrap_or(false);
+
+                                if doc_owns_value {
+                                    // Warm up the dictionary so subsequent checks on this
+                                    // document use the fast path instead of cold storage.
+                                    self.get_or_create_internal_id(exclude_id);
+                                    false
+                                } else {
+                                    !storage.is_empty()
                                 }
+                            };
+
+                            if has_violation {
+                                return Err(AqlError::new(
+                                    ErrorCode::UniqueConstraintViolation,
+                                    format!(
+                                        "Unique constraint violation on field '{}' with value '{}'",
+                                        unique_field, value_str
+                                    ),
+                                ));
                             }
                         }
                     }
@@ -6332,5 +6359,70 @@ mod tests {
         assert_eq!(products_schema.fields.get("sku").unwrap().nullable, false);
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_upsert_unique_field_after_restart() {
+        // Simulates the post-restart scenario:
+        // _sid_dictionary is empty but secondary_indices have the bitmap entries.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().to_path_buf();
+
+        // Session 1: insert a fact
+        let mut document_id = String::new();
+        {
+            let db = Aurora::with_config(AuroraConfig {
+                db_path: db_path.clone(),
+                enable_wal: false,
+                ..Default::default()
+            }).await.unwrap();
+
+            db.new_collection("facts", vec![
+                ("key",        FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: true,  indexed: true, nullable: false, validations: vec![] }),
+                ("value_json", FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: false, validations: vec![] }),
+            ]).await.unwrap();
+
+            let aql = r#"
+                mutation {
+                    insertInto(collection: "facts", data: {
+                        key: "last_session_at",
+                        value_json: "\"2026-04-05T01:00:00Z\""
+                    }) { id }
+                }
+            "#.to_string();
+            let result = db.execute(aql).await.unwrap();
+            
+            // Extract ID from result (QueryResult format)
+            if let crate::parser::executor::ExecutionResult::Mutation(mutres) = result {
+                document_id = mutres.returned_documents[0]._sid.clone();
+            }
+            
+            // Explicitly flush to ensure secondary_indices are written to disk
+            db.flush().unwrap();
+        }
+        // db dropped here — simulates process restart
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Session 2: new Aurora instance, _sid_dictionary starts empty
+        {
+            let db = Aurora::with_config(AuroraConfig {
+                db_path: db_path.clone(),
+                enable_wal: false,
+                ..Default::default()
+            }).await.unwrap();
+
+            // Update the same key with a new value directly by ID — must NOT error
+            let aql = format!(r#"
+                mutation {{
+                    update(
+                        collection: "facts",
+                        id: "{}",
+                        data: {{ key: "last_session_at", value_json: "\"2026-04-05T03:00:00Z\"" }}
+                    ) {{ id }}
+                }}
+            "#, document_id);
+
+            db.execute(aql).await.expect("update of existing unique key after restart should not fail");
+        }
     }
 }
