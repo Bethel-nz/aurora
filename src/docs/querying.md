@@ -204,7 +204,9 @@ query($minAge: Int, $role: String) {
 
 ### The `doc!` and `object!` Macros
 
-In Rust, you can execute parametrized queries using the `doc!` macro, which seamlessly binds Rust variables to your AQL query options. Under the hood, this uses the `value!`, `object!`, and `array!` macros to construct strongly-typed AST values without needing JSON serialization.
+In Rust, you can execute parametrized queries using the `doc!` macro, which seamlessly binds Rust variables to your AQL query options. Under the hood, this uses the `value!`, `object!`, and `array!` macros to construct native, strongly-typed AST values. 
+
+**Why this matters:** Because these macros construct Aurora's native `Value` types directly, they completely bypass JSON parsing. This allows Aurora DB's engine to perform strict runtime type-checking and schema validation instantly and efficiently.
 
 ```rust
 use aurora_db::{doc, object, value, array};
@@ -226,7 +228,8 @@ let result = db.execute(doc!(
     }
 )).await?;
 
-// You can also use object!, array!, and value! for manual construction:
+// You can also use object!, array!, and value! for manual construction, 
+// ensuring immediate schema validation at runtime:
 let my_obj = object!({
     "id": 1,
     "tags": array!["rust", "database"],

@@ -201,7 +201,9 @@ mutation CreateUser($name: String!, $email: String!, $age: Int!) {
 
 ### The `doc!` and `object!` Macros
 
-In Rust, you can use the `doc!` macro to effortlessly execute parametrized mutations. This uses the `value!`, `object!`, and `array!` macros internally to construct native AST values, skipping JSON overhead:
+In Rust, you can use the `doc!` macro to effortlessly execute parametrized mutations. This uses the `value!`, `object!`, and `array!` macros internally to construct native AST values, skipping JSON parsing entirely.
+
+**Why this matters:** Because these macros construct Aurora's native `Value` types directly, the engine can perform immediate runtime type-checking and strict schema validation before the mutation even begins, making your database operations far safer and more efficient.
 
 ```rust
 use aurora_db::{doc, object, value, array};
@@ -231,7 +233,8 @@ let result = db.execute(doc!(
     }
 )).await?;
 
-// You can also construct Aurora values explicitly:
+// You can also construct Aurora values explicitly for direct API usage, 
+// ensuring data is schema-valid at runtime:
 let settings = object!({
     "theme": "dark",
     "notifications": true,
