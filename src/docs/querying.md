@@ -181,3 +181,72 @@ query {
     }
 }
 ```
+
+## Variables and Macros
+
+Aurora DB provides an elegant way to pass variables into your AQL queries, protecting against injection attacks and keeping your queries clean.
+
+You can declare variables in your query header and reference them with `$varName`:
+
+```graphql
+query($minAge: Int, $role: String) {
+    users(where: {
+        and: [
+            { age: { gt: $minAge } },
+            { role: { eq: $role } }
+        ]
+    }) {
+        name
+        age
+    }
+}
+```
+
+### The `doc!` and `object!` Macros
+
+In Rust, you can execute parametrized queries using the `doc!` macro, which seamlessly binds Rust variables to your AQL query options. Under the hood, this uses the `value!`, `object!`, and `array!` macros to construct strongly-typed AST values without needing JSON serialization.
+
+```rust
+use aurora_db::{doc, object, value, array};
+
+let min_age = 18;
+let user_role = "admin";
+
+// doc! creates a (String, ExecutionOptions) tuple
+let result = db.execute(doc!(
+    "query($minAge: Int, $role: String) {
+        users(where: { age: { gt: $minAge }, role: { eq: $role } }) {
+            name
+            age
+        }
+    }",
+    {
+        "minAge": min_age,
+        "role": user_role
+    }
+)).await?;
+
+// You can also use object!, array!, and value! for manual construction:
+let my_obj = object!({
+    "id": 1,
+    "tags": array!["rust", "database"],
+    "active": value!(true),
+    "metadata": { "key": "val" }
+});
+```
+
+Alternatively, you can pass a standard tuple to `execute()` if you prefer constructing variables using `serde_json::json!`:
+
+```rust
+use serde_json::json;
+
+let variables = json!({
+    "minAge": 18,
+    "role": "admin"
+});
+
+let result = db.execute((
+    "query($minAge: Int, $role: String) { ... }", 
+    variables
+)).await?;
+```

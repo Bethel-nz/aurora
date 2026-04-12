@@ -178,3 +178,80 @@ mutation {
     }
 }
 ```
+
+## Using Variables with Mutations
+
+For secure, reusable mutations, use variable bindings. This approach is highly recommended instead of string concatenation.
+
+```graphql
+mutation CreateUser($name: String!, $email: String!, $age: Int!) {
+    insertInto(
+        collection: "users",
+        data: {
+            name: $name,
+            email: $email,
+            age: $age,
+            active: true
+        }
+    ) {
+        id
+    }
+}
+```
+
+### The `doc!` and `object!` Macros
+
+In Rust, you can use the `doc!` macro to effortlessly execute parametrized mutations. This uses the `value!`, `object!`, and `array!` macros internally to construct native AST values, skipping JSON overhead:
+
+```rust
+use aurora_db::{doc, object, value, array};
+
+let user_name = "Jane Smith";
+let user_email = "jane@example.com";
+let user_age = 28;
+
+let result = db.execute(doc!(
+    "mutation CreateUser($name: String!, $email: String!, $age: Int!) {
+        insertInto(
+            collection: \"users\",
+            data: {
+                name: $name,
+                email: $email,
+                age: $age,
+                active: true
+            }
+        ) {
+            id
+        }
+    }",
+    {
+        "name": user_name,
+        "email": user_email,
+        "age": user_age
+    }
+)).await?;
+
+// You can also construct Aurora values explicitly:
+let settings = object!({
+    "theme": "dark",
+    "notifications": true,
+    "tags": array!["new", "user"]
+});
+```
+
+Alternatively, `db.execute()` accepts a tuple of `(&str, serde_json::Value)` representing the query and its variables:
+
+```rust
+use serde_json::json;
+
+let vars = json!({
+    "name": "Jane Smith",
+    "email": "jane@example.com",
+    "age": 28
+});
+
+let result = db.execute((
+    "mutation CreateUser($name: String!, $email: String!, $age: Int!) { ... }", 
+    vars
+)).await?;
+```
