@@ -1,7 +1,6 @@
 use aurora_db::parser::validator::ErrorCode;
 use aurora_db::parser::{parse_with_variables, validator};
 use aurora_db::types::{Collection, FieldDefinition, FieldType, ScalarType};
-use serde_json::json;
 use std::collections::HashMap;
 
 struct MockSchemaProvider {

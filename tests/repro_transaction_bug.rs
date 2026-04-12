@@ -1,5 +1,4 @@
 use aurora_db::{Aurora, AuroraConfig, FieldType, Value};
-use fst::raw::Node;
 use std::path::PathBuf;
 
 async fn create_test_db(path: PathBuf) -> Aurora {

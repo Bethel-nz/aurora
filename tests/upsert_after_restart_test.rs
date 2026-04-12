@@ -1,7 +1,5 @@
 use aurora_db::types::{FieldDefinition, FieldType, Value};
 use aurora_db::{Aurora, AuroraConfig};
-use fst::raw::Node;
-use std::sync::Arc;
 
 #[tokio::test]
 async fn test_upsert_after_restart_no_unique_error() {

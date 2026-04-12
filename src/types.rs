@@ -244,11 +244,16 @@ impl Document {
 
 impl fmt::Display for Document {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            serde_json::to_string_pretty(self).unwrap_or_default()
-        )
+        write!(f, "{{\n  \"_sid\": \"{}\",\n  \"data\": {{\n", self._sid)?;
+        let mut first = true;
+        for (k, v) in &self.data {
+            if !first {
+                write!(f, ",\n")?;
+            }
+            write!(f, "    \"{}\": {}", k, v)?;
+            first = false;
+        }
+        write!(f, "\n  }}\n}}")
     }
 }
 
@@ -344,19 +349,31 @@ impl fmt::Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::Int(i) => write!(f, "{}", i),
             Value::Float(fl) => write!(f, "{}", fl),
-            Value::String(s) => write!(f, "{}", s),
-            Value::Uuid(u) => write!(f, "{}", u),
-            Value::DateTime(dt) => write!(f, "{}", dt),
-            Value::Array(arr) => write!(
-                f,
-                "{}",
-                serde_json::to_string(arr).unwrap_or_else(|_| "[]".to_string())
-            ),
-            Value::Object(obj) => write!(
-                f,
-                "{}",
-                serde_json::to_string(obj).unwrap_or_else(|_| "{}".to_string())
-            ),
+            Value::String(s) => write!(f, "\"{}\"", s),
+            Value::Uuid(u) => write!(f, "\"{}\"", u),
+            Value::DateTime(dt) => write!(f, "\"{}\"", dt),
+            Value::Array(arr) => {
+                write!(f, "[")?;
+                for (i, val) in arr.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", val)?;
+                }
+                write!(f, "]")
+            }
+            Value::Object(obj) => {
+                write!(f, "{{")?;
+                let mut first = true;
+                for (k, v) in obj {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "\"{}\": {}", k, v)?;
+                    first = false;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }

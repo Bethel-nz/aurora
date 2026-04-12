@@ -1,4 +1,4 @@
-use aurora_db::{doc, object, Aurora, AuroraConfig, ErrorCode};
+use aurora_db::{doc, Aurora, AuroraConfig, ErrorCode};
 
 async fn get_temp_db() -> Aurora {
     let mut config = AuroraConfig::default();

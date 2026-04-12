@@ -1928,7 +1928,10 @@ fn eval_template(template: &str, data: &HashMap<String, Value>) -> String {
     for (k, v) in data {
         let p1 = format!("${{{}}}", k);
         let p2 = format!("${}", k);
-        let v_str = v.to_string();
+        let v_str = match v {
+            Value::String(s) => s.clone(),
+            _ => v.to_string(),
+        };
         if result.contains(&p1) {
             result = result.replace(&p1, &v_str);
         }
