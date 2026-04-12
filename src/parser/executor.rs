@@ -952,14 +952,23 @@ impl ExecutionResult {
 
     /// Maps the first result document into a user-defined struct.
     pub fn bind_first<T: serde::de::DeserializeOwned>(self) -> Result<T> {
-        let mut results: Vec<T> = self.bind()?;
-        if results.is_empty() {
-            return Err(AqlError::new(
-                ErrorCode::NotFound,
-                "No documents found to bind".to_string(),
-            ));
+        match self {
+            Self::Query(q) => q.bind_first(),
+            Self::Mutation(m) => m.bind_first(),
+            Self::Batch(mut results) => {
+                if results.is_empty() {
+                    return Err(AqlError::new(
+                        ErrorCode::NotFound,
+                        "No documents found to bind".to_string(),
+                    ));
+                }
+                results.remove(0).bind_first()
+            }
+            _ => Err(AqlError::new(
+                ErrorCode::QueryError,
+                "Cannot bind results from schema or migration operations".to_string(),
+            )),
         }
-        Ok(results.remove(0))
     }
 }
 
@@ -1006,14 +1015,16 @@ impl QueryResult {
 
     /// Maps the first result document into a user-defined struct.
     pub fn bind_first<T: serde::de::DeserializeOwned>(self) -> Result<T> {
-        let mut results: Vec<T> = self.bind()?;
-        if results.is_empty() {
-            return Err(AqlError::new(
-                ErrorCode::NotFound,
-                "No documents found to bind".to_string(),
-            ));
-        }
-        Ok(results.remove(0))
+        self.documents
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                AqlError::new(
+                    ErrorCode::NotFound,
+                    "No documents found to bind".to_string(),
+                )
+            })?
+            .bind()
     }
 }
 
@@ -1046,14 +1057,16 @@ impl MutationResult {
 
     /// Maps the first returned document into a user-defined struct.
     pub fn bind_first<T: serde::de::DeserializeOwned>(self) -> Result<T> {
-        let mut results: Vec<T> = self.bind()?;
-        if results.is_empty() {
-            return Err(AqlError::new(
-                ErrorCode::NotFound,
-                "No documents found to bind".to_string(),
-            ));
-        }
-        Ok(results.remove(0))
+        self.returned_documents
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                AqlError::new(
+                    ErrorCode::NotFound,
+                    "No documents found to bind".to_string(),
+                )
+            })?
+            .bind()
     }
 }
 
