@@ -1,11 +1,11 @@
 use aurora_db::{Aurora, AuroraConfig};
-use std::time::Instant;
 use std::path::PathBuf;
+use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = PathBuf::from("stress_test.db");
-    
+
     if !db_path.exists() {
         println!("Database not found! Run stress_test_1m first.");
         return Ok(());
@@ -30,12 +30,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.ensure_indices_initialized().await?;
     let rehydrate_duration = start_rehydrate.elapsed();
     println!("Indices Re-hydrated in: {:?}", rehydrate_duration);
-    println!("(Index checkpoint memory-mapped; secondary indices populated from cold storage on demand)");
+    println!(
+        "(Index checkpoint memory-mapped; secondary indices populated from cold storage on demand)"
+    );
 
     // 2. Complex Query Test
     println!("\nExecuting Fluent Query (3 Equality conditions)...");
     let start_fluent = Instant::now();
-    let fluent_results = db.query("users")
+    let fluent_results = db
+        .query("users")
         .filter(|f: &aurora_db::query::FilterBuilder| f.eq("city", "Lagos"))
         .filter(|f: &aurora_db::query::FilterBuilder| f.eq("age", 42))
         .filter(|f: &aurora_db::query::FilterBuilder| f.eq("active", true))

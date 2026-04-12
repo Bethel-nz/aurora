@@ -50,12 +50,53 @@ async fn main() -> Result<()> {
         db.new_collection(
             collection_name,
             vec![
-                ("name".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("email".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),
-                ("age".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("premium".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_BOOL, unique: false, indexed: false, nullable: true, validations: vec![] }),
+                (
+                    "name".to_string(),
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    }
+                ),
+                (
+                    "email".to_string(),
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: true,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    }
+                ),
+                (
+                    "age".to_string(),
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    }
+                ),
+                (
+                    "premium".to_string(),
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_BOOL,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    }
+                ),
             ]
-        ).await
+        )
+        .await
     )?;
     println!("-> Created collection '{}'", collection_name);
 
@@ -127,8 +168,28 @@ async fn main() -> Result<()> {
     db.new_collection(
         articles_collection,
         vec![
-            ("title".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("content".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            (
+                "title".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "content".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
     )
     .await?;

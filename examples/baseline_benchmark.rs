@@ -53,13 +53,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Save as CSV
     let csv_filename = format!("aurora_bench_{}.csv", timestamp);
     let mut csv_file = File::create(&csv_filename)?;
-    writeln!(csv_file, "Scale,WriteThroughput,HotReadThroughput,MixedReadThroughput,RssMB,DiskMB")?;
-    
+    writeln!(
+        csv_file,
+        "Scale,WriteThroughput,HotReadThroughput,MixedReadThroughput,RssMB,DiskMB"
+    )?;
+
     for m in benchmark_metrics {
-        writeln!(csv_file, "{},{},{},{},{},{}", 
-            m.scale, m.write_tput, m.hot_read_tput, m.mixed_read_tput, m.rss_mb, m.disk_mb)?;
+        writeln!(
+            csv_file,
+            "{},{},{},{},{},{}",
+            m.scale, m.write_tput, m.hot_read_tput, m.mixed_read_tput, m.rss_mb, m.disk_mb
+        )?;
     }
-    
+
     println!("\n{}", "=".repeat(80));
     println!("Results saved to: {} and {}", filename, csv_filename);
     println!("{}", "=".repeat(80));
@@ -76,7 +82,9 @@ struct ScaleMetrics {
     disk_mb: i64,
 }
 
-async fn benchmark_scale(num_docs: usize) -> Result<(String, ScaleMetrics), Box<dyn std::error::Error>> {
+async fn benchmark_scale(
+    num_docs: usize,
+) -> Result<(String, ScaleMetrics), Box<dyn std::error::Error>> {
     let mut output = String::new();
 
     // Create temp directory
@@ -97,10 +105,50 @@ async fn benchmark_scale(num_docs: usize) -> Result<(String, ScaleMetrics), Box<
     db.new_collection(
         "bench",
         vec![
-            ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("index", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("timestamp", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            (
+                "id",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "data",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "index",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "timestamp",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
     )
     .await?;
@@ -160,10 +208,7 @@ async fn benchmark_scale(num_docs: usize) -> Result<(String, ScaleMetrics), Box<
         "Write time: {:.3}s\n",
         write_duration.as_secs_f64()
     ));
-    output.push_str(&format!(
-        "Write throughput: {:.0} docs/sec\n",
-        write_tput
-    ));
+    output.push_str(&format!("Write throughput: {:.0} docs/sec\n", write_tput));
 
     // READ TEST - Hot Cache
     let hot_set_size = (num_docs / 10).max(10).min(5_000);
@@ -185,7 +230,11 @@ async fn benchmark_scale(num_docs: usize) -> Result<(String, ScaleMetrics), Box<
     let mixed_read_count = num_docs.min(5_000);
     let mixed_read_start = Instant::now();
     for i in 0..mixed_read_count {
-        let idx = if i % 10 < 7 { i % hot_set_size } else { i % num_docs };
+        let idx = if i % 10 < 7 {
+            i % hot_set_size
+        } else {
+            i % num_docs
+        };
         let key = format!("bench:doc_{:08}", idx);
         let _ = db.get(&key)?;
     }
@@ -229,7 +278,7 @@ fn get_process_rss_mb(pid: u32) -> i64 {
         }
         return 0;
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;

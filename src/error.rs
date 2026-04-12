@@ -25,6 +25,8 @@ pub enum ErrorCode {
     UndefinedVariable,
     ValidationError,
     SecurityError,
+    Unauthorized,
+    Forbidden,
     Timeout,
     FilterParseError,
 }

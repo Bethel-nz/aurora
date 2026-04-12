@@ -1,8 +1,8 @@
-use aurora_db::{Aurora, AuroraConfig};
 use aurora_db::parser::executor::ExecutionResult;
+use aurora_db::{Aurora, AuroraConfig};
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use serde_json::json;
 use tokio::time::Duration;
 
 #[tokio::test]
@@ -17,22 +17,29 @@ async fn test_subscription_flow() -> aurora_db::error::Result<()> {
     let db = Arc::new(db);
 
     // Create schema
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection messages {
                 content: String
             }
         }
-    "#).await?;
+    "#,
+    )
+    .await?;
 
     // Start subscription
-    let sub_result = db.execute(r#"
+    let sub_result = db
+        .execute(
+            r#"
         subscription {
             messages {
                 content
             }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
 
     let mut stream = if let ExecutionResult::Subscription(res) = sub_result {
         res.stream.expect("Stream should be present")
@@ -53,14 +60,18 @@ async fn test_subscription_flow() -> aurora_db::error::Result<()> {
     // Trigger insert
     let mut vars = HashMap::new();
     vars.insert("content".to_string(), json!("Hello World"));
-    
-    db.execute((r#"
+
+    db.execute((
+        r#"
         mutation($content: String) {
             insertInto(collection: "messages", data: { content: $content }) {
                 id
             }
         }
-    "#, json!(vars))).await?;
+    "#,
+        json!(vars),
+    ))
+    .await?;
 
     // Await listener
     let event = match tokio::time::timeout(Duration::from_secs(2), handle).await {
@@ -70,7 +81,10 @@ async fn test_subscription_flow() -> aurora_db::error::Result<()> {
 
     assert_eq!(event.collection, "messages");
     assert!(event.document.is_some());
-    assert_eq!(event.document.unwrap().data.get("content").unwrap(), &aurora_db::Value::String("Hello World".to_string()));
+    assert_eq!(
+        event.document.unwrap().data.get("content").unwrap(),
+        &aurora_db::Value::String("Hello World".to_string())
+    );
 
     Ok(())
 }
@@ -87,24 +101,31 @@ async fn test_subscription_filter() -> aurora_db::error::Result<()> {
     let db = Arc::new(db);
 
     // Create schema
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection events {
                 category: String
                 score: Int
             }
         }
-    "#).await?;
+    "#,
+    )
+    .await?;
 
     // Start subscription with filter
-    let sub_result = db.execute(r#"
+    let sub_result = db
+        .execute(
+            r#"
         subscription {
             events(where: { score: { gt: 10 } }) {
                 category
                 score
             }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
 
     let mut stream = if let ExecutionResult::Subscription(res) = sub_result {
         res.stream.expect("Stream should be present")
@@ -118,10 +139,10 @@ async fn test_subscription_filter() -> aurora_db::error::Result<()> {
         // Try to collect 2 events, or timeout
         // We expect only 1 event to match
         loop {
-           match tokio::time::timeout(Duration::from_millis(500), stream.recv()).await {
-               Ok(Ok(event)) => events.push(event),
-               _ => break,
-           }
+            match tokio::time::timeout(Duration::from_millis(500), stream.recv()).await {
+                Ok(Ok(event)) => events.push(event),
+                _ => break,
+            }
         }
         events
     });
@@ -138,12 +159,12 @@ async fn test_subscription_filter() -> aurora_db::error::Result<()> {
     db.execute((r#"mutation { insertInto(collection: "events", data: { category: "C", score: 10 }) { id } }"#, json!({}))).await?;
 
     let events = handle.await.unwrap();
-    
+
     // Should have exactly 1 event
     assert_eq!(events.len(), 1, "Expected exactly 1 matching event");
     let event = &events[0];
     assert_eq!(
-        event.document.as_ref().unwrap().data.get("category"), 
+        event.document.as_ref().unwrap().data.get("category"),
         Some(&aurora_db::Value::String("B".to_string()))
     );
 
@@ -162,24 +183,31 @@ async fn test_subscription_string_filter() -> aurora_db::error::Result<()> {
     let db = Arc::new(db);
 
     // Create schema (No commas!)
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection logs {
                 level: String
                 msg: String
             }
         }
-    "#).await?;
+    "#,
+    )
+    .await?;
 
     // Start subscription with startsWith filter
-    let sub_result = db.execute(r#"
+    let sub_result = db
+        .execute(
+            r#"
         subscription {
             logs(where: { msg: { startsWith: "Error" } }) {
                 level
                 msg
             }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
 
     let mut stream = if let ExecutionResult::Subscription(res) = sub_result {
         res.stream.expect("Stream should be present")
@@ -191,10 +219,10 @@ async fn test_subscription_string_filter() -> aurora_db::error::Result<()> {
     let handle = tokio::spawn(async move {
         let mut events = Vec::new();
         loop {
-           match tokio::time::timeout(Duration::from_millis(500), stream.recv()).await {
-               Ok(Ok(event)) => events.push(event),
-               _ => break,
-           }
+            match tokio::time::timeout(Duration::from_millis(500), stream.recv()).await {
+                Ok(Ok(event)) => events.push(event),
+                _ => break,
+            }
         }
         events
     });
@@ -211,11 +239,11 @@ async fn test_subscription_string_filter() -> aurora_db::error::Result<()> {
     db.execute((r#"mutation { insertInto(collection: "logs", data: { level: "CRITICAL", msg: "Error: out of memory" }) { id } }"#, json!({}))).await?;
 
     let events = handle.await.unwrap();
-    
+
     // Should have 2 events
     assert_eq!(events.len(), 2, "Expected exactly 2 matching events");
     assert_eq!(
-        events[0].document.as_ref().unwrap().data.get("level"), 
+        events[0].document.as_ref().unwrap().data.get("level"),
         Some(&aurora_db::Value::String("ERROR".to_string()))
     );
 

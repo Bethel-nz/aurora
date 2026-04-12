@@ -20,11 +20,42 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     db.new_collection(
         "tasks",
         vec![
-            ("title", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("completed", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_BOOL, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("priority", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            (
+                "title",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "completed",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_BOOL,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "priority",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
-    ).await?;
+    )
+    .await?;
 
     println!("- Created 'tasks' collection\n");
 
@@ -58,29 +89,53 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
         sleep(Duration::from_millis(500)).await;
 
         println!("[WRITER] Adding high priority task...");
-        if let Err(e) = db.insert_into("tasks", vec![
-            ("title", Value::String("Fix critical bug".into())),
-            ("completed", Value::Bool(false)),
-            ("priority", Value::Int(3)),
-        ]).await { eprintln!("[WRITER] insert failed: {}", e); }
+        if let Err(e) = db
+            .insert_into(
+                "tasks",
+                vec![
+                    ("title", Value::String("Fix critical bug".into())),
+                    ("completed", Value::Bool(false)),
+                    ("priority", Value::Int(3)),
+                ],
+            )
+            .await
+        {
+            eprintln!("[WRITER] insert failed: {}", e);
+        }
 
         sleep(Duration::from_millis(500)).await;
 
         println!("[WRITER] Adding another task...");
-        if let Err(e) = db.insert_into("tasks", vec![
-            ("title", Value::String("Review PR".into())),
-            ("completed", Value::Bool(false)),
-            ("priority", Value::Int(2)),
-        ]).await { eprintln!("[WRITER] insert failed: {}", e); }
+        if let Err(e) = db
+            .insert_into(
+                "tasks",
+                vec![
+                    ("title", Value::String("Review PR".into())),
+                    ("completed", Value::Bool(false)),
+                    ("priority", Value::Int(2)),
+                ],
+            )
+            .await
+        {
+            eprintln!("[WRITER] insert failed: {}", e);
+        }
 
         sleep(Duration::from_millis(500)).await;
 
         println!("[WRITER] Adding low priority task...");
-        if let Err(e) = db.insert_into("tasks", vec![
-            ("title", Value::String("Update docs".into())),
-            ("completed", Value::Bool(false)),
-            ("priority", Value::Int(1)),
-        ]).await { eprintln!("[WRITER] insert failed: {}", e); }
+        if let Err(e) = db
+            .insert_into(
+                "tasks",
+                vec![
+                    ("title", Value::String("Update docs".into())),
+                    ("completed", Value::Bool(false)),
+                    ("priority", Value::Int(1)),
+                ],
+            )
+            .await
+        {
+            eprintln!("[WRITER] insert failed: {}", e);
+        }
 
         sleep(Duration::from_millis(500)).await;
         println!("[WRITER] Done writing");
@@ -91,7 +146,9 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut watcher = db
         .query("tasks")
-        .filter(|f: &aurora_db::query::FilterBuilder| f.gte("priority", 2) & f.eq("completed", false))
+        .filter(|f: &aurora_db::query::FilterBuilder| {
+            f.gte("priority", 2) & f.eq("completed", false)
+        })
         .watch()
         .await?;
 

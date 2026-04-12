@@ -7,18 +7,20 @@
 /// - watch_fields() does NOT skip events that do touch watched fields
 /// - filter still runs normally when watched fields are touched
 /// - non-update events (insert/delete) always pass through watch_fields fast-path
-
 use aurora_db::pubsub::events::{ChangeEvent, ChangeType, EventFilter};
 use aurora_db::{Aurora, AuroraConfig, Document, FieldType, Value};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::time::timeout;
 
 fn make_doc(sid: &str, fields: Vec<(&str, Value)>) -> aurora_db::types::Document {
     Document {
         _sid: sid.to_string(),
-        data: fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+        data: fields
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
     }
 }
 
@@ -26,19 +28,31 @@ fn make_doc(sid: &str, fields: Vec<(&str, Value)>) -> aurora_db::types::Document
 
 #[test]
 fn test_update_event_populates_changed_fields() {
-    let old = make_doc("1", vec![
-        ("status", Value::String("inactive".into())),
-        ("bio", Value::String("old bio".into())),
-    ]);
-    let new = make_doc("1", vec![
-        ("status", Value::String("active".into())),
-        ("bio", Value::String("old bio".into())),
-    ]);
+    let old = make_doc(
+        "1",
+        vec![
+            ("status", Value::String("inactive".into())),
+            ("bio", Value::String("old bio".into())),
+        ],
+    );
+    let new = make_doc(
+        "1",
+        vec![
+            ("status", Value::String("active".into())),
+            ("bio", Value::String("old bio".into())),
+        ],
+    );
 
     let event = ChangeEvent::update("users", "1", old, new);
 
-    assert!(event.changed_fields.contains("status"), "status should be in changed_fields");
-    assert!(!event.changed_fields.contains("bio"), "bio should NOT be in changed_fields");
+    assert!(
+        event.changed_fields.contains("status"),
+        "status should be in changed_fields"
+    );
+    assert!(
+        !event.changed_fields.contains("bio"),
+        "bio should NOT be in changed_fields"
+    );
     assert_eq!(event.changed_fields.len(), 1);
 }
 
@@ -65,14 +79,20 @@ fn test_touches_field_true_when_field_changed() {
 
 #[test]
 fn test_touches_field_false_when_field_unchanged() {
-    let old = make_doc("1", vec![
-        ("score", Value::Int(10)),
-        ("name", Value::String("Alice".into())),
-    ]);
-    let new = make_doc("1", vec![
-        ("score", Value::Int(10)),
-        ("name", Value::String("Alice".into())),
-    ]);
+    let old = make_doc(
+        "1",
+        vec![
+            ("score", Value::Int(10)),
+            ("name", Value::String("Alice".into())),
+        ],
+    );
+    let new = make_doc(
+        "1",
+        vec![
+            ("score", Value::Int(10)),
+            ("name", Value::String("Alice".into())),
+        ],
+    );
     let event = ChangeEvent::update("scores", "1", old, new);
     assert!(!event.touches_field("score"));
     assert!(!event.touches_field("name"));
@@ -88,24 +108,36 @@ fn test_touches_field_false_for_insert() {
 #[test]
 fn test_field_added_is_in_changed_fields() {
     let old = make_doc("1", vec![("name", Value::String("Alice".into()))]);
-    let new = make_doc("1", vec![
-        ("name", Value::String("Alice".into())),
-        ("email", Value::String("alice@example.com".into())),
-    ]);
+    let new = make_doc(
+        "1",
+        vec![
+            ("name", Value::String("Alice".into())),
+            ("email", Value::String("alice@example.com".into())),
+        ],
+    );
     let event = ChangeEvent::update("users", "1", old, new);
-    assert!(event.changed_fields.contains("email"), "newly added field should be in changed_fields");
+    assert!(
+        event.changed_fields.contains("email"),
+        "newly added field should be in changed_fields"
+    );
     assert!(!event.changed_fields.contains("name"));
 }
 
 #[test]
 fn test_field_removed_is_in_changed_fields() {
-    let old = make_doc("1", vec![
-        ("name", Value::String("Alice".into())),
-        ("temp", Value::String("gone".into())),
-    ]);
+    let old = make_doc(
+        "1",
+        vec![
+            ("name", Value::String("Alice".into())),
+            ("temp", Value::String("gone".into())),
+        ],
+    );
     let new = make_doc("1", vec![("name", Value::String("Alice".into()))]);
     let event = ChangeEvent::update("users", "1", old, new);
-    assert!(event.changed_fields.contains("temp"), "removed field should be in changed_fields");
+    assert!(
+        event.changed_fields.contains("temp"),
+        "removed field should be in changed_fields"
+    );
     assert!(!event.changed_fields.contains("name"));
 }
 
@@ -126,10 +158,13 @@ async fn make_db() -> (Aurora, tempfile::TempDir) {
 #[tokio::test]
 async fn test_watch_fields_skips_unrelated_update() {
     let (db, _dir) = make_db().await;
-    db.new_collection("users", vec![
-        ("status".to_string(), FieldType::SCALAR_STRING, false),
-        ("bio".to_string(), FieldType::SCALAR_STRING, false),
-    ])
+    db.new_collection(
+        "users",
+        vec![
+            ("status".to_string(), FieldType::SCALAR_STRING, false),
+            ("bio".to_string(), FieldType::SCALAR_STRING, false),
+        ],
+    )
     .await
     .unwrap();
 
@@ -158,12 +193,17 @@ async fn test_watch_fields_skips_unrelated_update() {
         .unwrap();
 
     assert_eq!(event.change_type, ChangeType::Update);
-    assert!(event.touches_field("status"), "received event should be the status change");
+    assert!(
+        event.touches_field("status"),
+        "received event should be the status change"
+    );
     assert!(!event.touches_field("bio"));
 
     // No more events should be pending (bio update was skipped)
     assert!(
-        timeout(Duration::from_millis(100), listener.recv()).await.is_err(),
+        timeout(Duration::from_millis(100), listener.recv())
+            .await
+            .is_err(),
         "bio update should have been skipped"
     );
 }
@@ -171,9 +211,10 @@ async fn test_watch_fields_skips_unrelated_update() {
 #[tokio::test]
 async fn test_watch_fields_passes_insert_and_delete() {
     let (db, _dir) = make_db().await;
-    db.new_collection("items", vec![
-        ("name".to_string(), FieldType::SCALAR_STRING, false),
-    ])
+    db.new_collection(
+        "items",
+        vec![("name".to_string(), FieldType::SCALAR_STRING, false)],
+    )
     .await
     .unwrap();
 
@@ -195,10 +236,13 @@ async fn test_watch_fields_passes_insert_and_delete() {
 #[tokio::test]
 async fn test_watch_fields_with_filter_still_filters() {
     let (db, _dir) = make_db().await;
-    db.new_collection("orders", vec![
-        ("status".to_string(), FieldType::SCALAR_STRING, false),
-        ("total".to_string(), FieldType::SCALAR_INT, false),
-    ])
+    db.new_collection(
+        "orders",
+        vec![
+            ("status".to_string(), FieldType::SCALAR_STRING, false),
+            ("total".to_string(), FieldType::SCALAR_INT, false),
+        ],
+    )
     .await
     .unwrap();
 
@@ -210,13 +254,13 @@ async fn test_watch_fields_with_filter_still_filters() {
         .unwrap();
 
     // Watch status field, but also filter for status = "completed"
-    let mut listener = db
-        .listen("orders")
-        .watch_fields(["status"])
-        .filter(EventFilter::FieldEquals(
-            "status".to_string(),
-            Value::String("completed".into()),
-        ));
+    let mut listener =
+        db.listen("orders")
+            .watch_fields(["status"])
+            .filter(EventFilter::FieldEquals(
+                "status".to_string(),
+                Value::String("completed".into()),
+            ));
 
     // Update one order to "completed" — should pass through watch_fields AND filter
     db.execute(r#"mutation { update(collection: "orders", where: { total: { eq: 100 } }, set: { status: "completed" }) { id } }"#)
@@ -240,7 +284,9 @@ async fn test_watch_fields_with_filter_still_filters() {
 
     // "cancelled" update should have been filtered out
     assert!(
-        timeout(Duration::from_millis(100), listener.recv()).await.is_err(),
+        timeout(Duration::from_millis(100), listener.recv())
+            .await
+            .is_err(),
         "cancelled update should be blocked by filter"
     );
 }
@@ -250,10 +296,13 @@ async fn test_watch_fields_skips_counted_correctly() {
     // Verify that N unrelated updates produce 0 watcher events and
     // 1 related update produces exactly 1 event.
     let (db, _dir) = make_db().await;
-    db.new_collection("sensors", vec![
-        ("value".to_string(), FieldType::SCALAR_INT, false),
-        ("label".to_string(), FieldType::SCALAR_STRING, false),
-    ])
+    db.new_collection(
+        "sensors",
+        vec![
+            ("value".to_string(), FieldType::SCALAR_INT, false),
+            ("label".to_string(), FieldType::SCALAR_STRING, false),
+        ],
+    )
     .await
     .unwrap();
 

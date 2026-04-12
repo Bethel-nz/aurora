@@ -23,8 +23,28 @@ async fn test_any_type_and_nested_query() {
     db.new_collection(
         "test_collection",
         vec![
-            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("meta", aurora_db::types::FieldDefinition { field_type: FieldType::Any, unique: false, indexed: false, nullable: false, validations: vec![] }),
+            (
+                "name",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "meta",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::Any,
+                    unique: false,
+                    indexed: false,
+                    nullable: false,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
     )
     .await
@@ -100,8 +120,28 @@ async fn test_any_field_caching() {
     db.new_collection(
         "any_collection",
         vec![
-            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("data", aurora_db::types::FieldDefinition { field_type: FieldType::Any, unique: false, indexed: false, nullable: false, validations: vec![] }),
+            (
+                "name",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "data",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::Any,
+                    unique: false,
+                    indexed: false,
+                    nullable: false,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
     )
     .await
@@ -137,7 +177,17 @@ async fn test_any_field_caching() {
     // 2. Collection without an 'Any' field
     db.new_collection(
         "normal_collection",
-        vec![("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })],
+        vec![(
+            "name",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_STRING,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
     )
     .await
     .unwrap();

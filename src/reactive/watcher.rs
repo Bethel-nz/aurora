@@ -53,7 +53,9 @@ impl QueryWatcher {
                 match listener.recv().await {
                     Ok(event) => {
                         // Successful receive, reset backoff gradually
-                        if backoff_ms > 100 { backoff_ms -= 50; }
+                        if backoff_ms > 100 {
+                            backoff_ms -= 50;
+                        }
 
                         let update = match event.change_type {
                             crate::pubsub::ChangeType::Insert => {
@@ -70,10 +72,14 @@ impl QueryWatcher {
                                     None
                                 }
                             }
-                            crate::pubsub::ChangeType::Delete => state_clone.remove(&event._sid).await,
+                            crate::pubsub::ChangeType::Delete => {
+                                state_clone.remove(&event._sid).await
+                            }
                         };
 
-                        if let Some(u) = update && sender_clone.send(u).is_err() {
+                        if let Some(u) = update
+                            && sender_clone.send(u).is_err()
+                        {
                             break;
                         }
                     }
@@ -86,23 +92,27 @@ impl QueryWatcher {
                         // 1. DRAIN: Empty everything currently in the channel (Ok and Lagged)
                         loop {
                             match listener.try_recv() {
-                                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                                Ok(_)
+                                | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                                    continue;
+                                }
                                 _ => break,
                             }
                         }
 
                         // 2. BACKOFF: Wait for the event storm to subside
                         tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
-                        
+
                         // Increase backoff for next time (max 2 seconds)
                         backoff_ms = (backoff_ms * 2).min(2000);
 
                         // 3. SNAPSHOT: Collect documents into a Vec inside the block to keep iterator usage local (not across await)
-                        let docs_snapshot: Vec<Document> = if let Ok(iter) = db_clone.stream_collection(&coll_clone) {
-                            iter.collect()
-                        } else {
-                            Vec::new()
-                        };
+                        let docs_snapshot: Vec<Document> =
+                            if let Ok(iter) = db_clone.stream_collection(&coll_clone) {
+                                iter.collect()
+                            } else {
+                                Vec::new()
+                            };
 
                         // 4. SYNC: Synchronize ReactiveQueryState and emit deltas
                         let updates = state_clone.sync_state(docs_snapshot).await;
@@ -157,9 +167,15 @@ impl QueryWatcher {
         }
     }
 
-    pub async fn next(&mut self) -> Option<QueryUpdate> { self.receiver.recv().await }
-    pub fn collection(&self) -> &str { &self.collection }
-    pub fn try_next(&mut self) -> Option<QueryUpdate> { self.receiver.try_recv().ok() }
+    pub async fn next(&mut self) -> Option<QueryUpdate> {
+        self.receiver.recv().await
+    }
+    pub fn collection(&self) -> &str {
+        &self.collection
+    }
+    pub fn try_next(&mut self) -> Option<QueryUpdate> {
+        self.receiver.try_recv().ok()
+    }
     pub fn throttled(self, interval: std::time::Duration) -> ThrottledQueryWatcher {
         ThrottledQueryWatcher::new(self.receiver, self.collection, interval)
     }
@@ -202,11 +218,20 @@ impl ThrottledQueryWatcher {
                 }
             }
         });
-        Self { receiver: rx, collection }
+        Self {
+            receiver: rx,
+            collection,
+        }
     }
-    pub async fn next(&mut self) -> Option<QueryUpdate> { self.receiver.recv().await }
-    pub fn collection(&self) -> &str { &self.collection }
-    pub fn try_next(&mut self) -> Option<QueryUpdate> { self.receiver.try_recv().ok() }
+    pub async fn next(&mut self) -> Option<QueryUpdate> {
+        self.receiver.recv().await
+    }
+    pub fn collection(&self) -> &str {
+        &self.collection
+    }
+    pub fn try_next(&mut self) -> Option<QueryUpdate> {
+        self.receiver.try_recv().ok()
+    }
 }
 
 #[cfg(test)]
@@ -221,15 +246,21 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Aurora::open(temp_dir.path().join("test.db")).await.unwrap());
         let listener = db.pubsub.listen("users");
-        let state = Arc::new(ReactiveQueryState::new(vec![
-            crate::query::Filter::Eq("active".to_string(), Value::Bool(true))
-        ]));
+        let state = Arc::new(ReactiveQueryState::new(vec![crate::query::Filter::Eq(
+            "active".to_string(),
+            Value::Bool(true),
+        )]));
         let mut watcher = QueryWatcher::new(db.clone(), "users", listener, state, vec![], None);
         let mut data = HashMap::new();
         data.insert("active".to_string(), Value::Bool(true));
         data.insert("name".to_string(), Value::String("Alice".into()));
-        let doc = Document { _sid: "1".to_string(), data };
-        db.pubsub.publish(ChangeEvent::insert("users", "1", doc)).unwrap();
+        let doc = Document {
+            _sid: "1".to_string(),
+            data,
+        };
+        db.pubsub
+            .publish(ChangeEvent::insert("users", "1", doc))
+            .unwrap();
         let update = watcher.next().await.unwrap();
         assert!(matches!(update, QueryUpdate::Added(_)));
         assert_eq!(update.id(), "1");

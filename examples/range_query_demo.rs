@@ -10,12 +10,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.new_collection(
         "products",
         vec![
-            ("id".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),
-            ("name".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("price".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("category".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("rating".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("stock_quantity".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            (
+                "id".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: true,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "name".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "price".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_FLOAT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "category".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "rating".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_FLOAT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "stock_quantity".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
     )
     .await?;

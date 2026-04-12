@@ -1,6 +1,6 @@
+use aurora_db::parser::executor::ExecutionResult;
 use aurora_db::types::{DurabilityMode, FieldType, Value};
 use aurora_db::{Aurora, AuroraConfig};
-use aurora_db::parser::executor::ExecutionResult;
 use tempfile::TempDir;
 
 async fn setup() -> (Aurora, TempDir) {
@@ -47,8 +47,16 @@ async fn test_contains_any_filter() {
 
     if let ExecutionResult::Query(res) = result {
         assert_eq!(res.documents.len(), 2, "Should match rust and go posts");
-        let titles: Vec<_> = res.documents.iter()
-            .filter_map(|d| if let Some(Value::String(s)) = d.data.get("title") { Some(s.as_str()) } else { None })
+        let titles: Vec<_> = res
+            .documents
+            .iter()
+            .filter_map(|d| {
+                if let Some(Value::String(s)) = d.data.get("title") {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(titles.contains(&"Rust async"));
         assert!(titles.contains(&"Go channels"));
@@ -83,7 +91,9 @@ async fn test_contains_all_filter() {
 
     // Only "Full stack" has BOTH rust AND async
     let result = db
-        .execute(r#"query { posts(where: { tags: { containsAll: ["rust", "async"] } }) { title } }"#)
+        .execute(
+            r#"query { posts(where: { tags: { containsAll: ["rust", "async"] } }) { title } }"#,
+        )
         .await
         .unwrap();
 
@@ -110,7 +120,12 @@ async fn test_matches_regex_filter() {
     .await
     .unwrap();
 
-    for email in ["alice@gmail.com", "bob@yahoo.com", "carol@gmail.com", "dan@hotmail.com"] {
+    for email in [
+        "alice@gmail.com",
+        "bob@yahoo.com",
+        "carol@gmail.com",
+        "dan@hotmail.com",
+    ] {
         let mut data = std::collections::HashMap::new();
         data.insert("email".to_string(), Value::String(email.to_string()));
         db.insert_map("users", data).await.unwrap();
@@ -122,7 +137,11 @@ async fn test_matches_regex_filter() {
         .unwrap();
 
     if let ExecutionResult::Query(res) = result {
-        assert_eq!(res.documents.len(), 2, "Should match the two gmail addresses");
+        assert_eq!(
+            res.documents.len(),
+            2,
+            "Should match the two gmail addresses"
+        );
         for doc in &res.documents {
             if let Some(Value::String(e)) = doc.data.get("email") {
                 assert!(e.ends_with("@gmail.com"));
@@ -148,32 +167,41 @@ async fn test_increment_decrement_modifiers() {
     .await
     .unwrap();
 
-    db.execute(r#"mutation {
+    db.execute(
+        r#"mutation {
         insertInto(collection: "counters", data: { name: "hits", value: 10 }) { id }
-    }"#)
+    }"#,
+    )
     .await
     .unwrap();
 
     // increment
-    db.execute(r#"mutation {
+    db.execute(
+        r#"mutation {
         update(collection: "counters",
                where: { name: { eq: "hits" } },
                set: { value: { increment: 5 } }) { id }
-    }"#)
+    }"#,
+    )
     .await
     .unwrap();
 
-    let res = db.execute(r#"query { counters { name value } }"#).await.unwrap();
+    let res = db
+        .execute(r#"query { counters { name value } }"#)
+        .await
+        .unwrap();
     if let ExecutionResult::Query(r) = res {
         assert_eq!(r.documents[0].data.get("value"), Some(&Value::Int(15)));
     }
 
     // decrement
-    db.execute(r#"mutation {
+    db.execute(
+        r#"mutation {
         update(collection: "counters",
                where: { name: { eq: "hits" } },
                set: { value: { decrement: 3 } }) { id }
-    }"#)
+    }"#,
+    )
     .await
     .unwrap();
 
@@ -196,18 +224,22 @@ async fn test_push_pull_add_to_set_modifiers() {
     .await
     .unwrap();
 
-    db.execute(r#"mutation {
+    db.execute(
+        r#"mutation {
         insertInto(collection: "lists", data: { name: "todo", items: ["a", "b"] }) { id }
-    }"#)
+    }"#,
+    )
     .await
     .unwrap();
 
     // push
-    db.execute(r#"mutation {
+    db.execute(
+        r#"mutation {
         update(collection: "lists",
                where: { name: { eq: "todo" } },
                set: { items: { push: "c" } }) { id }
-    }"#)
+    }"#,
+    )
     .await
     .unwrap();
 
@@ -220,11 +252,13 @@ async fn test_push_pull_add_to_set_modifiers() {
     }
 
     // addToSet (no duplicate)
-    db.execute(r#"mutation {
+    db.execute(
+        r#"mutation {
         update(collection: "lists",
                where: { name: { eq: "todo" } },
                set: { items: { addToSet: "c" } }) { id }
-    }"#)
+    }"#,
+    )
     .await
     .unwrap();
 
@@ -236,11 +270,13 @@ async fn test_push_pull_add_to_set_modifiers() {
     }
 
     // pull
-    db.execute(r#"mutation {
+    db.execute(
+        r#"mutation {
         update(collection: "lists",
                where: { name: { eq: "todo" } },
                set: { items: { pull: "b" } }) { id }
-    }"#)
+    }"#,
+    )
     .await
     .unwrap();
 
@@ -269,13 +305,15 @@ async fn test_import_mutation() {
     .unwrap();
 
     let result = db
-        .execute(r#"mutation {
+        .execute(
+            r#"mutation {
             import(collection: "products", data: [
                 { name: "Widget", price: 10 },
                 { name: "Gadget", price: 20 },
                 { name: "Doohickey", price: 30 }
             ]) { id }
-        }"#)
+        }"#,
+        )
         .await
         .unwrap();
 
@@ -308,9 +346,11 @@ async fn test_export_mutation() {
     }
 
     let result = db
-        .execute(r#"mutation {
+        .execute(
+            r#"mutation {
             export(collection: "items", format: JSON) { id name }
-        }"#)
+        }"#,
+        )
         .await
         .unwrap();
 
@@ -349,8 +389,16 @@ async fn test_order_by_formal_syntax() {
     if let ExecutionResult::Query(res) = result {
         assert_eq!(res.documents.len(), 3);
         // Top 3 DESC: 9, 6, 5
-        let vals: Vec<i64> = res.documents.iter()
-            .filter_map(|d| if let Some(Value::Int(n)) = d.data.get("n") { Some(*n) } else { None })
+        let vals: Vec<i64> = res
+            .documents
+            .iter()
+            .filter_map(|d| {
+                if let Some(Value::Int(n)) = d.data.get("n") {
+                    Some(*n)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(vals[0], 9);
         assert_eq!(vals[1], 6);

@@ -124,7 +124,9 @@ async fn main() -> aurora_db::Result<()> {
     // Now queries on role/age will use indexes
     let admins = db
         .query("users")
-        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("role", Value::String("admin".to_string())))
+        .filter(|f: &aurora_db::query::FilterBuilder| {
+            f.eq("role", Value::String("admin".to_string()))
+        })
         .collect()
         .await?;
 

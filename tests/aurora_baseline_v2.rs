@@ -1,24 +1,26 @@
 /// Aurora Baseline V2 - Comprehensive Performance & Memory Benchmark
-/// 
+///
 /// This benchmark measures:
 /// 1. Ingestion Speed (1,000,000 records)
 /// 2. Memory Usage (RSS) with Secondary Indices (Roaring Bitmaps)
 /// 3. Query Performance (Index Lookups)
 /// 4. AQL vs Fluent Parity
-
 use aurora_db::{Aurora, AuroraConfig, FieldType, Value};
-use std::sync::Arc;
-use std::time::Instant;
+use serde_json::json;
 use std::fs::File as StdFile;
 use std::io::Write as IoWrite;
-use serde_json::json;
+use std::sync::Arc;
+use std::time::Instant;
 
 #[tokio::test]
 async fn test_aurora_baseline_v2() {
     println!("\n==================================================");
     println!("AURORA BASELINE V2 - PERFORMANCE & MEMORY REPORT");
     println!("Architecture: Roaring Bitmaps + SkipMap Dictionaries");
-    println!("Timestamp: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+    println!(
+        "Timestamp: {}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    );
     println!("==================================================\n");
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -33,12 +35,57 @@ async fn test_aurora_baseline_v2() {
     let db = Arc::new(Aurora::with_config(config).await.unwrap());
 
     // 1. Setup Collection with Indexing
-    db.new_collection("benchmark", vec![
-        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),      // Primary Key
-        ("tag", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),    // Secondary Index (Low Cardinality)
-        ("val", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: true, nullable: true, validations: vec![] }),       // Secondary Index (High Cardinality - UNIQUE)
-        ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),   // Payload
-    ] ).await.unwrap();
+    db.new_collection(
+        "benchmark",
+        vec![
+            (
+                "id",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: true,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ), // Primary Key
+            (
+                "tag",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ), // Secondary Index (Low Cardinality)
+            (
+                "val",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: true,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ), // Secondary Index (High Cardinality - UNIQUE)
+            (
+                "data",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ), // Payload
+        ],
+    )
+    .await
+    .unwrap();
 
     // Ensure indices are initialized
     db.ensure_indices_initialized().await.unwrap();
@@ -58,26 +105,40 @@ async fn test_aurora_baseline_v2() {
     for batch in 0..num_batches {
         let batch_start = Instant::now();
         let mut docs = Vec::with_capacity(batch_size);
-        
+
         for i in 0..batch_size {
             let idx = batch * batch_size + i;
             let mut data = std::collections::HashMap::new();
             data.insert("id".to_string(), Value::String(format!("doc_{:07}", idx)));
-            data.insert("tag".to_string(), Value::String(format!("tag_{}", idx % 100))); // 100 unique tags
-            data.insert("val".to_string(), Value::Int(idx as i64));                      // 1,000,000 unique values
-            data.insert("data".to_string(), Value::String("Realistic payload content for benchmarking memory footprint".to_string()));
+            data.insert(
+                "tag".to_string(),
+                Value::String(format!("tag_{}", idx % 100)),
+            ); // 100 unique tags
+            data.insert("val".to_string(), Value::Int(idx as i64)); // 1,000,000 unique values
+            data.insert(
+                "data".to_string(),
+                Value::String(
+                    "Realistic payload content for benchmarking memory footprint".to_string(),
+                ),
+            );
             docs.push(data);
         }
 
         db.batch_insert("benchmark", docs).await.unwrap();
-        
+
         let duration = batch_start.elapsed();
         let current_rss = get_process_rss_mb(pid);
         let tput = batch_size as f64 / duration.as_secs_f64();
-        
-        println!("  Batch {:2}/{}: {:7} docs | RSS: {:4} MB | Tput: {:.0} docs/sec", 
-            batch + 1, num_batches, (batch + 1) * batch_size, current_rss, tput);
-            
+
+        println!(
+            "  Batch {:2}/{}: {:7} docs | RSS: {:4} MB | Tput: {:.0} docs/sec",
+            batch + 1,
+            num_batches,
+            (batch + 1) * batch_size,
+            current_rss,
+            tput
+        );
+
         if (batch + 1) % 5 == 0 {
             db.flush().unwrap();
         }
@@ -88,20 +149,29 @@ async fn test_aurora_baseline_v2() {
 
     println!("\nIngestion Complete:");
     println!("  Total Time:       {:.2?}", ingest_duration);
-    println!("  Avg Throughput:   {:.0} docs/sec", total_docs as f64 / ingest_duration.as_secs_f64());
+    println!(
+        "  Avg Throughput:   {:.0} docs/sec",
+        total_docs as f64 / ingest_duration.as_secs_f64()
+    );
     println!("  Memory Growth:    {} MB", after_ingest_rss - initial_rss);
 
     // 3. Query Phase (Index Lookups)
     println!("\nStarting Query Performance Phase (1,000 randomized lookups)...");
-    
+
     // Warm up
-    let _ = db.query("benchmark").filter(|f: &aurora_db::query::FilterBuilder| f.eq("val", Value::Int(500_000))).collect().await.unwrap();
+    let _ = db
+        .query("benchmark")
+        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("val", Value::Int(500_000)))
+        .collect()
+        .await
+        .unwrap();
 
     // A. Fluent API Lookup (High Cardinality Index)
     let start = Instant::now();
     for i in 0..1000 {
         let target = (i * 997) % total_docs; // Pseudo-random
-        let results = db.query("benchmark")
+        let results = db
+            .query("benchmark")
             .filter(|f: &aurora_db::query::FilterBuilder| f.eq("val", Value::Int(target as i64)))
             .collect()
             .await
@@ -125,8 +195,11 @@ async fn test_aurora_baseline_v2() {
     // C. Low Cardinality Lookup (Roaring Bitmap Power)
     // tag_50 should have 10,000 documents
     let start = Instant::now();
-    let results = db.query("benchmark")
-        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("tag", Value::String("tag_50".to_string())))
+    let results = db
+        .query("benchmark")
+        .filter(|f: &aurora_db::query::FilterBuilder| {
+            f.eq("tag", Value::String("tag_50".to_string()))
+        })
         .collect()
         .await
         .unwrap();
@@ -158,7 +231,10 @@ async fn test_aurora_baseline_v2() {
     println!("{}", report);
 
     // Save report to file
-    let report_filename = format!("aurora_baseline_v2_{}.txt", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+    let report_filename = format!(
+        "aurora_baseline_v2_{}.txt",
+        chrono::Local::now().format("%Y%m%d_%H%M%S")
+    );
     let mut f = StdFile::create(&report_filename).unwrap();
     f.write_all(report.as_bytes()).unwrap();
     println!("Baseline report saved to: {}", report_filename);

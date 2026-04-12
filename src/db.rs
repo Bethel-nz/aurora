@@ -51,7 +51,7 @@ use crate::network::http_models::{
 use crate::parser;
 use crate::parser::executor::{ExecutionOptions, ExecutionPlan, ExecutionResult};
 use crate::query::FilterBuilder;
-use crate::query::{Filter, QueryBuilder, SimpleQueryBuilder, SearchBuilder};
+use crate::query::{Filter, QueryBuilder, SearchBuilder, SimpleQueryBuilder};
 use crate::storage::{ColdStore, HotStore, IndexStorage, WriteBuffer};
 use crate::types::{
     AuroraConfig, Collection, Document, DurabilityMode, FieldDefinition, FieldType, Value,
@@ -120,6 +120,7 @@ impl<S: Into<String>> IntoFieldDefinition for (S, FieldType, bool) {
                 indexed: unique,
                 nullable: false, // Default to false
                 validations: vec![],
+                ..Default::default()
             },
         )
     }
@@ -137,6 +138,7 @@ impl<S: Into<String>> IntoFieldDefinition for (S, FieldType, bool, bool) {
                 indexed: unique,
                 nullable,
                 validations: vec![],
+                ..Default::default()
             },
         )
     }
@@ -297,6 +299,12 @@ impl ToExecParams for (String, ExecutionOptions) {
     }
 }
 
+impl<'a> ToExecParams for (&'a str, ExecutionOptions) {
+    fn into_params(self) -> (String, ExecutionOptions) {
+        (self.0.to_string(), self.1)
+    }
+}
+
 impl<'a, V> ToExecParams for (&'a str, V)
 where
     V: Into<serde_json::Value>,
@@ -307,7 +315,7 @@ where
         let mut map = std::collections::HashMap::new();
         if let serde_json::Value::Object(obj) = json_vars {
             for (k, v) in obj {
-                map.insert(k, v);
+                map.insert(k, crate::parser::executor::json_to_aql_value(v));
             }
         }
         (
@@ -329,7 +337,7 @@ impl Aurora {
     /// Convert an external String ID back to an internal ID, creating if not found
     fn get_or_create_internal_id(&self, external_id: &str) -> u32 {
         let u = self.parse_external_id(external_id);
-        
+
         // 1. Check dictionary for existing mapping
         if let Some(entry) = self._sid_dictionary.get(&u) {
             return *entry.value();
@@ -357,9 +365,11 @@ impl Aurora {
 
         // 4. Update dictionaries
         self._sid_dictionary.insert(u, internal_id);
-        
+
         // 5. Persist mapping to Sled for cross-session stability
-        let _ = self.sys_id_mapping.insert(u.to_be_bytes(), &internal_id.to_be_bytes());
+        let _ = self
+            .sys_id_mapping
+            .insert(u.to_be_bytes(), &internal_id.to_be_bytes());
 
         if let Ok(mut reverse) = self.reverse_sid_dictionary.write() {
             if (internal_id as usize) >= reverse.len() {
@@ -375,29 +385,41 @@ impl Aurora {
     fn load_id_mapping_from_sled(&self) -> Result<()> {
         let mut max_id = 0u32;
         let mut reverse_guard = self.reverse_sid_dictionary.write().unwrap();
-        
+
         for result in self.sys_id_mapping.iter() {
             let (k, v) = result?;
-            if k.len() != 16 || v.len() != 4 { continue; }
-            
-            let u = u128::from_be_bytes(k.as_ref().try_into().map_err(|_| AqlError::new(ErrorCode::InternalError, "ID mapping key corrupt".to_string()))?);
-            let id = u32::from_be_bytes(v.as_ref().try_into().map_err(|_| AqlError::new(ErrorCode::InternalError, "ID mapping value corrupt".to_string()))?);
-            
+            if k.len() != 16 || v.len() != 4 {
+                continue;
+            }
+
+            let u = u128::from_be_bytes(k.as_ref().try_into().map_err(|_| {
+                AqlError::new(
+                    ErrorCode::InternalError,
+                    "ID mapping key corrupt".to_string(),
+                )
+            })?);
+            let id = u32::from_be_bytes(v.as_ref().try_into().map_err(|_| {
+                AqlError::new(
+                    ErrorCode::InternalError,
+                    "ID mapping value corrupt".to_string(),
+                )
+            })?);
+
             self._sid_dictionary.insert(u, id);
-            
+
             if (id as usize) >= reverse_guard.len() {
                 reverse_guard.resize((id as usize) + 1, 0);
             }
             reverse_guard[id as usize] = u;
-            
+
             max_id = max_id.max(id);
         }
-        
+
         // Ensure the counter starts AFTER the highest loaded ID
         if max_id > 0 || !self._sid_dictionary.is_empty() {
-             self.next_internal_id.store(max_id + 1, Ordering::SeqCst);
+            self.next_internal_id.store(max_id + 1, Ordering::SeqCst);
         }
-        
+
         Ok(())
     }
 
@@ -408,7 +430,11 @@ impl Aurora {
 
     /// Look up a single IndexStorage entry without cloning the whole inner DashMap.
     /// This is O(1) vs the O(N) clone in `get_secondary_index`.
-    pub fn get_indexed_storage(&self, index_key: &str, val_str: &str) -> Option<Arc<RwLock<IndexStorage>>> {
+    pub fn get_indexed_storage(
+        &self,
+        index_key: &str,
+        val_str: &str,
+    ) -> Option<Arc<RwLock<IndexStorage>>> {
         self.secondary_indices
             .get(index_key)?
             .value()
@@ -425,24 +451,29 @@ impl Aurora {
     /// Convert an internal u32 ID back to an external String ID
     pub fn get_external_id(&self, internal_id: u32) -> Option<String> {
         let reverse_dict = self.reverse_sid_dictionary.read().ok()?;
-        reverse_dict.get(internal_id as usize).map(|u| {
-            if *u == 0 {
-                return String::new(); // Or handle as None if 0 is used for empty
-            }
-            self.format_external_id(*u)
-        }).filter(|s| !s.is_empty())
+        reverse_dict
+            .get(internal_id as usize)
+            .map(|u| {
+                if *u == 0 {
+                    return String::new(); // Or handle as None if 0 is used for empty
+                }
+                self.format_external_id(*u)
+            })
+            .filter(|s| !s.is_empty())
     }
 
     /// Convert an external String ID to its binary u128 representation
     pub fn parse_external_id(&self, id: &str) -> u128 {
-        uuid::Uuid::parse_str(id).map(|u| u.as_u128()).unwrap_or_else(|_| {
-            // Fallback to hashing if not a UUID
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut s = DefaultHasher::new();
-            id.hash(&mut s);
-            s.finish() as u128
-        })
+        uuid::Uuid::parse_str(id)
+            .map(|u| u.as_u128())
+            .unwrap_or_else(|_| {
+                // Fallback to hashing if not a UUID
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut s = DefaultHasher::new();
+                id.hash(&mut s);
+                s.finish() as u128
+            })
     }
 
     /// Convert binary u128 back to UUID string
@@ -452,9 +483,9 @@ impl Aurora {
 
     /// Ensure secondary indices are initialized from checkpoint
     pub async fn ensure_indices_initialized(&self) -> Result<()> {
-        self.indices_initialized.get_or_try_init(|| async {
-            self.load_index_checkpoint()
-        }).await?;
+        self.indices_initialized
+            .get_or_try_init(|| async { self.load_index_checkpoint() })
+            .await?;
         // Cross-check schema against checkpoint: spawn rebuilds for any index
         // that was missing from the checkpoint (e.g. after a crash).
         self.init_schema_indices().await;
@@ -474,7 +505,9 @@ impl Aurora {
         // 1. Load manifest
         let manifest_data = std::fs::read_to_string(index_json)?;
         let manifest: HashMap<String, (usize, usize)> = serde_json::from_str(&manifest_data)?;
-        for (k, v) in manifest { self.index_manifest.insert(k, v); }
+        for (k, v) in manifest {
+            self.index_manifest.insert(k, v);
+        }
 
         // 2. Memory map indices
         let file = StdFile::open(index_bin)?;
@@ -505,7 +538,8 @@ impl Aurora {
 
                     if let Some(bytes) = mmap.get(offset..offset + len) {
                         if let Ok(bitmap) = RoaringBitmap::deserialize_from(bytes) {
-                            let index = self.secondary_indices
+                            let index = self
+                                .secondary_indices
                                 .entry(index_key.to_string())
                                 .or_default();
                             index.insert(
@@ -581,7 +615,8 @@ impl Aurora {
         for (collection_name, index_keys) in missing_by_collection {
             let db = self.clone();
             tokio::spawn(async move {
-                db.rebuild_collection_indices(&collection_name, index_keys).await;
+                db.rebuild_collection_indices(&collection_name, index_keys)
+                    .await;
             });
         }
     }
@@ -650,7 +685,11 @@ impl Aurora {
         let index_json = path.join("aurora_indices.json");
 
         // Snapshot deleted IDs once; used to mask ghost IDs from every bitmap
-        let deleted_snap = self.deleted_ids.read().map(|g| g.clone()).unwrap_or_default();
+        let deleted_snap = self
+            .deleted_ids
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default();
 
         let mut bin_data: Vec<u8> = Vec::new();
         let mut manifest: HashMap<String, (usize, usize)> = HashMap::new();
@@ -677,7 +716,9 @@ impl Aurora {
             };
 
             for val_entry in col_entry.value().iter() {
-                let Ok(storage) = val_entry.value().read() else { continue };
+                let Ok(storage) = val_entry.value().read() else {
+                    continue;
+                };
 
                 // Dense-Bitmap-Only for non-unique fields: skip Single / List.
                 // Unique fields are always checkpointed regardless of storage type.
@@ -775,7 +816,9 @@ impl Aurora {
 
     fn save_recyclable_ids(&self, bitmap: &RoaringBitmap) -> Result<()> {
         let mut buf = Vec::new();
-        bitmap.serialize_into(&mut buf).map_err(|e| AqlError::new(ErrorCode::IoError, e.to_string()))?;
+        bitmap
+            .serialize_into(&mut buf)
+            .map_err(|e| AqlError::new(ErrorCode::IoError, e.to_string()))?;
         self.cold.set("_sys:recyclable_ids".to_string(), buf)?;
         Ok(())
     }
@@ -794,14 +837,22 @@ impl Aurora {
     /// Internal serialization helper
     pub fn deserialize_internal<T: serde::de::DeserializeOwned>(&self, data: &[u8]) -> Result<T> {
         if data.starts_with(b"AUR\x01") {
-            Ok(rmp_serde::from_slice(&data[4..]).map_err(|e| AqlError::new(ErrorCode::SerializationError, e.to_string()))?)
+            Ok(rmp_serde::from_slice(&data[4..])
+                .map_err(|e| AqlError::new(ErrorCode::SerializationError, e.to_string()))?)
         } else {
-            Ok(serde_json::from_slice(data).map_err(|e| AqlError::new(ErrorCode::SerializationError, e.to_string()))?)
+            Ok(serde_json::from_slice(data)
+                .map_err(|e| AqlError::new(ErrorCode::SerializationError, e.to_string()))?)
         }
     }
 
     /// Optimized value indexing using adaptive storage (Ticket 3)
-    fn index_value(&self, collection: &str, key: &str, value: &[u8], _tx_id: Option<u64>) -> Result<()> {
+    fn index_value(
+        &self,
+        collection: &str,
+        key: &str,
+        value: &[u8],
+        _tx_id: Option<u64>,
+    ) -> Result<()> {
         // Update primary index with metadata only
         let location = DiskLocation::new(value.len());
         self.primary_indices
@@ -818,7 +869,8 @@ impl Aurora {
                 let index_key = format!("{}:id", collection);
                 let val_str = id_val.to_string();
                 let index = self.secondary_indices.entry(index_key).or_default();
-                index.entry(val_str)
+                index
+                    .entry(val_str)
                     .and_modify(|existing| {
                         if let Ok(mut storage) = existing.write() {
                             storage.add(internal_id);
@@ -828,7 +880,11 @@ impl Aurora {
             }
 
             for (field_name, field_val) in doc.data {
-                if collection_def.fields.get(&field_name).map_or(false, |f| f.indexed) {
+                if collection_def
+                    .fields
+                    .get(&field_name)
+                    .map_or(false, |f| f.indexed)
+                {
                     let index_key = format!("{}:{}", collection, field_name);
                     let val_str = field_val.to_string();
 
@@ -836,13 +892,16 @@ impl Aurora {
                     // Use and_modify+or_insert_with so newly-created entries start as
                     // Single(id) without an extra add() call that would corrupt them
                     // into List([id, id]).
-                    index.entry(val_str)
+                    index
+                        .entry(val_str)
                         .and_modify(|existing| {
                             if let Ok(mut storage) = existing.write() {
                                 storage.add(internal_id);
                             }
                         })
-                        .or_insert_with(|| Arc::new(RwLock::new(IndexStorage::Single(internal_id))));
+                        .or_insert_with(|| {
+                            Arc::new(RwLock::new(IndexStorage::Single(internal_id)))
+                        });
                 }
             }
         }
@@ -864,7 +923,11 @@ impl Aurora {
     }
 
     /// Get first document matching filter
-    pub async fn first_one(&self, collection: &str, filter_fn: impl Fn(&Document) -> bool) -> Result<Option<Document>> {
+    pub async fn first_one(
+        &self,
+        collection: &str,
+        filter_fn: impl Fn(&Document) -> bool,
+    ) -> Result<Option<Document>> {
         let docs = self.scan_and_filter(collection, filter_fn, Some(1))?;
         Ok(docs.into_iter().next())
     }
@@ -923,10 +986,7 @@ impl Aurora {
         let (aql, options) = input.into_params();
 
         // Parse and analyze without executing
-        let doc = parser::parse_with_variables(
-            &aql,
-            serde_json::Value::Object(options.variables.clone().into_iter().collect()),
-        )?;
+        let doc = parser::parse_with_variables(&aql, &options.variables)?;
 
         self.analyze_execution_plan(&doc).await
     }
@@ -1117,36 +1177,46 @@ impl Aurora {
 
                         let wal = wal.clone();
                         // Move blocking I/O to a blocking thread
-                        let result = tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
-                            match wal.write() {
-                                Ok(mut guard) => {
-                                    let wal_result = match op {
-                                        WalOperation::Put { key, value } => {
-                                            guard.append(Operation::Put, &key, Some(value.as_ref()))
-                                        }
-                                        WalOperation::Delete { key } => {
-                                            guard.append(Operation::Delete, &key, None)
-                                        }
-                                    };
-                                    wal_result.map_err(|e| format!("WAL append failed: {}", e))
+                        let result = tokio::task::spawn_blocking(
+                            move || -> std::result::Result<(), String> {
+                                match wal.write() {
+                                    Ok(mut guard) => {
+                                        let wal_result = match op {
+                                            WalOperation::Put { key, value } => guard.append(
+                                                Operation::Put,
+                                                &key,
+                                                Some(value.as_ref()),
+                                            ),
+                                            WalOperation::Delete { key } => {
+                                                guard.append(Operation::Delete, &key, None)
+                                            }
+                                        };
+                                        wal_result.map_err(|e| format!("WAL append failed: {}", e))
+                                    }
+                                    Err(e) => {
+                                        // Lock is poisoned — degrade gracefully, do not kill the process.
+                                        Err(format!("WAL lock poisoned: {}", e))
+                                    }
                                 }
-                                Err(e) => {
-                                    // Lock is poisoned — degrade gracefully, do not kill the process.
-                                    Err(format!("WAL lock poisoned: {}", e))
-                                }
-                            }
-                        })
+                            },
+                        )
                         .await;
 
                         match result {
                             Err(e) if e.is_cancelled() => break,
                             Err(e) => {
-                                eprintln!("WAL task panicked: {}. Durability disabled for this session.", e);
+                                eprintln!(
+                                    "WAL task panicked: {}. Durability disabled for this session.",
+                                    e
+                                );
                                 wal_disabled_task.store(true, Ordering::SeqCst);
                                 // Keep draining so callers never see a closed-channel error.
                             }
                             Ok(Err(msg)) => {
-                                eprintln!("CRITICAL WAL write error: {}. Durability disabled for this session.", msg);
+                                eprintln!(
+                                    "CRITICAL WAL write error: {}. Durability disabled for this session.",
+                                    msg
+                                );
                                 wal_disabled_task.store(true, Ordering::SeqCst);
                             }
                             Ok(Ok(())) => {}
@@ -1275,7 +1345,7 @@ impl Aurora {
 
         // 0. Load persisted ID mappings from Sled so that internal IDs are stable
         db.load_id_mapping_from_sled()?;
-        
+
         // 0.1 Load recyclable IDs
         db.load_recyclable_ids()?;
 
@@ -1330,9 +1400,7 @@ impl Aurora {
         // If inside a transaction, check the buffer first.
         // Provides read-your-own-writes within the transaction while keeping
         // changes invisible to all other readers until commit.
-        if let Ok(tx_id) =
-            crate::transaction::ACTIVE_TRANSACTION_ID.try_with(|id| *id)
-        {
+        if let Ok(tx_id) = crate::transaction::ACTIVE_TRANSACTION_ID.try_with(|id| *id) {
             if let Some(buffer) = self.transaction_manager.active_transactions.get(&tx_id) {
                 if buffer.deletes.contains_key(key) {
                     return Ok(None);
@@ -1488,7 +1556,11 @@ impl Aurora {
             return true;
         }
         let cold_prefix = format!("{}:", index_key);
-        if self.index_manifest.iter().any(|e| e.key().starts_with(&cold_prefix)) {
+        if self
+            .index_manifest
+            .iter()
+            .any(|e| e.key().starts_with(&cold_prefix))
+        {
             return true;
         }
         false
@@ -1504,8 +1576,12 @@ impl Aurora {
 
         // 1. Check Cold Index (mmap)
         if let Some(loc) = self.index_manifest.get(&format!("{}:{}", ik, vstr)) {
-            if let Ok(g) = self.mmap_index.read() && let Some(m) = g.as_ref() {
-                if let Ok(cb) = RoaringBitmap::deserialize_from(&m[loc.0..(loc.0+loc.1)]) { bitmap |= cb; }
+            if let Ok(g) = self.mmap_index.read()
+                && let Some(m) = g.as_ref()
+            {
+                if let Ok(cb) = RoaringBitmap::deserialize_from(&m[loc.0..(loc.0 + loc.1)]) {
+                    bitmap |= cb;
+                }
             }
         }
 
@@ -1518,7 +1594,10 @@ impl Aurora {
             }
         }
 
-        bitmap.iter().filter_map(|id| self.get_external_id(id)).collect()
+        bitmap
+            .iter()
+            .filter_map(|id| self.get_external_id(id))
+            .collect()
     }
 
     /// Register a computed field definition
@@ -2004,9 +2083,7 @@ impl Aurora {
         // If inside a transaction scope, buffer the write instead of touching
         // storage.  The buffer is flushed atomically on commit or discarded on
         // rollback — nothing lands in WAL/cold/hot until then.
-        if let Ok(tx_id) =
-            crate::transaction::ACTIVE_TRANSACTION_ID.try_with(|id| *id)
-        {
+        if let Ok(tx_id) = crate::transaction::ACTIVE_TRANSACTION_ID.try_with(|id| *id) {
             if let Some(buffer) = self.transaction_manager.active_transactions.get(&tx_id) {
                 buffer.write(key, value);
                 return Ok(());
@@ -2436,6 +2513,7 @@ impl Aurora {
         name: &str,
         fields: Vec<F>,
     ) -> Result<()> {
+        println!("DB: Creating collection: {}", name);
         let collection_key = format!("_collection:{}", name);
 
         // Check if collection already exists - if so, just return Ok (idempotent)
@@ -2842,7 +2920,10 @@ impl Aurora {
     ) -> Result<()> {
         let key = format!("{}:{}", collection, doc_id);
         let existing = self.get(&key)?.ok_or_else(|| {
-            AqlError::new(ErrorCode::NotFound, format!("Document {} not found", doc_id))
+            AqlError::new(
+                ErrorCode::NotFound,
+                format!("Document {} not found", doc_id),
+            )
         })?;
         let mut document: Document = serde_json::from_slice(&existing)?;
         document.data.remove(field);
@@ -3086,7 +3167,10 @@ impl Aurora {
     ///     }
     /// }
     /// ```
-    pub async fn rollback_transaction(&self, tx_id: crate::transaction::TransactionId) -> Result<()> {
+    pub async fn rollback_transaction(
+        &self,
+        tx_id: crate::transaction::TransactionId,
+    ) -> Result<()> {
         self.transaction_manager.rollback(tx_id)
     }
 
@@ -4335,6 +4419,7 @@ impl Aurora {
 
     /// Get collection definition
     pub fn get_collection_definition(&self, collection: &str) -> Result<Collection> {
+        println!("DB: Getting definition for: {}", collection);
         if let Some(data) = self.get(&format!("_collection:{}", collection))? {
             let collection_def: Collection = serde_json::from_slice(&data)?;
             Ok(collection_def)
@@ -4728,9 +4813,10 @@ impl Aurora {
                             let id = key.split(':').nth(1).unwrap_or("");
                             let internal_id = self.get_or_create_internal_id(id);
 
-                            let index_entry = secondary_index.entry(value_str).or_insert_with(|| {
-                                Arc::new(RwLock::new(IndexStorage::Single(internal_id)))
-                            });
+                            let index_entry =
+                                secondary_index.entry(value_str).or_insert_with(|| {
+                                    Arc::new(RwLock::new(IndexStorage::Single(internal_id)))
+                                });
 
                             if let Ok(mut storage) = index_entry.value().write() {
                                 storage.add(internal_id);
@@ -4948,7 +5034,10 @@ impl Aurora {
                     if let Some(index) = self.secondary_indices.get(&index_key) {
                         if let Some(matching_ids_arc) = index.get(&value.to_string()) {
                             if let Ok(storage) = matching_ids_arc.value().read() {
-                                let ids = storage.iter().filter_map(|id| self.get_external_id(id)).collect();
+                                let ids = storage
+                                    .iter()
+                                    .filter_map(|id| self.get_external_id(id))
+                                    .collect();
                                 doc_ids_to_load = Some(ids);
                                 break;
                             }
@@ -4988,7 +5077,11 @@ impl Aurora {
 
                                 if matches {
                                     if let Ok(storage) = entry.value().read() {
-                                        matching_ids.extend(storage.iter().filter_map(|id| self.get_external_id(id)));
+                                        matching_ids.extend(
+                                            storage
+                                                .iter()
+                                                .filter_map(|id| self.get_external_id(id)),
+                                        );
                                     }
                                 }
                             }
@@ -5016,7 +5109,9 @@ impl Aurora {
                                 .contains(&search_term.to_lowercase())
                             {
                                 if let Ok(storage) = entry.value().read() {
-                                    matching_ids.extend(storage.iter().filter_map(|id| self.get_external_id(id)));
+                                    matching_ids.extend(
+                                        storage.iter().filter_map(|id| self.get_external_id(id)),
+                                    );
                                 }
                             }
                         }
@@ -5048,7 +5143,11 @@ impl Aurora {
                                 if let Some(index) = self.secondary_indices.get(&index_key) {
                                     if let Some(matching_ids_arc) = index.get(&value.to_string()) {
                                         if let Ok(storage) = matching_ids_arc.value().read() {
-                                            union_ids.extend(storage.iter().filter_map(|id| self.get_external_id(id)));
+                                            union_ids.extend(
+                                                storage
+                                                    .iter()
+                                                    .filter_map(|id| self.get_external_id(id)),
+                                            );
                                             used_index = true;
                                         }
                                     }
@@ -5160,9 +5259,7 @@ impl Aurora {
                 final_docs = self.get_all_collection(&builder.collection).await?;
 
                 // Apply filters
-                final_docs.retain(|doc| {
-                    builder.filters.iter().all(|filter| filter.matches(doc))
-                });
+                final_docs.retain(|doc| builder.filters.iter().all(|filter| filter.matches(doc)));
             }
         }
 
@@ -5386,13 +5483,16 @@ impl Aurora {
                 let index = entry.value();
 
                 let unique_values = index.len();
-                let total_documents: usize = index.iter().map(|entry| {
-                    if let Ok(storage) = entry.value().read() {
-                        storage.to_bitmap().len() as usize
-                    } else {
-                        0
-                    }
-                }).sum();
+                let total_documents: usize = index
+                    .iter()
+                    .map(|entry| {
+                        if let Ok(storage) = entry.value().read() {
+                            storage.to_bitmap().len() as usize
+                        } else {
+                            0
+                        }
+                    })
+                    .sum();
 
                 stats.insert(
                     field.to_string(),
@@ -5446,8 +5546,9 @@ impl Aurora {
             Err(e) if e.code == crate::error::ErrorCode::CollectionNotFound => return Ok(()),
             Err(e) => return Err(e),
         };
-        let unique_fields = self.get_unique_fields(&collection_def);
 
+        // 1. Unique Constraints
+        let unique_fields = self.get_unique_fields(&collection_def);
         for unique_field in &unique_fields {
             if let Some(value) = data.get(unique_field) {
                 let index_key = format!("{}:{}", collection, unique_field);
@@ -5473,6 +5574,59 @@ impl Aurora {
                 }
             }
         }
+
+        // 2. Relation Constraints (Foreign Keys)
+        for (field_name, field_def) in &collection_def.fields {
+            if let Some(rel) = &field_def.relation {
+                if let Some(val) = data.get(field_name) {
+                    if !matches!(val, Value::Null) {
+                        let fk_value = match val {
+                            Value::String(s) => s.clone(),
+                            Value::Uuid(u) => u.to_string(),
+                            _ => val.to_string(),
+                        };
+
+                        // Check if the referenced ID exists in the target collection
+                        // If the key is 'id' or '_sid', we can use get_document directly
+                        let exists = if rel.key == "id" || rel.key == "_sid" {
+                            self.get_document(&rel.to, &fk_value)?.is_some()
+                        } else {
+                            // Otherwise, we need to check the index of the target collection
+                            let index_key = format!("{}:{}", rel.to, rel.key);
+                            if let Some(storage) = self.get_indexed_storage(&index_key, &fk_value) {
+                                if let Ok(s) = storage.read() {
+                                    !s.is_empty()
+                                } else {
+                                    false
+                                }
+                            } else {
+                                // Target field is not indexed, fallback to scan (slow)
+                                let docs = self.scan_and_filter(
+                                    &rel.to,
+                                    |d| {
+                                        d.data.get(&rel.key).map(|v| v.to_string())
+                                            == Some(fk_value.clone())
+                                    },
+                                    Some(1),
+                                )?;
+                                !docs.is_empty()
+                            }
+                        };
+
+                        if !exists {
+                            return Err(AqlError::new(
+                                ErrorCode::ValidationError,
+                                format!(
+                                    "Foreign key violation: value '{}' for field '{}' does not exist in collection '{}' (field '{}')",
+                                    fk_value, field_name, rel.to, rel.key
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -5497,10 +5651,11 @@ impl Aurora {
                         _ => value.to_string(),
                     };
                     if let Some(doc_ids_arc) = index.get(&value_str) {
-                        let exclude_internal = self._sid_dictionary
+                        let exclude_internal = self
+                            ._sid_dictionary
                             .get(&self.parse_external_id(exclude_id))
                             .map(|e| *e.value());
-                            
+
                         if let Ok(storage) = doc_ids_arc.value().read() {
                             let has_violation = if let Some(exc) = exclude_internal {
                                 // Normal path: dictionary populated, use bitmap exclusion.
@@ -5512,7 +5667,8 @@ impl Aurora {
                                 // if the document being updated already holds this exact
                                 // unique value, it is NOT a violation.
                                 let cold_key = format!("{}:{}", collection, exclude_id);
-                                let doc_owns_value = self.get(&cold_key)
+                                let doc_owns_value = self
+                                    .get(&cold_key)
                                     .ok()
                                     .flatten()
                                     .and_then(|raw| serde_json::from_slice::<Document>(&raw).ok())
@@ -5547,6 +5703,55 @@ impl Aurora {
                 }
             }
         }
+
+        // 2. Relation Constraints (Foreign Keys)
+        for (field_name, field_def) in &collection_def.fields {
+            if let Some(rel) = &field_def.relation {
+                if let Some(val) = data.get(field_name) {
+                    if !matches!(val, Value::Null) {
+                        let fk_value = match val {
+                            Value::String(s) => s.clone(),
+                            Value::Uuid(u) => u.to_string(),
+                            _ => val.to_string(),
+                        };
+
+                        let exists = if rel.key == "id" || rel.key == "_sid" {
+                            self.get_document(&rel.to, &fk_value)?.is_some()
+                        } else {
+                            let index_key = format!("{}:{}", rel.to, rel.key);
+                            if let Some(storage) = self.get_indexed_storage(&index_key, &fk_value) {
+                                if let Ok(s) = storage.read() {
+                                    !s.is_empty()
+                                } else {
+                                    false
+                                }
+                            } else {
+                                let docs = self.scan_and_filter(
+                                    &rel.to,
+                                    |d| {
+                                        d.data.get(&rel.key).map(|v| v.to_string())
+                                            == Some(fk_value.clone())
+                                    },
+                                    Some(1),
+                                )?;
+                                !docs.is_empty()
+                            }
+                        };
+
+                        if !exists {
+                            return Err(AqlError::new(
+                                ErrorCode::ValidationError,
+                                format!(
+                                    "Foreign key violation: value '{}' for field '{}' does not exist in collection '{}' (field '{}')",
+                                    fk_value, field_name, rel.to, rel.key
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -5586,8 +5791,16 @@ impl Aurora {
         // Validate unique constraints before inserting
         self.validate_unique_constraints(collection, &data).await?;
 
-        // Generate a fresh UUIDv7 for the internal system ID
-        let sid = Uuid::now_v7().to_string();
+        // Use 'id' from data as the internal system ID if provided and it's a string/uuid
+        let sid = if let Some(v) = data.get("id") {
+            match v {
+                Value::String(s) => s.clone(),
+                Value::Uuid(u) => u.to_string(),
+                _ => Uuid::now_v7().to_string(),
+            }
+        } else {
+            Uuid::now_v7().to_string()
+        };
 
         let document = Document {
             _sid: sid.clone(),
@@ -5950,7 +6163,9 @@ impl Aurora {
         // with no schema to describe them.
         if self.config.durability_mode != DurabilityMode::None {
             if let Some(wal_writer) = &self.wal_writer {
-                let _ = wal_writer.send(WalOperation::Delete { key: collection_key.clone() });
+                let _ = wal_writer.send(WalOperation::Delete {
+                    key: collection_key.clone(),
+                });
             }
         }
         self.cold.delete(&collection_key)?;
@@ -5980,7 +6195,10 @@ impl Aurora {
         data.insert("version".to_string(), Value::String(version.to_string()));
         data.insert("status".to_string(), Value::String("applied".to_string()));
         data.insert("applied_at".to_string(), Value::String(timestamp));
-        let doc = Document { _sid: version.to_string(), data };
+        let doc = Document {
+            _sid: version.to_string(),
+            data,
+        };
         let doc_key = format!("_migrations:{}", version);
         self.put(doc_key, serde_json::to_vec(&doc)?, None).await?;
 
@@ -6092,8 +6310,16 @@ mod tests {
         db.new_collection(
             "users",
             vec![
-                ("id", FieldType::Scalar(crate::types::ScalarType::String), false),
-                ("counter", FieldType::Scalar(crate::types::ScalarType::Int), false),
+                (
+                    "id",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    false,
+                ),
+                (
+                    "counter",
+                    FieldType::Scalar(crate::types::ScalarType::Int),
+                    false,
+                ),
             ],
         )
         .await
@@ -6150,9 +6376,21 @@ mod tests {
         db.new_collection(
             "users",
             vec![
-                ("name", FieldType::Scalar(crate::types::ScalarType::String), false),
-                ("age", FieldType::Scalar(crate::types::ScalarType::Int), false),
-                ("email", FieldType::Scalar(crate::types::ScalarType::String), true),
+                (
+                    "name",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    false,
+                ),
+                (
+                    "age",
+                    FieldType::Scalar(crate::types::ScalarType::Int),
+                    false,
+                ),
+                (
+                    "email",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    true,
+                ),
             ],
         )
         .await?;
@@ -6187,8 +6425,15 @@ mod tests {
         let db = Aurora::open(db_path.to_str().unwrap()).await?;
 
         // Create collection
-        db.new_collection("test", vec![("field", FieldType::Scalar(crate::types::ScalarType::String), false)])
-            .await?;
+        db.new_collection(
+            "test",
+            vec![(
+                "field",
+                FieldType::Scalar(crate::types::ScalarType::String),
+                false,
+            )],
+        )
+        .await?;
 
         // Start transaction
         let tx_id = db.begin_transaction().await;
@@ -6221,9 +6466,21 @@ mod tests {
         db.new_collection(
             "books",
             vec![
-                ("title", FieldType::Scalar(crate::types::ScalarType::String), false),
-                ("author", FieldType::Scalar(crate::types::ScalarType::String), false),
-                ("year", FieldType::Scalar(crate::types::ScalarType::Int), false),
+                (
+                    "title",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    false,
+                ),
+                (
+                    "author",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    false,
+                ),
+                (
+                    "year",
+                    FieldType::Scalar(crate::types::ScalarType::Int),
+                    false,
+                ),
             ],
         )
         .await?;
@@ -6320,9 +6577,21 @@ mod tests {
         db.new_collection(
             "users",
             vec![
-                ("name", FieldType::Scalar(crate::types::ScalarType::String), false),
-                ("email", FieldType::Scalar(crate::types::ScalarType::String), true), // unique field
-                ("age", FieldType::Scalar(crate::types::ScalarType::Int), false),
+                (
+                    "name",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    false,
+                ),
+                (
+                    "email",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    true,
+                ), // unique field
+                (
+                    "age",
+                    FieldType::Scalar(crate::types::ScalarType::Int),
+                    false,
+                ),
             ],
         )
         .await?;
@@ -6423,8 +6692,16 @@ mod tests {
         db.new_collection(
             "products",
             vec![
-                ("name", FieldType::Scalar(crate::types::ScalarType::String), false),
-                ("sku", FieldType::Scalar(crate::types::ScalarType::String), true), // unique
+                (
+                    "name",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    false,
+                ),
+                (
+                    "sku",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    true,
+                ), // unique
             ],
         )
         .await?;
@@ -6433,10 +6710,30 @@ mod tests {
         db.new_collection(
             "users",
             vec![
-                ("name", FieldType::Scalar(crate::types::ScalarType::String), false, false), // not nullable
-                ("email", FieldType::Scalar(crate::types::ScalarType::String), true, false), // unique, not nullable
-                ("bio", FieldType::Scalar(crate::types::ScalarType::String), false, true),   // nullable
-                ("age", FieldType::Scalar(crate::types::ScalarType::Int), false, true),      // nullable
+                (
+                    "name",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    false,
+                    false,
+                ), // not nullable
+                (
+                    "email",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    true,
+                    false,
+                ), // unique, not nullable
+                (
+                    "bio",
+                    FieldType::Scalar(crate::types::ScalarType::String),
+                    false,
+                    true,
+                ), // nullable
+                (
+                    "age",
+                    FieldType::Scalar(crate::types::ScalarType::Int),
+                    false,
+                    true,
+                ), // nullable
             ],
         )
         .await?;
@@ -6478,12 +6775,39 @@ mod tests {
                 db_path: db_path.clone(),
                 enable_wal: false,
                 ..Default::default()
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
 
-            db.new_collection("facts", vec![
-                ("key",        FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: true,  indexed: true, nullable: false, validations: vec![] }),
-                ("value_json", FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: false, validations: vec![] }),
-            ]).await.unwrap();
+            db.new_collection(
+                "facts",
+                vec![
+                    (
+                        "key",
+                        FieldDefinition {
+                            field_type: FieldType::SCALAR_STRING,
+                            unique: true,
+                            indexed: true,
+                            nullable: false,
+                            validations: vec![],
+                            relation: None,
+                        },
+                    ),
+                    (
+                        "value_json",
+                        FieldDefinition {
+                            field_type: FieldType::SCALAR_STRING,
+                            unique: false,
+                            indexed: false,
+                            nullable: false,
+                            validations: vec![],
+                            relation: None,
+                        },
+                    ),
+                ],
+            )
+            .await
+            .unwrap();
 
             let aql = r#"
                 mutation {
@@ -6492,14 +6816,15 @@ mod tests {
                         value_json: "\"2026-04-05T01:00:00Z\""
                     }) { id }
                 }
-            "#.to_string();
+            "#
+            .to_string();
             let result = db.execute(aql).await.unwrap();
-            
+
             // Extract ID from result (QueryResult format)
             if let crate::parser::executor::ExecutionResult::Mutation(mutres) = result {
                 document_id = mutres.returned_documents[0]._sid.clone();
             }
-            
+
             // Explicitly flush to ensure secondary_indices are written to disk
             db.flush().unwrap();
         }
@@ -6512,10 +6837,13 @@ mod tests {
                 db_path: db_path.clone(),
                 enable_wal: false,
                 ..Default::default()
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
 
             // Update the same key with a new value directly by ID — must NOT error
-            let aql = format!(r#"
+            let aql = format!(
+                r#"
                 mutation {{
                     update(
                         collection: "facts",
@@ -6523,9 +6851,13 @@ mod tests {
                         data: {{ key: "last_session_at", value_json: "\"2026-04-05T03:00:00Z\"" }}
                     ) {{ id }}
                 }}
-            "#, document_id);
+            "#,
+                document_id
+            );
 
-            db.execute(aql).await.expect("update of existing unique key after restart should not fail");
+            db.execute(aql)
+                .await
+                .expect("update of existing unique key after restart should not fail");
         }
     }
 }

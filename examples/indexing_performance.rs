@@ -13,13 +13,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.new_collection(
             "users",
             vec![
-                ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),       // indexed
-                ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),    // NOT indexed
-                ("email", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),   // NOT indexed
-                ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),        // NOT indexed
-                ("address", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), // NOT indexed
+                (
+                    "id",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: true,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // indexed
+                (
+                    "name",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // NOT indexed
+                (
+                    "email",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // NOT indexed
+                (
+                    "age",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // NOT indexed
+                (
+                    "address",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // NOT indexed
             ],
-        ).await?;
+        )
+        .await?;
 
         let start = Instant::now();
         for i in 0..1000 {
@@ -54,14 +105,75 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.new_collection(
             "products",
             vec![
-                ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),        // indexed
-                ("sku", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),       // indexed
-                ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),     // NOT indexed
-                ("price", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true, validations: vec![] }),     // NOT indexed
-                ("category", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), // NOT indexed
-                ("stock", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),       // NOT indexed
+                (
+                    "id",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: true,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // indexed
+                (
+                    "sku",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: true,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // indexed
+                (
+                    "name",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // NOT indexed
+                (
+                    "price",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_FLOAT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // NOT indexed
+                (
+                    "category",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // NOT indexed
+                (
+                    "stock",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // NOT indexed
             ],
-        ).await?;
+        )
+        .await?;
 
         let start = Instant::now();
         for i in 0..1000 {
@@ -97,18 +209,119 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.new_collection(
             "logs",
             vec![
-                ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }), // auto-indexed
-                ("timestamp", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("level", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("message", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("source", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("user", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("ip", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("duration_ms", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("status", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("metadata", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
+                (
+                    "id",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: true,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // auto-indexed
+                (
+                    "timestamp",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "level",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "message",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "source",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "user",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "ip",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "duration_ms",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "status",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "metadata",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
             ],
-        ).await?;
+        )
+        .await?;
 
         let start = Instant::now();
         for i in 0..1000 {

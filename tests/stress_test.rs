@@ -33,8 +33,28 @@ async fn stress_test_concurrent_writes() {
         db.new_collection(
             "stress_test",
             vec![
-                ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
+                (
+                    "name",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "value",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
             ],
         )
         .await
@@ -114,9 +134,22 @@ async fn stress_test_concurrent_reads_writes() {
 
     let db = Arc::new(Aurora::with_config(config).await.unwrap());
 
-    db.new_collection("rw_test", vec![("counter", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] })])
-        .await
-        .unwrap();
+    db.new_collection(
+        "rw_test",
+        vec![(
+            "counter",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_INT,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
 
     // Pre-populate with some data
     for i in 0..100 {
@@ -192,9 +225,22 @@ async fn stress_test_pubsub_notifications() {
 
     let db = Arc::new(Aurora::open(db_path.to_str().unwrap()).await.unwrap());
 
-    db.new_collection("pubsub_test", vec![("event", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })])
-        .await
-        .unwrap();
+    db.new_collection(
+        "pubsub_test",
+        vec![(
+            "event",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_STRING,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
 
     // Create 10 listeners
     let mut listeners = vec![];

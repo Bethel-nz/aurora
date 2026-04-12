@@ -259,6 +259,7 @@ fn validate_query<S: SchemaProvider>(query: &Query, ctx: &mut ValidationContext<
                     ),
                 );
             }
+            Selection::ComputedField(_) => {}
         }
     }
 
@@ -361,6 +362,7 @@ fn validate_subscription<S: SchemaProvider>(
                     );
                 }
             }
+            Selection::ComputedField(_) => {}
         }
     }
 
@@ -513,6 +515,16 @@ fn validate_selection_set<S: SchemaProvider>(
             Selection::FragmentSpread(fragment_name) => {
                 validate_fragment_spread(fragment_name, &collection.name, ctx);
             }
+            Selection::ComputedField(cf) => {
+                let display_name = &cf.alias;
+                if aliases_seen.contains_key(display_name) {
+                    ctx.add_error(
+                        ErrorCode::DuplicateAlias,
+                        format!("Duplicate field/alias '{}' in selection", display_name),
+                    );
+                }
+                aliases_seen.insert(display_name.clone(), true);
+            }
         }
     }
 }
@@ -587,6 +599,16 @@ fn validate_nested_selection_set<S: SchemaProvider>(
                     ErrorCode::InvalidInput,
                     "Fragments are not supported in nested object selections".to_string(),
                 );
+            }
+            Selection::ComputedField(cf) => {
+                let display_name = &cf.alias;
+                if aliases_seen.contains_key(display_name) {
+                    ctx.add_error(
+                        ErrorCode::DuplicateAlias,
+                        format!("Duplicate field/alias '{}' in selection", display_name),
+                    );
+                }
+                aliases_seen.insert(display_name.clone(), true);
             }
         }
     }
@@ -665,8 +687,10 @@ fn validate_mutation_operation<S: SchemaProvider>(
         }
         ast::MutationOp::InsertMany { collection, data } => {
             if let Some(col_def) = ctx.schema.get_collection(collection) {
-                for item in data {
-                    validate_object_against_schema(item, col_def, ctx);
+                if let ast::Value::Array(items) = data {
+                    for item in items {
+                        validate_object_against_schema(item, col_def, ctx);
+                    }
                 }
             } else {
                 ctx.add_error(
@@ -929,7 +953,10 @@ fn validate_filter<S: SchemaProvider>(
             if !matches!(value, Value::Array(_) | Value::Variable(_)) {
                 ctx.add_error(
                     ErrorCode::TypeMismatch,
-                    format!("containsAny/containsAll on field '{}' expects an array", field),
+                    format!(
+                        "containsAny/containsAll on field '{}' expects an array",
+                        field
+                    ),
                 );
             }
             validate_filter_field_exists(field, collection, ctx);
@@ -1054,14 +1081,22 @@ fn value_type_name(value: &Value) -> &'static str {
 
 /// Report validation errors for unrecognised filter operators so users get a
 /// clear message for typos instead of silently-dropped conditions.
-fn report_unknown_filter_ops<S: SchemaProvider>(
-    value: &Value,
-    ctx: &mut ValidationContext<'_, S>,
-) {
+fn report_unknown_filter_ops<S: SchemaProvider>(value: &Value, ctx: &mut ValidationContext<'_, S>) {
     const KNOWN_OPS: &[&str] = &[
-        "eq", "ne", "gt", "gte", "lt", "lte",
-        "in", "nin", "contains", "startsWith", "endsWith",
-        "matches", "isNull", "isNotNull",
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin",
+        "contains",
+        "startsWith",
+        "endsWith",
+        "matches",
+        "isNull",
+        "isNotNull",
     ];
     if let Value::Object(map) = value {
         for (key, val) in map {
@@ -1205,8 +1240,8 @@ pub fn resolve_variables(
                 // substituted before the fragment is expanded at execution time.
                 resolve_in_fields(&mut fragment.selection_set, variables)?;
             }
-            ast::Operation::Introspection(_) => {}      // No variables in introspection
-            ast::Operation::Handler(_) => {}            // Handlers don't have variable resolution
+            ast::Operation::Introspection(_) => {} // No variables in introspection
+            ast::Operation::Handler(_) => {}       // Handlers don't have variable resolution
         }
     }
     Ok(())
@@ -1232,7 +1267,70 @@ fn resolve_in_fields(
             Selection::FragmentSpread(_) => {
                 // Nothing to resolve in fragment spread itself (name)
             }
+            Selection::ComputedField(cf) => {
+                resolve_in_computed_expression(&mut cf.expression, variables)?;
+            }
         }
+    }
+    Ok(())
+}
+
+fn resolve_in_computed_expression(
+    expr: &mut ast::ComputedExpression,
+    variables: &HashMap<String, ast::Value>,
+) -> Result<(), ValidationError> {
+    match expr {
+        ast::ComputedExpression::FunctionCall { args, .. } => {
+            for arg in args {
+                resolve_in_expression(arg, variables)?;
+            }
+        }
+        ast::ComputedExpression::PipeExpression { base, operations } => {
+            resolve_in_expression(base, variables)?;
+            for op in operations {
+                for arg in &mut op.args {
+                    resolve_in_expression(arg, variables)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn resolve_in_expression(
+    expr: &mut ast::Expression,
+    variables: &HashMap<String, ast::Value>,
+) -> Result<(), ValidationError> {
+    match expr {
+        ast::Expression::Literal(v) => resolve_in_value(v, variables)?,
+        ast::Expression::Variable(name) => {
+            if let Some(val) = variables.get(name) {
+                *expr = ast::Expression::Literal(val.clone());
+            }
+        }
+        ast::Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                resolve_in_expression(arg, variables)?;
+            }
+        }
+        ast::Expression::Binary { left, right, .. } => {
+            resolve_in_expression(left, variables)?;
+            resolve_in_expression(right, variables)?;
+        }
+        ast::Expression::Unary { expr, .. } => {
+            resolve_in_expression(expr, variables)?;
+        }
+        ast::Expression::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            resolve_in_expression(condition, variables)?;
+            resolve_in_expression(then_expr, variables)?;
+            resolve_in_expression(else_expr, variables)?;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1248,9 +1346,7 @@ fn resolve_in_mutation_op(
             resolve_in_value(data, variables)?;
         }
         ast::MutationOp::InsertMany { data, .. } => {
-            for item in data {
-                resolve_in_value(item, variables)?;
-            }
+            resolve_in_value(data, variables)?;
         }
         ast::MutationOp::Delete { .. } => {}
         ast::MutationOp::EnqueueJob { payload, .. } => {
@@ -1377,12 +1473,14 @@ mod tests {
                     name: "nonexistent".to_string(),
                     arguments: vec![],
                     directives: vec![],
+                    computed_expression: None,
                     selection_set: vec![Selection::Field(Field {
                         alias: None,
                         name: "id".to_string(),
                         arguments: vec![],
                         directives: vec![],
                         selection_set: vec![],
+                        computed_expression: None,
                     })],
                 })],
                 variables_values: HashMap::new(),
@@ -1412,12 +1510,15 @@ mod tests {
                     name: "users".to_string(),
                     arguments: vec![],
                     directives: vec![],
+                    computed_expression: None,
                     selection_set: vec![Selection::Field(Field {
                         alias: None,
                         name: "nonexistent_field".to_string(),
                         arguments: vec![],
                         directives: vec![],
                         selection_set: vec![],
+
+                        computed_expression: None,
                     })],
                 })],
                 variables_values: HashMap::new(),
@@ -1475,6 +1576,7 @@ mod tests {
                     name: "users".to_string(),
                     arguments: vec![],
                     directives: vec![],
+                    computed_expression: None,
                     selection_set: vec![
                         Selection::Field(Field {
                             alias: None,
@@ -1482,6 +1584,8 @@ mod tests {
                             arguments: vec![],
                             directives: vec![],
                             selection_set: vec![],
+
+                            computed_expression: None,
                         }),
                         Selection::Field(Field {
                             alias: None,
@@ -1489,6 +1593,7 @@ mod tests {
                             arguments: vec![],
                             directives: vec![],
                             selection_set: vec![],
+                            computed_expression: None,
                         }),
                         Selection::Field(Field {
                             alias: None,
@@ -1496,6 +1601,7 @@ mod tests {
                             arguments: vec![],
                             directives: vec![],
                             selection_set: vec![],
+                            computed_expression: None,
                         }),
                     ],
                 })],
@@ -1555,6 +1661,7 @@ mod tests {
                     }],
                     directives: vec![],
                     selection_set: vec![],
+                    computed_expression: None,
                 })],
                 variables_values: HashMap::new(),
             })],

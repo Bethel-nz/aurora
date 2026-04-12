@@ -1,29 +1,50 @@
 use aurora_db::Aurora;
-use aurora_db::types::{AuroraConfig, Value, FieldType};
+use aurora_db::types::{AuroraConfig, FieldType, Value};
 use std::collections::HashMap;
 use tempfile::tempdir;
 
 async fn setup_pagination_db() -> (Aurora, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let path = dir.path().join("test_db_pagination");
-    
+
     let config = AuroraConfig {
         db_path: path.clone(),
         enable_write_buffering: false,
         ..Default::default()
     };
-    
+
     let db = Aurora::with_config(config).await.unwrap();
 
     // Create collection
     db.new_collection(
         "items",
         vec![
-            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            (
+                "name",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "value",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
     )
-    .await.unwrap();
+    .await
+    .unwrap();
 
     // Insert 5 items
     for i in 1..=5 {
@@ -63,13 +84,13 @@ async fn test_pagination_first() {
         // Connection is returned as a single document wrapping edges and pageInfo
         assert_eq!(res.documents.len(), 1);
         let connection = &res.documents[0];
-        
+
         let edges = match connection.data.get("edges").unwrap() {
             Value::Array(arr) => arr,
             _ => panic!("Expected edges array"),
         };
         assert_eq!(edges.len(), 2);
-        
+
         let page_info = match connection.data.get("pageInfo").unwrap() {
             Value::Object(obj) => obj,
             _ => panic!("Expected pageInfo object"),
@@ -100,43 +121,46 @@ async fn test_pagination_next_page() {
     "#;
 
     let result1 = db.execute(query1).await.unwrap();
-    let (cursor, page1_values) = if let aurora_db::parser::executor::ExecutionResult::Query(res) = result1 {
-        assert_eq!(res.documents.len(), 1);
-        let conn = &res.documents[0];
-        let pi = match conn.data.get("pageInfo").unwrap() {
-            Value::Object(o) => o,
-            _ => panic!("Expected pageInfo object"),
-        };
-        let cursor = match pi.get("endCursor").unwrap() {
-            Value::String(s) => s.clone(),
-            _ => panic!("Expected endCursor string"),
-        };
-        let edges = match conn.data.get("edges").unwrap() {
-            Value::Array(arr) => arr.clone(),
-            _ => panic!("Expected edges array"),
-        };
-        let vals: Vec<i64> = edges.iter().map(|e| {
-            match e {
-                Value::Object(edge) => match edge.get("node").unwrap() {
-                    Value::Object(node) => match node.get("value").unwrap() {
-                        Value::Int(i) => *i,
-                        _ => panic!("Expected int value"),
+    let (cursor, page1_values) =
+        if let aurora_db::parser::executor::ExecutionResult::Query(res) = result1 {
+            assert_eq!(res.documents.len(), 1);
+            let conn = &res.documents[0];
+            let pi = match conn.data.get("pageInfo").unwrap() {
+                Value::Object(o) => o,
+                _ => panic!("Expected pageInfo object"),
+            };
+            let cursor = match pi.get("endCursor").unwrap() {
+                Value::String(s) => s.clone(),
+                _ => panic!("Expected endCursor string"),
+            };
+            let edges = match conn.data.get("edges").unwrap() {
+                Value::Array(arr) => arr.clone(),
+                _ => panic!("Expected edges array"),
+            };
+            let vals: Vec<i64> = edges
+                .iter()
+                .map(|e| match e {
+                    Value::Object(edge) => match edge.get("node").unwrap() {
+                        Value::Object(node) => match node.get("value").unwrap() {
+                            Value::Int(i) => *i,
+                            _ => panic!("Expected int value"),
+                        },
+                        _ => panic!(),
                     },
                     _ => panic!(),
-                },
-                _ => panic!(),
-            }
-        }).collect();
-        (cursor, vals)
-    } else {
-        panic!("Failed first query");
-    };
+                })
+                .collect();
+            (cursor, vals)
+        } else {
+            panic!("Failed first query");
+        };
 
     // Page 1 should be values 1, 2 (lowest two when sorted ASC)
     assert_eq!(page1_values, vec![1, 2]);
 
     // 2. Get next 2 using after cursor, same sort order
-    let query2 = format!(r#"
+    let query2 = format!(
+        r#"
         query {{
             items(first: 2, after: "{}", orderBy: {{value: ASC}}) {{
                 edges {{
@@ -149,7 +173,9 @@ async fn test_pagination_next_page() {
                 }}
             }}
         }}
-    "#, cursor);
+    "#,
+        cursor
+    );
 
     let result2 = db.execute(query2.as_str()).await.unwrap();
     if let aurora_db::parser::executor::ExecutionResult::Query(res) = result2 {

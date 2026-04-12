@@ -6,7 +6,6 @@
 /// - WAL replay correctness
 /// - Data integrity after crash
 /// - Transaction recovery
-
 use aurora_db::{Aurora, AuroraConfig, FieldType, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,17 +33,47 @@ async fn test_crash_recovery_basic() {
     {
         let db = create_test_db(db_path.clone()).await.unwrap();
 
-        db.new_collection("users", vec![
-            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ]).await.unwrap();
+        db.new_collection(
+            "users",
+            vec![
+                (
+                    "name",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "age",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+            ],
+        )
+        .await
+        .unwrap();
 
         // Insert some data
         for i in 0..100 {
-            db.insert_into("users", vec![
-                ("name", Value::String(format!("user_{}", i))),
-                ("age", Value::Int(20 + (i % 50))),
-            ]).await.unwrap();
+            db.insert_into(
+                "users",
+                vec![
+                    ("name", Value::String(format!("user_{}", i))),
+                    ("age", Value::Int(20 + (i % 50))),
+                ],
+            )
+            .await
+            .unwrap();
         }
 
         // Explicitly flush to ensure data is written
@@ -70,9 +99,9 @@ async fn test_crash_recovery_basic() {
         assert_eq!(results.len(), 100, "Should recover all 100 documents");
 
         // Verify some specific documents
-        let doc = results.iter().find(|d| {
-            d.data.get("name") == Some(&Value::String("user_0".to_string()))
-        });
+        let doc = results
+            .iter()
+            .find(|d| d.data.get("name") == Some(&Value::String("user_0".to_string())));
         assert!(doc.is_some(), "Should find user_0");
 
         println!("SUCCESS: Basic crash recovery successful");
@@ -90,20 +119,50 @@ async fn test_crash_during_writes() {
     {
         let db = Arc::new(create_test_db(db_path.clone()).await.unwrap());
 
-        db.new_collection("transactions", vec![
-            ("tx_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("amount", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ]).await.unwrap();
+        db.new_collection(
+            "transactions",
+            vec![
+                (
+                    "tx_id",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "amount",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+            ],
+        )
+        .await
+        .unwrap();
 
         // Insert data concurrently and crash suddenly
         let mut tasks = vec![];
         for i in 0..500 {
             let db_clone = Arc::clone(&db);
             tasks.push(tokio::spawn(async move {
-                db_clone.insert_into("transactions", vec![
-                    ("tx_id", Value::String(format!("tx_{}", i))),
-                    ("amount", Value::Int(i * 100)),
-                ]).await
+                db_clone
+                    .insert_into(
+                        "transactions",
+                        vec![
+                            ("tx_id", Value::String(format!("tx_{}", i))),
+                            ("amount", Value::Int(i * 100)),
+                        ],
+                    )
+                    .await
             }));
         }
 
@@ -144,7 +203,10 @@ async fn test_crash_during_writes() {
             }
         }
 
-        println!("SUCCESS: All recovered transactions are valid (recovered {} of 500)", results.len());
+        println!(
+            "SUCCESS: All recovered transactions are valid (recovered {} of 500)",
+            results.len()
+        );
         println!("SUCCESS: No data corruption detected");
     }
 }
@@ -160,17 +222,47 @@ async fn test_wal_replay_idempotency() {
     {
         let db = create_test_db(db_path.clone()).await.unwrap();
 
-        db.new_collection("items", vec![
-            ("item_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }), // unique
-            ("count", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ]).await.unwrap();
+        db.new_collection(
+            "items",
+            vec![
+                (
+                    "item_id",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: true,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ), // unique
+                (
+                    "count",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+            ],
+        )
+        .await
+        .unwrap();
 
         // Insert specific items
         for i in 0..50 {
-            db.insert_into("items", vec![
-                ("item_id", Value::String(format!("item_{}", i))),
-                ("count", Value::Int(i)),
-            ]).await.unwrap();
+            db.insert_into(
+                "items",
+                vec![
+                    ("item_id", Value::String(format!("item_{}", i))),
+                    ("count", Value::Int(i)),
+                ],
+            )
+            .await
+            .unwrap();
         }
 
         db.flush().unwrap();
@@ -188,10 +280,15 @@ async fn test_wal_replay_idempotency() {
         let db = create_test_db(db_path.clone()).await.unwrap();
 
         let results = db.query("items").collect().await.unwrap();
-        assert_eq!(results.len(), 50, "Should always have exactly 50 items after replay");
+        assert_eq!(
+            results.len(),
+            50,
+            "Should always have exactly 50 items after replay"
+        );
 
         // Verify no duplicates
-        let mut item_ids: Vec<String> = results.iter()
+        let mut item_ids: Vec<String> = results
+            .iter()
             .filter_map(|doc| {
                 if let Some(Value::String(id)) = doc.data.get("item_id") {
                     Some(id.clone())
@@ -203,7 +300,11 @@ async fn test_wal_replay_idempotency() {
 
         item_ids.sort();
         item_ids.dedup();
-        assert_eq!(item_ids.len(), 50, "Should have 50 unique items (no duplicates)");
+        assert_eq!(
+            item_ids.len(),
+            50,
+            "Should have 50 unique items (no duplicates)"
+        );
 
         drop(db);
     }
@@ -222,27 +323,56 @@ async fn test_partial_write_crash_recovery() {
     {
         let db = Arc::new(create_test_db(db_path.clone()).await.unwrap());
 
-        db.new_collection("batches", vec![
-            ("batch_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("item_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ]).await.unwrap();
+        db.new_collection(
+            "batches",
+            vec![
+                (
+                    "batch_id",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "item_id",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+            ],
+        )
+        .await
+        .unwrap();
 
         // Write first batch completely
         for i in 0..50 {
-            db.insert_into("batches", vec![
-                ("batch_id", Value::Int(1)),
-                ("item_id", Value::Int(i)),
-            ]).await.unwrap();
+            db.insert_into(
+                "batches",
+                vec![("batch_id", Value::Int(1)), ("item_id", Value::Int(i))],
+            )
+            .await
+            .unwrap();
         }
 
         db.flush().unwrap();
 
         // Start second batch but don't flush
         for i in 0..25 {
-            db.insert_into("batches", vec![
-                ("batch_id", Value::Int(2)),
-                ("item_id", Value::Int(i)),
-            ]).await.unwrap();
+            db.insert_into(
+                "batches",
+                vec![("batch_id", Value::Int(2)), ("item_id", Value::Int(i))],
+            )
+            .await
+            .unwrap();
         }
 
         println!("Wrote batch 1 (50 items) and partial batch 2 (25 items), simulating crash...");
@@ -261,14 +391,16 @@ async fn test_partial_write_crash_recovery() {
         println!("Recovered {} documents", results.len());
 
         // Should have at least the first batch
-        let batch1_count = results.iter()
+        let batch1_count = results
+            .iter()
             .filter(|doc| matches!(doc.data.get("batch_id"), Some(Value::Int(1))))
             .count();
 
         assert_eq!(batch1_count, 50, "First batch should be fully recovered");
 
         // Second batch may or may not be present depending on write buffer timing
-        let batch2_count = results.iter()
+        let batch2_count = results
+            .iter()
             .filter(|doc| matches!(doc.data.get("batch_id"), Some(Value::Int(2))))
             .count();
 
@@ -296,24 +428,58 @@ async fn test_multiple_crash_cycles() {
 
         // Create collection on first cycle
         if cycle == 0 {
-            db.new_collection("resilient", vec![
-                ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-                ("cycle", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ]).await.unwrap();
+            db.new_collection(
+                "resilient",
+                vec![
+                    (
+                        "data",
+                        aurora_db::types::FieldDefinition {
+                            field_type: FieldType::SCALAR_STRING,
+                            unique: false,
+                            indexed: false,
+                            nullable: true,
+                            validations: vec![],
+                            relation: None,
+                        },
+                    ),
+                    (
+                        "cycle",
+                        aurora_db::types::FieldDefinition {
+                            field_type: FieldType::SCALAR_INT,
+                            unique: false,
+                            indexed: false,
+                            nullable: true,
+                            validations: vec![],
+                            relation: None,
+                        },
+                    ),
+                ],
+            )
+            .await
+            .unwrap();
         }
 
         // Verify previous data survived
         let before_count = db.query("resilient").collect().await.unwrap().len();
         println!("Documents before cycle {}: {}", cycle + 1, before_count);
-        assert_eq!(before_count, cycle * docs_per_cycle,
-                   "Should have {} documents from previous cycles", cycle * docs_per_cycle);
+        assert_eq!(
+            before_count,
+            cycle * docs_per_cycle,
+            "Should have {} documents from previous cycles",
+            cycle * docs_per_cycle
+        );
 
         // Add new data
         for i in 0..docs_per_cycle {
-            db.insert_into("resilient", vec![
-                ("data", Value::String(format!("cycle_{}_doc_{}", cycle, i))),
-                ("cycle", Value::Int(cycle as i64)),
-            ]).await.unwrap();
+            db.insert_into(
+                "resilient",
+                vec![
+                    ("data", Value::String(format!("cycle_{}_doc_{}", cycle, i))),
+                    ("cycle", Value::Int(cycle as i64)),
+                ],
+            )
+            .await
+            .unwrap();
         }
 
         db.flush().unwrap();
@@ -336,10 +502,17 @@ async fn test_multiple_crash_cycles() {
         let db = create_test_db(db_path).await.unwrap();
 
         let final_results = db.query("resilient").collect().await.unwrap();
-        println!("Total documents after {} crash cycles: {}", crash_cycles, final_results.len());
+        println!(
+            "Total documents after {} crash cycles: {}",
+            crash_cycles,
+            final_results.len()
+        );
 
-        assert_eq!(final_results.len(), crash_cycles * docs_per_cycle,
-                   "Should have all documents from all cycles");
+        assert_eq!(
+            final_results.len(),
+            crash_cycles * docs_per_cycle,
+            "Should have all documents from all cycles"
+        );
 
         // Verify we have data from each cycle
         for cycle in 0..crash_cycles {
@@ -349,11 +522,19 @@ async fn test_multiple_crash_cycles() {
                 })
                 .collect();
 
-            assert_eq!(cycle_docs.len(), docs_per_cycle,
-                       "Should have {} docs from cycle {}", docs_per_cycle, cycle);
+            assert_eq!(
+                cycle_docs.len(),
+                docs_per_cycle,
+                "Should have {} docs from cycle {}",
+                docs_per_cycle,
+                cycle
+            );
         }
 
-        println!("SUCCESS: All data survived {} crash/recovery cycles", crash_cycles);
+        println!(
+            "SUCCESS: All data survived {} crash/recovery cycles",
+            crash_cycles
+        );
     }
 }
 
@@ -368,19 +549,49 @@ async fn test_crash_with_large_documents() {
     {
         let db = create_test_db(db_path.clone()).await.unwrap();
 
-        db.new_collection("large_docs", vec![
-            ("doc_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("large_data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ]).await.unwrap();
+        db.new_collection(
+            "large_docs",
+            vec![
+                (
+                    "doc_id",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "large_data",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+            ],
+        )
+        .await
+        .unwrap();
 
         // Create large documents (100KB each)
         let large_text = "x".repeat(100_000);
 
         for i in 0..10 {
-            db.insert_into("large_docs", vec![
-                ("doc_id", Value::String(format!("large_{}", i))),
-                ("large_data", Value::String(large_text.clone())),
-            ]).await.unwrap();
+            db.insert_into(
+                "large_docs",
+                vec![
+                    ("doc_id", Value::String(format!("large_{}", i))),
+                    ("large_data", Value::String(large_text.clone())),
+                ],
+            )
+            .await
+            .unwrap();
         }
 
         db.flush().unwrap();
@@ -420,15 +631,28 @@ async fn test_checkpoint_after_crash() {
     {
         let db = Arc::new(create_test_db(db_path.clone()).await.unwrap());
 
-        db.new_collection("checkpointed", vec![
-            ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ]).await.unwrap();
+        db.new_collection(
+            "checkpointed",
+            vec![(
+                "value",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            )],
+        )
+        .await
+        .unwrap();
 
         // Insert data
         for i in 0..100 {
-            db.insert_into("checkpointed", vec![
-                ("value", Value::Int(i)),
-            ]).await.unwrap();
+            db.insert_into("checkpointed", vec![("value", Value::Int(i))])
+                .await
+                .unwrap();
         }
 
         db.flush().unwrap();
@@ -439,9 +663,9 @@ async fn test_checkpoint_after_crash() {
 
         // Add more data after checkpoint
         for i in 100..150 {
-            db.insert_into("checkpointed", vec![
-                ("value", Value::Int(i)),
-            ]).await.unwrap();
+            db.insert_into("checkpointed", vec![("value", Value::Int(i))])
+                .await
+                .unwrap();
         }
 
         println!("Simulating crash after checkpoint...");
@@ -460,7 +684,10 @@ async fn test_checkpoint_after_crash() {
 
         // We should recover at least the checkpointed data (0-99)
         // Data after checkpoint (100-149) may or may not be present depending on flush timing
-        assert!(results.len() >= 100, "Should recover at least checkpointed data");
+        assert!(
+            results.len() >= 100,
+            "Should recover at least checkpointed data"
+        );
 
         println!("SUCCESS: Checkpoint recovery successful");
     }

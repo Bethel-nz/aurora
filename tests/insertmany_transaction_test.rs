@@ -5,17 +5,43 @@ use tempfile::tempdir;
 #[tokio::test]
 async fn test_insert_many_in_transaction() {
     let dir = tempdir().unwrap();
-    let db = Aurora::open(dir.path().join("test.aurora").to_str().unwrap()).await.unwrap();
+    let db = Aurora::open(dir.path().join("test.aurora").to_str().unwrap())
+        .await
+        .unwrap();
 
-    db.new_collection("items", vec![
-        ("name",  aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ])
+    db.new_collection(
+        "items",
+        vec![
+            (
+                "name",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "value",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+        ],
+    )
     .await
     .unwrap();
 
     let result = db
-        .execute(r#"
+        .execute(
+            r#"
             mutation {
                 transaction {
                     insertMany(collection: "items", data: [
@@ -25,7 +51,8 @@ async fn test_insert_many_in_transaction() {
                     ])
                 }
             }
-        "#)
+        "#,
+        )
         .await
         .unwrap();
 

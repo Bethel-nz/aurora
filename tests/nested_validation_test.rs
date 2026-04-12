@@ -14,7 +14,7 @@ fn test_nested_object_validation() {
             unique: false,
             indexed: false,
             nullable: false,
-        ..Default::default()
+            ..Default::default()
         },
     );
     address_fields.insert(
@@ -24,7 +24,7 @@ fn test_nested_object_validation() {
             unique: false,
             indexed: false,
             nullable: true,
-        ..Default::default()
+            ..Default::default()
         },
     );
 
@@ -36,7 +36,7 @@ fn test_nested_object_validation() {
             unique: false,
             indexed: false,
             nullable: false,
-        ..Default::default()
+            ..Default::default()
         },
     );
     user_fields.insert(
@@ -46,7 +46,7 @@ fn test_nested_object_validation() {
             unique: false,
             indexed: false,
             nullable: false,
-        ..Default::default()
+            ..Default::default()
         },
     );
 

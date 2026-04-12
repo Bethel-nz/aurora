@@ -39,7 +39,11 @@ pub struct ChangeEvent {
 
 impl fmt::Display for ChangeEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
+        write!(
+            f,
+            "{}",
+            serde_json::to_string_pretty(self).unwrap_or_default()
+        )
     }
 }
 
@@ -348,10 +352,16 @@ mod tests {
     #[test]
     fn test_event_filter_matches_regex() {
         let mut data = HashMap::new();
-        data.insert("email".to_string(), Value::String("alice@example.com".into()));
+        data.insert(
+            "email".to_string(),
+            Value::String("alice@example.com".into()),
+        );
         data.insert("score".to_string(), Value::Int(42));
 
-        let doc = Document { _sid: "1".to_string(), data };
+        let doc = Document {
+            _sid: "1".to_string(),
+            data,
+        };
         let event = ChangeEvent::insert("users", "1", doc);
 
         // Matching pattern

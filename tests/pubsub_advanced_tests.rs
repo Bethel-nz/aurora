@@ -7,10 +7,9 @@
 /// - Subscriber churn (rapid subscribe/unsubscribe)
 /// - Event ordering guarantees
 /// - Message delivery under load
-
 use aurora_db::{Aurora, AuroraConfig, FieldType, Value};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
@@ -31,15 +30,43 @@ async fn test_high_fanout_single_event() {
     let db_path = temp_dir.path().join("fanout.aurora");
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
-    db.new_collection("events", vec![
-        ("type", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ]).await.unwrap();
+    db.new_collection(
+        "events",
+        vec![
+            (
+                "type",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "data",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+        ],
+    )
+    .await
+    .unwrap();
 
     let num_subscribers = 100;
     let num_events = 10;
 
-    println!("Creating {} subscribers for {} events", num_subscribers, num_events);
+    println!(
+        "Creating {} subscribers for {} events",
+        num_subscribers, num_events
+    );
 
     let received_counts = Arc::new(AtomicUsize::new(0));
     let mut listener_tasks = vec![];
@@ -81,10 +108,15 @@ async fn test_high_fanout_single_event() {
     // Publish events and measure fan-out latency
     let publish_start = Instant::now();
     for i in 0..num_events {
-        db.insert_into("events", vec![
-            ("type", Value::String("test_event".to_string())),
-            ("data", Value::String(format!("event_{}", i))),
-        ]).await.unwrap();
+        db.insert_into(
+            "events",
+            vec![
+                ("type", Value::String("test_event".to_string())),
+                ("data", Value::String(format!("event_{}", i))),
+            ],
+        )
+        .await
+        .unwrap();
     }
     let publish_duration = publish_start.elapsed();
 
@@ -103,7 +135,10 @@ async fn test_high_fanout_single_event() {
                 subscribers_with_all_events += 1;
             }
             if count < num_events {
-                println!("  Subscriber {} received only {}/{} events", id, count, num_events);
+                println!(
+                    "  Subscriber {} received only {}/{} events",
+                    id, count, num_events
+                );
             }
         }
     }
@@ -111,13 +146,22 @@ async fn test_high_fanout_single_event() {
     println!("\nResults:");
     println!("  Expected total: {}", num_subscribers * num_events);
     println!("  Actual received: {}", total_received);
-    println!("  Subscribers receiving all events: {}/{}", subscribers_with_all_events, num_subscribers);
-    println!("  Delivery rate: {:.1}%", (total_received as f64 / (num_subscribers * num_events) as f64) * 100.0);
+    println!(
+        "  Subscribers receiving all events: {}/{}",
+        subscribers_with_all_events, num_subscribers
+    );
+    println!(
+        "  Delivery rate: {:.1}%",
+        (total_received as f64 / (num_subscribers * num_events) as f64) * 100.0
+    );
 
     // Allow some message loss due to channel buffer limits, but should get most
-    assert!(total_received >= (num_subscribers * num_events) * 8 / 10,
-            "Should deliver at least 80% of messages (got {}/{})",
-            total_received, num_subscribers * num_events);
+    assert!(
+        total_received >= (num_subscribers * num_events) * 8 / 10,
+        "Should deliver at least 80% of messages (got {}/{})",
+        total_received,
+        num_subscribers * num_events
+    );
 
     println!("SUCCESS: High fan-out test completed");
 }
@@ -130,9 +174,22 @@ async fn test_slow_consumer_backpressure() {
     let db_path = temp_dir.path().join("slow_consumer.aurora");
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
-    db.new_collection("backpressure", vec![
-        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ]).await.unwrap();
+    db.new_collection(
+        "backpressure",
+        vec![(
+            "id",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_STRING,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
 
     // Create fast and slow consumers
     let mut fast_listener = db.listen("backpressure");
@@ -187,9 +244,12 @@ async fn test_slow_consumer_backpressure() {
 
     let publish_start = Instant::now();
     for i in 0..num_events {
-        db.insert_into("backpressure", vec![
-            ("id", Value::String(format!("event_{}", i))),
-        ]).await.unwrap();
+        db.insert_into(
+            "backpressure",
+            vec![("id", Value::String(format!("event_{}", i)))],
+        )
+        .await
+        .unwrap();
     }
     let publish_duration = publish_start.elapsed();
 
@@ -208,10 +268,16 @@ async fn test_slow_consumer_backpressure() {
     println!("  Slow consumer received: {}", slow_total);
 
     // Fast consumer should get most/all messages
-    assert!(fast_total >= num_events * 8 / 10, "Fast consumer should receive most messages");
+    assert!(
+        fast_total >= num_events * 8 / 10,
+        "Fast consumer should receive most messages"
+    );
 
     // Slow consumer will likely miss messages due to backpressure
-    println!("  Slow consumer received {:.1}% of messages", (slow_total as f64 / num_events as f64) * 100.0);
+    println!(
+        "  Slow consumer received {:.1}% of messages",
+        (slow_total as f64 / num_events as f64) * 100.0
+    );
 
     println!("SUCCESS: Backpressure behavior observed");
 }
@@ -224,9 +290,22 @@ async fn test_subscriber_churn() {
     let db_path = temp_dir.path().join("churn.aurora");
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
-    db.new_collection("churn_test", vec![
-        ("counter", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ]).await.unwrap();
+    db.new_collection(
+        "churn_test",
+        vec![(
+            "counter",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_INT,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
 
     let events_published = Arc::new(AtomicUsize::new(0));
     let total_received = Arc::new(AtomicUsize::new(0));
@@ -238,9 +317,10 @@ async fn test_subscriber_churn() {
     let events_count = Arc::clone(&events_published);
     let publisher = tokio::spawn(async move {
         for i in 0..100 {
-            db_pub.insert_into("churn_test", vec![
-                ("counter", Value::Int(i)),
-            ]).await.unwrap();
+            db_pub
+                .insert_into("churn_test", vec![("counter", Value::Int(i))])
+                .await
+                .unwrap();
             events_count.fetch_add(1, Ordering::Relaxed);
             sleep(Duration::from_millis(10)).await;
         }
@@ -299,8 +379,14 @@ async fn test_subscriber_churn() {
 
     println!("\nResults:");
     println!("  Events published: {}", published);
-    println!("  Total messages received across all subscribers: {}", received);
-    println!("  Listener count after churn: {}", db.listener_count("churn_test"));
+    println!(
+        "  Total messages received across all subscribers: {}",
+        received
+    );
+    println!(
+        "  Listener count after churn: {}",
+        db.listener_count("churn_test")
+    );
 
     // System should handle churn without crashes
     assert_eq!(published, 100, "All events should be published");
@@ -316,9 +402,22 @@ async fn test_event_ordering() {
     let db_path = temp_dir.path().join("ordering.aurora");
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
-    db.new_collection("ordered", vec![
-        ("seq", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ]).await.unwrap();
+    db.new_collection(
+        "ordered",
+        vec![(
+            "seq",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_INT,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
 
     let mut listener = db.listen("ordered");
 
@@ -354,9 +453,9 @@ async fn test_event_ordering() {
     println!("Publishing {} events in sequence...", num_events);
 
     for i in 0..num_events {
-        db.insert_into("ordered", vec![
-            ("seq", Value::Int(i)),
-        ]).await.unwrap();
+        db.insert_into("ordered", vec![("seq", Value::Int(i))])
+            .await
+            .unwrap();
     }
 
     // Wait for receiver
@@ -377,7 +476,10 @@ async fn test_event_ordering() {
     println!("  Out of order events: {}", out_of_order);
 
     if out_of_order > 0 {
-        println!("  First 20 received: {:?}", &received[..20.min(received.len())]);
+        println!(
+            "  First 20 received: {:?}",
+            &received[..20.min(received.len())]
+        );
     }
 
     // Events should be received in order
@@ -393,9 +495,22 @@ async fn test_massive_fanout_under_load() {
     let db_path = temp_dir.path().join("massive_fanout.aurora");
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
-    db.new_collection("massive", vec![
-        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ]).await.unwrap();
+    db.new_collection(
+        "massive",
+        vec![(
+            "id",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_STRING,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
 
     let num_subscribers = 200;
     let num_events = 50;
@@ -437,14 +552,17 @@ async fn test_massive_fanout_under_load() {
 
     sleep(Duration::from_millis(200)).await;
 
-    println!("Publishing {} events to {} subscribers...", num_events, num_subscribers);
+    println!(
+        "Publishing {} events to {} subscribers...",
+        num_events, num_subscribers
+    );
 
     let start = Instant::now();
 
     for i in 0..num_events {
-        db.insert_into("massive", vec![
-            ("id", Value::String(format!("msg_{}", i))),
-        ]).await.unwrap();
+        db.insert_into("massive", vec![("id", Value::String(format!("msg_{}", i)))])
+            .await
+            .unwrap();
     }
 
     let publish_duration = start.elapsed();
@@ -471,13 +589,23 @@ async fn test_massive_fanout_under_load() {
     println!("  Actual received: {}", total_received);
     println!("  Min per subscriber: {}", min_received);
     println!("  Max per subscriber: {}", max_received);
-    println!("  Average per subscriber: {:.1}", total_received as f64 / num_subscribers as f64);
-    println!("  Delivery rate: {:.1}%", (total_received as f64 / (num_subscribers * num_events) as f64) * 100.0);
+    println!(
+        "  Average per subscriber: {:.1}",
+        total_received as f64 / num_subscribers as f64
+    );
+    println!(
+        "  Delivery rate: {:.1}%",
+        (total_received as f64 / (num_subscribers * num_events) as f64) * 100.0
+    );
 
     // With massive fan-out and slow consumers, expect some message loss
     // but should still deliver a reasonable percentage
     let delivery_rate = (total_received as f64 / (num_subscribers * num_events) as f64) * 100.0;
-    assert!(delivery_rate >= 60.0, "Should deliver at least 60% with massive fan-out (got {:.1}%)", delivery_rate);
+    assert!(
+        delivery_rate >= 60.0,
+        "Should deliver at least 60% with massive fan-out (got {:.1}%)",
+        delivery_rate
+    );
 
     println!("SUCCESS: Massive fan-out test completed");
 }
@@ -491,9 +619,54 @@ async fn test_multiple_collections_pubsub() {
     let db = Arc::new(create_test_db(db_path).await.unwrap());
 
     // Create multiple collections
-    db.new_collection("users", vec![("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })]).await.unwrap();
-    db.new_collection("orders", vec![("order_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })]).await.unwrap();
-    db.new_collection("products", vec![("product_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })]).await.unwrap();
+    db.new_collection(
+        "users",
+        vec![(
+            "name",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_STRING,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
+    db.new_collection(
+        "orders",
+        vec![(
+            "order_id",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_STRING,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
+    db.new_collection(
+        "products",
+        vec![(
+            "product_id",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_STRING,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
 
     // Create listeners for each collection
     let mut user_listener = db.listen("users");
@@ -562,17 +735,26 @@ async fn test_multiple_collections_pubsub() {
     println!("Publishing events to multiple collections...");
 
     for i in 0..20 {
-        db.insert_into("users", vec![
-            ("name", Value::String(format!("user_{}", i))),
-        ]).await.unwrap();
+        db.insert_into(
+            "users",
+            vec![("name", Value::String(format!("user_{}", i)))],
+        )
+        .await
+        .unwrap();
 
-        db.insert_into("orders", vec![
-            ("order_id", Value::String(format!("order_{}", i))),
-        ]).await.unwrap();
+        db.insert_into(
+            "orders",
+            vec![("order_id", Value::String(format!("order_{}", i)))],
+        )
+        .await
+        .unwrap();
 
-        db.insert_into("products", vec![
-            ("product_id", Value::String(format!("product_{}", i))),
-        ]).await.unwrap();
+        db.insert_into(
+            "products",
+            vec![("product_id", Value::String(format!("product_{}", i)))],
+        )
+        .await
+        .unwrap();
     }
 
     // Wait for processing
@@ -592,7 +774,10 @@ async fn test_multiple_collections_pubsub() {
     // Each listener should receive events only for its collection
     assert!(users_received >= 18, "Should receive most user events");
     assert!(orders_received >= 18, "Should receive most order events");
-    assert!(products_received >= 18, "Should receive most product events");
+    assert!(
+        products_received >= 18,
+        "Should receive most product events"
+    );
 
     println!("SUCCESS: Multiple collections PubSub working correctly");
 }

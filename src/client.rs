@@ -1,4 +1,4 @@
-use crate::error::{AqlError, Result, ErrorCode};
+use crate::error::{AqlError, ErrorCode, Result};
 use crate::network::protocol::{Request, Response};
 use crate::query::SimpleQueryBuilder;
 use crate::types::{Document, FieldType, Value};
@@ -60,7 +60,10 @@ impl Client {
         match self.send_request(req).await? {
             Response::Done => Ok(()),
             Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
-            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
+            _ => Err(AqlError::new(
+                ErrorCode::ProtocolError,
+                "Unexpected response".to_string(),
+            )),
         }
     }
 
@@ -76,7 +79,10 @@ impl Client {
         match self.send_request(req).await? {
             Response::Message(id) => Ok(id),
             Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
-            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
+            _ => Err(AqlError::new(
+                ErrorCode::ProtocolError,
+                "Unexpected response".to_string(),
+            )),
         }
     }
 
@@ -88,7 +94,10 @@ impl Client {
         match self.send_request(req).await? {
             Response::Document(doc) => Ok(doc),
             Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
-            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
+            _ => Err(AqlError::new(
+                ErrorCode::ProtocolError,
+                "Unexpected response".to_string(),
+            )),
         }
     }
 
@@ -97,7 +106,10 @@ impl Client {
         match self.send_request(req).await? {
             Response::Documents(docs) => Ok(docs),
             Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
-            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
+            _ => Err(AqlError::new(
+                ErrorCode::ProtocolError,
+                "Unexpected response".to_string(),
+            )),
         }
     }
 
@@ -108,7 +120,10 @@ impl Client {
                 Ok(tx_id)
             }
             Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
-            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
+            _ => Err(AqlError::new(
+                ErrorCode::ProtocolError,
+                "Unexpected response".to_string(),
+            )),
         }
     }
 
@@ -123,7 +138,10 @@ impl Client {
                 Ok(())
             }
             Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
-            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
+            _ => Err(AqlError::new(
+                ErrorCode::ProtocolError,
+                "Unexpected response".to_string(),
+            )),
         }
     }
 
@@ -141,7 +159,10 @@ impl Client {
                 Ok(())
             }
             Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
-            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
+            _ => Err(AqlError::new(
+                ErrorCode::ProtocolError,
+                "Unexpected response".to_string(),
+            )),
         }
     }
 
@@ -149,7 +170,10 @@ impl Client {
         match self.send_request(Request::Delete(key.to_string())).await? {
             Response::Done => Ok(()),
             Response::Error(e) => Err(AqlError::new(ErrorCode::ProtocolError, e)),
-            _ => Err(AqlError::new(ErrorCode::ProtocolError, "Unexpected response".to_string())),
+            _ => Err(AqlError::new(
+                ErrorCode::ProtocolError,
+                "Unexpected response".to_string(),
+            )),
         }
     }
 }

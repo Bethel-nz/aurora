@@ -1,5 +1,5 @@
 use aurora_db::Aurora;
-use aurora_db::types::{Value, FieldType};
+use aurora_db::types::{FieldType, Value};
 use std::collections::HashMap;
 use tempfile::tempdir;
 
@@ -7,11 +7,46 @@ async fn setup_test_db() -> (Aurora, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let db = Aurora::open(dir.path().to_str().unwrap()).await.unwrap();
 
-    db.new_collection("users", vec![
-        ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ("city", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ]).await.unwrap();
+    db.new_collection(
+        "users",
+        vec![
+            (
+                "name",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "age",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "city",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+        ],
+    )
+    .await
+    .unwrap();
 
     let mut user1 = HashMap::new();
     user1.insert("name".to_string(), Value::String("Alice".into()));
@@ -119,7 +154,7 @@ async fn test_fragment_in_groupby() {
     assert_eq!(docs.len(), 1);
     let group = &docs[0].data;
     assert_eq!(group.get("key").unwrap().as_str().unwrap(), "London");
-    
+
     let nodes = group.get("nodes").unwrap().as_array().unwrap();
     assert_eq!(nodes.len(), 1);
     let node_data = nodes[0].as_object().unwrap();
@@ -158,8 +193,14 @@ async fn test_fragment_in_connection() {
     assert_eq!(docs.len(), 1);
     let edges = docs[0].data.get("edges").unwrap().as_array().unwrap();
     assert_eq!(edges.len(), 1);
-    
-    let node = edges[0].as_object().unwrap().get("node").unwrap().as_object().unwrap();
+
+    let node = edges[0]
+        .as_object()
+        .unwrap()
+        .get("node")
+        .unwrap()
+        .as_object()
+        .unwrap();
     assert_eq!(node.get("name").unwrap().as_str().unwrap(), "Alice");
     assert!(node.get("age").is_none());
 }

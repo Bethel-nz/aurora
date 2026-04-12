@@ -102,10 +102,14 @@ mod tests {
         data.insert("id".to_string(), Value::String("123".into()));
         data.insert("name".to_string(), Value::String("Alice".into()));
 
-        let event = ChangeEvent::insert("users", "123", Document {
-            _sid: "123".to_string(),
-            data,
-        });
+        let event = ChangeEvent::insert(
+            "users",
+            "123",
+            Document {
+                _sid: "123".to_string(),
+                data,
+            },
+        );
 
         pubsub.publish(event.clone()).unwrap();
 

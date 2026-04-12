@@ -26,7 +26,9 @@ impl std::fmt::Display for JobStatus {
             JobStatus::Pending => write!(f, "Pending"),
             JobStatus::Running => write!(f, "Running"),
             JobStatus::Completed => write!(f, "Completed"),
-            JobStatus::Failed { error, retries } => write!(f, "Failed({}, retries: {})", error, retries),
+            JobStatus::Failed { error, retries } => {
+                write!(f, "Failed({}, retries: {})", error, retries)
+            }
             JobStatus::DeadLetter { error } => write!(f, "DeadLetter({})", error),
         }
     }
@@ -126,7 +128,11 @@ pub struct Job {
 
 impl std::fmt::Display for Job {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
+        write!(
+            f,
+            "{}",
+            serde_json::to_string_pretty(self).unwrap_or_default()
+        )
     }
 }
 
@@ -149,7 +155,7 @@ impl Job {
     ///
     /// # Examples
     ///
-   
+
     /// // Create different job types
     /// let email = Job::new("send_email");
     /// let image = Job::new("resize_image");
@@ -181,7 +187,7 @@ impl Job {
     ///
     /// # Examples
     ///
-   
+
     /// use std::collections::HashMap;
     /// use serde_json::json;
     ///
@@ -204,7 +210,7 @@ impl Job {
     ///
     /// # Examples
     ///
-   
+
     /// use serde_json::json;
     ///
     /// let job = Job::new("send_email")
@@ -225,7 +231,7 @@ impl Job {
     ///
     /// # Examples
     ///
-   
+
     /// // Critical - payments, security operations
     /// let payment = Job::new("charge_card")
     ///     .with_priority(JobPriority::Critical);
@@ -250,7 +256,7 @@ impl Job {
     ///
     /// # Examples
     ///
-   
+
     /// // Network operation - retry more
     /// let api_call = Job::new("fetch_api_data")
     ///     .with_max_retries(5);
@@ -275,7 +281,7 @@ impl Job {
     ///
     /// # Examples
     ///
-   
+
     /// use chrono::{Utc, Duration};
     ///
     /// // Run in 1 hour
@@ -303,7 +309,7 @@ impl Job {
     ///
     /// # Examples
     ///
-   
+
     /// // Quick task
     /// let quick = Job::new("send_sms")
     ///     .with_timeout(30); // 30 seconds

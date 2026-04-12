@@ -47,7 +47,7 @@ pub struct QueryPayload {
 /// Converts an internal `Document` into a clean, client-friendly `serde_json::Value`.
 pub fn document_to_json(doc: &Document) -> JsonValue {
     let mut map = serde_json::Map::new();
-    
+
     // Inject _sid at the top level of the JSON response, matching MongoDB's _id behaviour
     map.insert("_sid".to_string(), json!(doc._sid));
 
@@ -106,7 +106,9 @@ pub fn json_to_value(json_value: &JsonValue) -> Result<Value> {
             } else if let Some(f) = n.as_f64() {
                 Ok(Value::Float(f))
             } else {
-                Err(AqlError::invalid_operation("Invalid number value".to_string()))
+                Err(AqlError::invalid_operation(
+                    "Invalid number value".to_string(),
+                ))
             }
         }
         JsonValue::String(s) => {

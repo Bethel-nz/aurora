@@ -54,7 +54,10 @@ async fn main() -> anyhow::Result<()> {
     println!("   -> Beginning transaction...");
 
     let mut tx_product = HashMap::new();
-    tx_product.insert("name".to_string(), Value::String("Transactional Item".into()));
+    tx_product.insert(
+        "name".to_string(),
+        Value::String("Transactional Item".into()),
+    );
     tx_product.insert("price".to_string(), Value::Float(99.99));
     tx_product.insert("in_stock".to_string(), Value::Bool(true));
 

@@ -20,8 +20,28 @@ async fn test_memory_usage_growth() {
     db.new_collection(
         "memory_test",
         vec![
-            ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("index", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            (
+                "data",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "index",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
     )
     .await
@@ -123,9 +143,22 @@ async fn test_hot_cache_eviction() {
 
     let db = Arc::new(Aurora::with_config(config).await.unwrap());
 
-    db.new_collection("cache_test", vec![("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })])
-        .await
-        .unwrap();
+    db.new_collection(
+        "cache_test",
+        vec![(
+            "data",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_STRING,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
 
     println!("Inserting 10,000 documents with 10MB hot cache limit...");
 
@@ -190,9 +223,22 @@ async fn test_error_disk_full_simulation() {
 
     let db = Arc::new(Aurora::open(db_path.to_str().unwrap()).await.unwrap());
 
-    db.new_collection("disk_test", vec![("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })])
-        .await
-        .unwrap();
+    db.new_collection(
+        "disk_test",
+        vec![(
+            "data",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_STRING,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
 
     println!("Attempting to insert large documents...");
 
@@ -241,7 +287,17 @@ async fn test_concurrent_collection_creation() {
             db_clone
                 .new_collection(
                     &format!("collection_{}", i),
-                    vec![("field", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })],
+                    vec![(
+                        "field",
+                        aurora_db::types::FieldDefinition {
+                            field_type: FieldType::SCALAR_STRING,
+                            unique: false,
+                            indexed: false,
+                            nullable: true,
+                            validations: vec![],
+                            relation: None,
+                        },
+                    )],
                 )
                 .await
         }));
@@ -271,9 +327,22 @@ async fn test_rapid_flush_calls() {
 
     let db = Arc::new(Aurora::with_config(config).await.unwrap());
 
-    db.new_collection("flush_test", vec![("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] })])
-        .await
-        .unwrap();
+    db.new_collection(
+        "flush_test",
+        vec![(
+            "data",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_STRING,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
 
     // Insert some data
     for i in 0..100 {

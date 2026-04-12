@@ -1,31 +1,72 @@
 use aurora_db::Aurora;
-use aurora_db::types::{AuroraConfig, Value, FieldType};
+use aurora_db::types::{AuroraConfig, FieldType, Value};
 use std::collections::HashMap;
 use tempfile::tempdir;
 
 async fn setup_products_db() -> (Aurora, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let path = dir.path().join("test_db_groupby");
-    
+
     // Disable write buffering for immediate consistency in tests
     let config = AuroraConfig {
         db_path: path.clone(),
         enable_write_buffering: false,
         ..Default::default()
     };
-    
+
     let db = Aurora::with_config(config).await.unwrap();
 
     // Create collection
     db.new_collection(
         "products",
         vec![
-            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("category", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("price", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("stock", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            (
+                "name",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "category",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "price",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_FLOAT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "stock",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
-    ).await
+    )
+    .await
     .unwrap();
 
     // Insert test data
@@ -125,13 +166,13 @@ async fn test_groupby_aggregation() {
                 assert_eq!(stats.get("totalStock").unwrap().as_f64().unwrap(), 30.0);
                 // Price: (1000 + 50) / 2 = 525.0
                 assert_eq!(stats.get("avgPrice").unwrap().as_f64().unwrap(), 525.0);
-            },
+            }
             "Optics" => {
                 // Stock: 5
                 assert_eq!(stats.get("totalStock").unwrap().as_f64().unwrap(), 5.0);
                 // Price: 500
                 assert_eq!(stats.get("avgPrice").unwrap().as_f64().unwrap(), 500.0);
-            },
+            }
             _ => panic!("Unexpected group key"),
         }
     }
@@ -172,19 +213,22 @@ async fn test_groupby_nodes() {
         match key {
             "Electronics" => {
                 assert_eq!(items.len(), 2);
-                let names: Vec<String> = items.iter().map(|v| {
-                    if let Value::Object(o) = v {
-                        o.get("name").unwrap().as_str().unwrap().to_string()
-                    } else {
-                        panic!("Expected object in nodes");
-                    }
-                }).collect();
+                let names: Vec<String> = items
+                    .iter()
+                    .map(|v| {
+                        if let Value::Object(o) = v {
+                            o.get("name").unwrap().as_str().unwrap().to_string()
+                        } else {
+                            panic!("Expected object in nodes");
+                        }
+                    })
+                    .collect();
                 assert!(names.contains(&"Laptop".to_string()));
                 assert!(names.contains(&"Mouse".to_string()));
-            },
+            }
             "Optics" => {
                 assert_eq!(items.len(), 1);
-            },
+            }
             _ => panic!("Unexpected group key"),
         }
     }

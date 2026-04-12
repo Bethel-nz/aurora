@@ -35,6 +35,9 @@ pub struct QueryPlan {
     pub has_lookups: bool,
     pub fragments: HashMap<String, FragmentDef>,
     pub variable_definitions: Vec<ast::VariableDefinition>,
+    pub directives: Vec<ast::Directive>,
+    /// Fields required for lookups (localField values)
+    pub lookup_dependencies: Vec<String>,
 }
 
 impl QueryPlan {
@@ -43,6 +46,7 @@ impl QueryPlan {
     }
 
     pub fn from_query(
+        db: &Aurora,
         query: &ast::Query,
         fragments: &HashMap<String, FragmentDef>,
         variables: &HashMap<String, ast::Value>,
@@ -73,13 +77,9 @@ impl QueryPlan {
                 .iter()
                 .any(|f| f.name == "edges" || f.name == "pageInfo");
 
-            let has_lookups = sub_fields.iter().any(|f| {
-                f.arguments.iter().any(|arg| {
-                    arg.name == "collection"
-                        || arg.name == "localField"
-                        || arg.name == "foreignField"
-                })
-            });
+            let lookup_dependencies =
+                identify_lookup_dependencies(db, &collection, &sub_fields, variables);
+            let has_lookups = !lookup_dependencies.is_empty();
 
             plans.push(QueryPlan {
                 collection,
@@ -94,6 +94,8 @@ impl QueryPlan {
                 has_lookups,
                 fragments: fragments.clone(),
                 variable_definitions: query.variable_definitions.clone(),
+                directives: field.directives.clone(),
+                lookup_dependencies,
             });
         }
         Ok(plans)
@@ -113,11 +115,7 @@ pub async fn execute(db: &Aurora, aql: &str, options: ExecutionOptions) -> Resul
     };
 
     // Prepare variables for this execution
-    let vars: HashMap<String, ast::Value> = options
-        .variables
-        .iter()
-        .map(|(k, v)| (k.clone(), json_to_aql_value(v.clone())))
-        .collect();
+    let vars: HashMap<String, ast::Value> = options.variables.clone();
 
     // HIGH-SPEED PATH: Check for pre-compiled Query Plan
     // Search queries are never cached — execute_plan doesn't handle `search:`.
@@ -128,6 +126,7 @@ pub async fn execute(db: &Aurora, aql: &str, options: ExecutionOptions) -> Resul
 
     // SLOW PATH: Parse and Compile
     let mut doc = super::parse(aql)?;
+    println!("Parsed document with {} operations", doc.operations.len());
 
     // Extract first query operation for planning
     if let Some(Operation::Query(query)) = doc
@@ -152,10 +151,12 @@ pub async fn execute(db: &Aurora, aql: &str, options: ExecutionOptions) -> Resul
         // Use collect_fields() so inline fragments and fragment spreads are
         // traversed the same way QueryPlan::from_query() traverses them.
         let root_fields = collect_fields(&query.selection_set, &fragments, &vars, None)?;
-        let has_search = root_fields.iter().any(|f| f.arguments.iter().any(|a| a.name == "search"));
+        let has_search = root_fields
+            .iter()
+            .any(|f| f.arguments.iter().any(|a| a.name == "search"));
 
         if !has_search {
-            let plans = QueryPlan::from_query(query, &fragments, &vars)?;
+            let plans = QueryPlan::from_query(db, query, &fragments, &vars)?;
             if plans.len() == 1 {
                 let plan = Arc::new(plans[0].clone());
                 plan.validate(&vars)?;
@@ -194,12 +195,15 @@ pub async fn execute(db: &Aurora, aql: &str, options: ExecutionOptions) -> Resul
     execute_document(db, &doc, &options).await
 }
 
-async fn execute_plan(
+pub async fn execute_plan(
     db: &Aurora,
     plan: &QueryPlan,
     variables: &HashMap<String, ast::Value>,
     options: &ExecutionOptions,
 ) -> Result<ExecutionResult> {
+    // RBAC: Check collection level permissions from query directives
+    check_permissions(&plan.directives, options, false)?;
+
     let collection_name = &plan.collection;
 
     // Determine effective limit for the scan
@@ -216,32 +220,40 @@ async fn execute_plan(
             // fall through to the full scan below instead of returning zero results.
             let index_ready = field == "_sid" || !db.is_index_building(collection_name, &field);
             if index_ready {
-            let db_val = aql_value_to_db_value(&val, variables)?;
-            let ids = if field == "_sid" {
-                match &db_val {
-                    Value::String(s) => vec![s.clone()],
-                    Value::Uuid(u) => vec![u.to_string()],
-                    _ => vec![],
-                }
-            } else {
-                db.get_ids_from_index(collection_name, &field, &db_val)
-            };
+                let mut db_val = aql_value_to_db_value(&val, variables)?;
 
-            let mut docs = Vec::with_capacity(ids.len());
-            for id in ids {
-                if let Some(doc) = db.get_document(collection_name, &id)? {
-                    // Check if doc matches the REST of the plan's compiled filter
-                    if let Some(ref cf) = plan.compiled_filter {
-                        if matches_filter(&doc, cf, variables) {
-                            docs.push(doc);
-                        }
-                    } else {
-                        docs.push(doc);
+                // Coerce based on schema if available to ensure index hits
+                if let Ok(col_def) = db.get_collection_definition(collection_name) {
+                    if let Some(f_def) = col_def.fields.get(&field) {
+                        db_val = db_val.coerce_to(&f_def.field_type);
                     }
                 }
-            }
 
-            indexed_docs = Some(docs);
+                let ids = if field == "_sid" {
+                    match &db_val {
+                        Value::String(s) => vec![s.clone()],
+                        Value::Uuid(u) => vec![u.to_string()],
+                        _ => vec![],
+                    }
+                } else {
+                    db.get_ids_from_index(collection_name, &field, &db_val)
+                };
+
+                let mut docs = Vec::with_capacity(ids.len());
+                for id in ids {
+                    if let Some(doc) = db.get_document(collection_name, &id)? {
+                        // Check if doc matches the REST of the plan's compiled filter
+                        if let Some(ref cf) = plan.compiled_filter {
+                            if matches_filter(&doc, cf, variables) {
+                                docs.push(doc);
+                            }
+                        } else {
+                            docs.push(doc);
+                        }
+                    }
+                }
+
+                indexed_docs = Some(docs);
             } // end if index_ready — if not ready, indexed_docs stays None → full scan
         }
     }
@@ -302,7 +314,7 @@ async fn execute_plan(
             &plan.fragments,
             variables,
             options,
-        )));
+        )?));
     }
 
     // 3a. Apply limit for flat list (after ordering so we get correct top-N)
@@ -366,14 +378,12 @@ async fn execute_plan(
                                     )
                                     .unwrap_or_default();
 
-                                    let projected_nodes = group_items
-                                        .iter()
-                                        .map(|d| {
-                                            let node_data =
-                                                apply_projection(d.clone(), &sub_fields, options).data;
-                                            Value::Object(node_data)
-                                        })
-                                        .collect();
+                                    let mut projected_nodes = Vec::with_capacity(group_items.len());
+                                    for d in &group_items {
+                                        let node_doc =
+                                            apply_projection(d.clone(), &sub_fields, options)?;
+                                        projected_nodes.push(Value::Object(node_doc.data));
+                                    }
                                     data.insert(alias.clone(), Value::Array(projected_nodes));
                                 }
                                 "aggregate" => {
@@ -408,26 +418,35 @@ async fn execute_plan(
                 }];
             } else {
                 // Add aggregate to each document
-                docs = docs
-                    .into_iter()
-                    .map(|mut d| {
-                        d.data
-                            .insert(alias.clone(), Value::Object(agg_result.clone()));
-                        apply_projection(d, &plan.projection, options)
-                    })
-                    .collect();
+                let mut projected = Vec::with_capacity(docs.len());
+                for mut d in docs {
+                    d.data
+                        .insert(alias.clone(), Value::Object(agg_result.clone()));
+                    projected.push(apply_projection(d, &plan.projection, options)?);
+                }
+                docs = projected;
             }
         } else if !plan.has_lookups {
-            docs = docs
-                .into_iter()
-                .map(|d| apply_projection(d, &plan.projection, options))
-                .collect();
+            let mut projected = Vec::with_capacity(docs.len());
+            for d in docs {
+                projected.push(apply_projection(d, &plan.projection, options)?);
+            }
+            docs = projected;
         } else {
             // Slow path for lookups
             let mut projected = Vec::with_capacity(docs.len());
             for d in docs {
-                let (proj_doc, _) =
-                    apply_projection_with_lookups(db, d, &plan.projection, variables, options).await?;
+                let (proj_doc, _) = apply_projection_with_lookups(
+                    db,
+                    d,
+                    collection_name,
+                    &plan.projection,
+                    &plan.fragments,
+                    variables,
+                    options,
+                    &plan.lookup_dependencies,
+                )
+                .await?;
                 projected.push(proj_doc);
             }
             docs = projected;
@@ -661,9 +680,53 @@ fn collect_fields(
                     fields.extend(inline_fields);
                 }
             }
+            Selection::ComputedField(cf) => {
+                let (expr_val, _complex_expr) = match &cf.expression {
+                    ast::ComputedExpression::TemplateString(s) => (s.clone(), None),
+                    _ => ("complex".to_string(), Some(ast::Expression::Literal(ast::Value::Null))), // Handled below
+                };
+
+                let mut field = Field {
+                    alias: Some(cf.alias.clone()),
+                    name: "__compute__".to_string(),
+                    arguments: vec![ast::Argument {
+                        name: "expr".to_string(),
+                        value: ast::Value::String(expr_val),
+                    }],
+                    directives: Vec::new(),
+                    selection_set: Vec::new(),
+                    computed_expression: None,
+                };
+
+                if let ast::ComputedExpression::TemplateString(s) = &cf.expression {
+                    field.arguments[0].value = ast::Value::String(s.clone());
+                }
+                match &cf.expression {
+                    ast::ComputedExpression::TemplateString(_) => {}
+                    ast::ComputedExpression::StandardExpression(e) => {
+                        field.computed_expression = Some(e.clone());
+                    }
+                    ast::ComputedExpression::FunctionCall { name, args } => {
+                        field.computed_expression = Some(ast::Expression::FunctionCall {
+                            name: name.clone(),
+                            args: args.clone(),
+                        });
+                    }
+                    ast::ComputedExpression::PipeExpression { .. } => {
+                        // TODO: Implement Pipe to Expression conversion if needed
+                    }
+                    ast::ComputedExpression::SqlExpression(s) => {
+                        field.computed_expression = Some(ast::Expression::Literal(ast::Value::String(format!("SQL: {}", s))));
+                    }
+                    ast::ComputedExpression::AggregateFunction { .. } => {
+                        // Handled by aggregate executor
+                    }
+                }
+
+                fields.push(field);
+            }
         }
     }
-
     Ok(fields)
 }
 
@@ -690,6 +753,57 @@ fn should_include(
         }
     }
     Ok(true)
+}
+
+/// Check if the current user role has permission to access a field or collection.
+/// Supports @allow(read: "ROLE", write: "ROLE"), @auth, and @require(role: "ROLE").
+fn check_permissions(
+    directives: &[ast::Directive],
+    options: &ExecutionOptions,
+    is_write: bool,
+) -> Result<()> {
+    for directive in directives {
+        match directive.name.as_str() {
+            "auth" => {
+                if options.user_role.is_none() {
+                    return Err(AqlError::new(
+                        ErrorCode::Unauthorized,
+                        "Authentication required for this operation".to_string(),
+                    ));
+                }
+            }
+            "require" | "allow" => {
+                let required_role = directive
+                    .arguments
+                    .iter()
+                    .find(|a| {
+                        if is_write {
+                            a.name == "write" || a.name == "role"
+                        } else {
+                            a.name == "read" || a.name == "role"
+                        }
+                    })
+                    .and_then(|a| {
+                        if let ast::Value::String(s) = &a.value {
+                            Some(s.as_str())
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(role) = required_role {
+                    if options.user_role.as_deref() != Some(role) {
+                        return Err(AqlError::new(
+                            ErrorCode::Forbidden,
+                            format!("Role '{}' required for this operation", role),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn resolve_boolean_arg(
@@ -761,6 +875,94 @@ pub enum ExecutionResult {
     Migration(MigrationResult),
 }
 
+impl ExecutionResult {
+    /// Extracts the QueryResult if this is a Query, returning None otherwise.
+    pub fn as_query(&self) -> Option<&QueryResult> {
+        if let Self::Query(q) = self {
+            Some(q)
+        } else {
+            None
+        }
+    }
+
+    /// Consumes the result and returns the QueryResult if this is a Query.
+    pub fn into_query(self) -> Option<QueryResult> {
+        if let Self::Query(q) = self {
+            Some(q)
+        } else {
+            None
+        }
+    }
+
+    /// Extracts the MutationResult if this is a Mutation, returning None otherwise.
+    pub fn as_mutation(&self) -> Option<&MutationResult> {
+        if let Self::Mutation(m) = self {
+            Some(m)
+        } else {
+            None
+        }
+    }
+
+    /// Consumes the result and returns the MutationResult if this is a Mutation.
+    pub fn into_mutation(self) -> Option<MutationResult> {
+        if let Self::Mutation(m) = self {
+            Some(m)
+        } else {
+            None
+        }
+    }
+
+    /// Extracts the SubscriptionResult if this is a Subscription.
+    pub fn as_subscription(&self) -> Option<&SubscriptionResult> {
+        if let Self::Subscription(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    /// Consumes the result and returns the SubscriptionResult.
+    pub fn into_subscription(self) -> Option<SubscriptionResult> {
+        if let Self::Subscription(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    /// Maps the result documents into a list of user-defined structs.
+    /// Works for Query, Mutation, and Batch results.
+    pub fn bind<T: serde::de::DeserializeOwned>(self) -> Result<Vec<T>> {
+        match self {
+            Self::Query(q) => q.bind(),
+            Self::Mutation(m) => m.bind(),
+            Self::Batch(results) => {
+                let mut all = Vec::new();
+                for r in results {
+                    all.extend(r.bind()?);
+                }
+                Ok(all)
+            }
+            _ => Err(AqlError::new(
+                ErrorCode::QueryError,
+                "Cannot bind results from schema or migration operations".to_string(),
+            )),
+        }
+    }
+
+    /// Maps the first result document into a user-defined struct.
+    pub fn bind_first<T: serde::de::DeserializeOwned>(self) -> Result<T> {
+        let mut results: Vec<T> = self.bind()?;
+        if results.is_empty() {
+            return Err(AqlError::new(
+                ErrorCode::NotFound,
+                "No documents found to bind".to_string(),
+            ));
+        }
+        Ok(results.remove(0))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SchemaResult {
     pub operation: String,
@@ -793,6 +995,28 @@ pub struct QueryResult {
     pub explain: Option<ExplainResult>,
 }
 
+impl QueryResult {
+    /// Maps the result documents into a list of user-defined structs.
+    pub fn bind<T: serde::de::DeserializeOwned>(self) -> Result<Vec<T>> {
+        self.documents
+            .into_iter()
+            .map(|d| d.bind())
+            .collect::<Result<Vec<T>>>()
+    }
+
+    /// Maps the first result document into a user-defined struct.
+    pub fn bind_first<T: serde::de::DeserializeOwned>(self) -> Result<T> {
+        let mut results: Vec<T> = self.bind()?;
+        if results.is_empty() {
+            return Err(AqlError::new(
+                ErrorCode::NotFound,
+                "No documents found to bind".to_string(),
+            ));
+        }
+        Ok(results.remove(0))
+    }
+}
+
 /// Execution plan metadata returned by @explain
 #[derive(Debug, Clone, Default)]
 pub struct ExplainResult {
@@ -811,6 +1035,28 @@ pub struct MutationResult {
     pub returned_documents: Vec<Document>,
 }
 
+impl MutationResult {
+    /// Maps the returned documents into a list of user-defined structs.
+    pub fn bind<T: serde::de::DeserializeOwned>(self) -> Result<Vec<T>> {
+        self.returned_documents
+            .into_iter()
+            .map(|d| d.bind())
+            .collect::<Result<Vec<T>>>()
+    }
+
+    /// Maps the first returned document into a user-defined struct.
+    pub fn bind_first<T: serde::de::DeserializeOwned>(self) -> Result<T> {
+        let mut results: Vec<T> = self.bind()?;
+        if results.is_empty() {
+            return Err(AqlError::new(
+                ErrorCode::NotFound,
+                "No documents found to bind".to_string(),
+            ));
+        }
+        Ok(results.remove(0))
+    }
+}
+
 /// Subscription result
 #[derive(Debug)]
 pub struct SubscriptionResult {
@@ -825,7 +1071,9 @@ pub struct ExecutionOptions {
     pub skip_validation: bool,
     pub apply_projections: bool,
     pub debug_audit: bool,
-    pub variables: HashMap<String, JsonValue>,
+    pub variables: HashMap<String, ast::Value>,
+    /// Current user role for RBAC checks (@allow, @auth, @require)
+    pub user_role: Option<String>,
 }
 
 impl Default for ExecutionOptions {
@@ -835,6 +1083,7 @@ impl Default for ExecutionOptions {
             apply_projections: true,
             debug_audit: false,
             variables: HashMap::new(),
+            user_role: None,
         }
     }
 }
@@ -844,8 +1093,13 @@ impl ExecutionOptions {
         Self::default()
     }
 
-    pub fn with_variables(mut self, vars: HashMap<String, JsonValue>) -> Self {
+    pub fn with_variables(mut self, vars: HashMap<String, ast::Value>) -> Self {
         self.variables = vars;
+        self
+    }
+
+    pub fn with_role(mut self, role: impl Into<String>) -> Self {
+        self.user_role = Some(role.into());
         self
     }
 
@@ -855,7 +1109,7 @@ impl ExecutionOptions {
     }
 }
 
-fn json_to_aql_value(v: serde_json::Value) -> ast::Value {
+pub(crate) fn json_to_aql_value(v: serde_json::Value) -> ast::Value {
     match v {
         serde_json::Value::Null => ast::Value::Null,
         serde_json::Value::Bool(b) => ast::Value::Boolean(b),
@@ -893,11 +1147,9 @@ pub async fn execute_document(
         ));
     }
 
-    let vars: HashMap<String, ast::Value> = options
-        .variables
-        .iter()
-        .map(|(k, v)| (k.clone(), json_to_aql_value(v.clone())))
-        .collect();
+    println!("execute_document: first op: {:?}", doc.operations[0]);
+
+    let vars: HashMap<String, ast::Value> = options.variables.clone();
 
     let fragments: HashMap<String, FragmentDef> = doc
         .operations
@@ -1010,6 +1262,9 @@ async fn execute_collection_query(
 ) -> Result<QueryResult> {
     let collection_name = &field.name;
 
+    // RBAC: Check field level permissions
+    check_permissions(&field.directives, options, false)?;
+
     // ── Search args ────────────────────────────────────────────────────────
     // `search: { query: "...", fields: [...], fuzzy: true }` overrides normal scan.
     if let Some(search_arg) = field.arguments.iter().find(|a| a.name == "search") {
@@ -1044,8 +1299,7 @@ async fn execute_collection_query(
     let indexed_docs = if let Some(ref f) = filter {
         match find_indexed_equality_filter(f, db, collection_name) {
             Some((field_name, val))
-                if field_name == "_sid"
-                    || !db.is_index_building(collection_name, &field_name) =>
+                if field_name == "_sid" || !db.is_index_building(collection_name, &field_name) =>
             {
                 let db_val = aql_value_to_db_value(&val, variables)?;
                 let ids = if field_name == "_sid" {
@@ -1124,7 +1378,7 @@ async fn execute_collection_query(
             fragments,
             variables,
             options,
-        ));
+        )?);
     }
 
     // Offset pagination: skip the first `offset` documents
@@ -1142,11 +1396,9 @@ async fn execute_collection_query(
     }
 
     // Projections & Lookups
-    let has_lookups = sub_fields.iter().any(|f| {
-        f.arguments
-            .iter()
-            .any(|a| a.name == "collection" || a.name == "localField")
-    });
+    let lookup_dependencies =
+        identify_lookup_dependencies(db, collection_name, sub_fields, variables);
+    let has_lookups = !lookup_dependencies.is_empty();
 
     let mut deferred_fields = Vec::new();
 
@@ -1154,8 +1406,17 @@ async fn execute_collection_query(
         if has_lookups {
             let mut projected = Vec::with_capacity(docs.len());
             for d in docs {
-                let (proj_doc, deferred) =
-                    apply_projection_with_lookups(db, d, sub_fields, variables, options).await?;
+                let (proj_doc, deferred) = apply_projection_with_lookups(
+                    db,
+                    d,
+                    collection_name,
+                    sub_fields,
+                    fragments,
+                    variables,
+                    options,
+                    &lookup_dependencies,
+                )
+                .await?;
                 projected.push(proj_doc);
                 if deferred_fields.is_empty() {
                     deferred_fields = deferred;
@@ -1164,16 +1425,16 @@ async fn execute_collection_query(
             docs = projected;
         } else {
             let mut all_deferred = Vec::new();
-            docs = docs
-                .into_iter()
-                .map(|d| {
-                    let (proj, deferred) = apply_projection_and_defer(d, sub_fields, options);
-                    if all_deferred.is_empty() && !deferred.is_empty() {
-                        all_deferred = deferred;
-                    }
-                    proj
-                })
-                .collect();
+            let mut projected = Vec::with_capacity(docs.len());
+            for d in docs {
+                let (proj, deferred) =
+                    apply_projection_and_defer(d, sub_fields, variables, options)?;
+                if all_deferred.is_empty() && !deferred.is_empty() {
+                    all_deferred = deferred;
+                }
+                projected.push(proj);
+            }
+            docs = projected;
             deferred_fields = all_deferred;
         }
     }
@@ -1245,13 +1506,12 @@ async fn execute_search_query(
         .await?;
 
     if options.apply_projections && !sub_fields.is_empty() {
-        docs = docs
-            .into_iter()
-            .map(|d| {
-                let (proj, _) = apply_projection_and_defer(d, sub_fields, options);
-                proj
-            })
-            .collect();
+        let mut projected = Vec::with_capacity(docs.len());
+        for d in docs {
+            let (proj, _) = apply_projection_and_defer(d, sub_fields, variables, options)?;
+            projected.push(proj);
+        }
+        docs = projected;
     }
 
     Ok(QueryResult {
@@ -1391,19 +1651,55 @@ fn arg_i64(args: &[ast::Argument], name: &str) -> Option<i64> {
     })
 }
 
+fn identify_lookup_dependencies(
+    db: &Aurora,
+    collection: &str,
+    fields: &[ast::Field],
+    variables: &HashMap<String, ast::Value>,
+) -> Vec<String> {
+    let mut deps = Vec::new();
+    for f in fields {
+        let mut found = false;
+        if let (Some(lf), Some(_c), Some(_ff)) = (
+            f.arguments.iter().find(|a| a.name == "localField"),
+            f.arguments.iter().find(|a| a.name == "collection"),
+            f.arguments.iter().find(|a| a.name == "foreignField"),
+        ) {
+            if let ast::Value::String(s) = resolve_if_variable(&lf.value, variables) {
+                deps.push(s.clone());
+            }
+            found = true;
+        }
+        if !found {
+            if let Ok(col_def) = db.get_collection_definition(collection) {
+                if let Some(f_def) = col_def.fields.get(&f.name) {
+                    if let Some(_rel) = &f_def.relation {
+                        deps.push(f.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    deps
+}
+
 /// Apply projection and collect @defer'd field names separately
 fn apply_projection_and_defer(
     mut doc: Document,
     fields: &[ast::Field],
-    _options: &ExecutionOptions,
-) -> (Document, Vec<String>) {
+    vars: &HashMap<String, ast::Value>,
+    options: &ExecutionOptions,
+) -> Result<(Document, Vec<String>)> {
     if fields.is_empty() {
-        return (doc, vec![]);
+        return Ok((doc, vec![]));
     }
     let mut proj = HashMap::new();
     let mut deferred = Vec::new();
 
     for f in fields {
+        // RBAC: Check field level permissions
+        check_permissions(&f.directives, options, false)?;
+
         // @defer directive: omit from response, record field name
         if f.directives.iter().any(|d| d.name == "defer") {
             deferred.push(f.alias.as_ref().unwrap_or(&f.name).clone());
@@ -1412,10 +1708,15 @@ fn apply_projection_and_defer(
         // Computed field: name starts with __compute__ sentinel
         if f.name == "__compute__" {
             let alias = f.alias.as_deref().unwrap_or("computed");
-            if let Some(expr) = f.arguments.iter().find(|a| a.name == "expr") {
-                if let ast::Value::String(template) = &expr.value {
+            if let Some(expr_arg) = f.arguments.iter().find(|a| a.name == "expr") {
+                // If it's a raw string, treat as template for backward compatibility
+                if let ast::Value::String(template) = &expr_arg.value {
                     let result = eval_template(template, &doc.data);
                     proj.insert(alias.to_string(), Value::String(result));
+                } else if let Some(expr) = f.computed_expression.as_ref() {
+                    // Use new expression evaluator
+                    let result = eval_expression(expr, &doc.data, vars);
+                    proj.insert(alias.to_string(), result);
                 }
             }
             continue;
@@ -1438,16 +1739,188 @@ fn apply_projection_and_defer(
         }
     }
     doc.data = proj;
-    (doc, deferred)
+    Ok((doc, deferred))
+}
+/// Evaluates a complex AQL expression against document data
+fn eval_expression(
+    expr: &ast::Expression,
+    data: &HashMap<String, Value>,
+    variables: &HashMap<String, ast::Value>,
+) -> Value {
+    match expr {
+        ast::Expression::Literal(v) => match aql_value_to_db_value(v, variables) {
+            Ok(dv) => dv,
+            Err(_) => Value::Null,
+        },
+        ast::Expression::Variable(name) => {
+            if let Some(v) = variables.get(name) {
+                match aql_value_to_db_value(v, variables) {
+                    Ok(dv) => dv,
+                    Err(_) => Value::Null,
+                }
+            } else {
+                Value::Null
+            }
+        }
+        ast::Expression::FieldAccess(parts) => {
+            let mut current = if parts[0] == "_sid" {
+                Some(Value::String(data.get("_sid").cloned().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default()))
+            } else {
+                data.get(&parts[0]).cloned()
+            };
+
+            for part in parts.iter().skip(1) {
+                if let Some(Value::Object(map)) = current {
+                    current = map.get(part).cloned();
+                } else {
+                    current = None;
+                    break;
+                }
+            }
+            current.unwrap_or(Value::Null)
+        }
+        ast::Expression::Binary { op, left, right } => {
+            let lv = eval_expression(left, data, variables);
+            let rv = eval_expression(right, data, variables);
+            eval_binary_op(*op, lv, rv)
+        }
+        ast::Expression::Unary { op, expr } => {
+            let v = eval_expression(expr, data, variables);
+            eval_unary_op(*op, v)
+        }
+        ast::Expression::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let cv = eval_expression(condition, data, variables);
+            let is_true = match cv {
+                Value::Bool(b) => b,
+                Value::Null => false,
+                Value::Int(i) => i != 0,
+                Value::Float(f) => f != 0.0,
+                Value::String(s) => !s.is_empty(),
+                _ => true,
+            };
+            if is_true {
+                eval_expression(then_expr, data, variables)
+            } else {
+                eval_expression(else_expr, data, variables)
+            }
+        }
+        ast::Expression::FunctionCall { name, args } => {
+            let evaluated_args: Vec<Value> = args
+                .iter()
+                .map(|a| eval_expression(a, data, variables))
+                .collect();
+            eval_function_call(name, evaluated_args)
+        }
+    }
 }
 
-/// Simple `$fieldName` template evaluator
+fn eval_binary_op(op: ast::BinaryOp, left: Value, right: Value) -> Value {
+    match op {
+        ast::BinaryOp::Add => match (left, right) {
+            (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+            (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 + b),
+            (Value::Float(a), Value::Int(b)) => Value::Float(a + b as f64),
+            (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+            (Value::String(mut a), Value::String(b)) => {
+                a.push_str(&b);
+                Value::String(a)
+            }
+            _ => Value::Null,
+        },
+        ast::BinaryOp::Sub => match (left, right) {
+            (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+            (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
+            _ => Value::Null,
+        },
+        ast::BinaryOp::Mul => match (left, right) {
+            (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+            (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 * b),
+            (Value::Float(a), Value::Int(b)) => Value::Float(a * b as f64),
+            (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
+            _ => Value::Null,
+        },
+        ast::BinaryOp::Div => match (left, right) {
+            (Value::Int(a), Value::Int(b)) if b != 0 => Value::Int(a / b),
+            (Value::Float(a), Value::Float(b)) if b != 0.0 => Value::Float(a / b),
+            _ => Value::Null,
+        },
+        ast::BinaryOp::Eq => Value::Bool(left == right),
+        ast::BinaryOp::Ne => Value::Bool(left != right),
+        ast::BinaryOp::Gt => Value::Bool(left > right),
+        ast::BinaryOp::Gte => Value::Bool(left >= right),
+        ast::BinaryOp::Lt => Value::Bool(left < right),
+        ast::BinaryOp::Lte => Value::Bool(left <= right),
+        ast::BinaryOp::And => {
+            let lb = matches!(left, Value::Bool(true));
+            let rb = matches!(right, Value::Bool(true));
+            Value::Bool(lb && rb)
+        }
+        ast::BinaryOp::Or => {
+            let lb = matches!(left, Value::Bool(true));
+            let rb = matches!(right, Value::Bool(true));
+            Value::Bool(lb || rb)
+        }
+        _ => Value::Null,
+    }
+}
+
+fn eval_unary_op(op: ast::UnaryOp, val: Value) -> Value {
+    match op {
+        ast::UnaryOp::Not => match val {
+            Value::Bool(b) => Value::Bool(!b),
+            Value::Null => Value::Bool(true),
+            _ => Value::Bool(false),
+        },
+        ast::UnaryOp::Neg => match val {
+            Value::Int(i) => Value::Int(-i),
+            Value::Float(f) => Value::Float(-f),
+            _ => Value::Null,
+        },
+    }
+}
+
+fn eval_function_call(name: &str, args: Vec<Value>) -> Value {
+    match name {
+        "upper" | "uppercase" => {
+            if let Some(Value::String(s)) = args.get(0) {
+                Value::String(s.to_uppercase())
+            } else {
+                Value::Null
+            }
+        }
+        "lower" | "lowercase" => {
+            if let Some(Value::String(s)) = args.get(0) {
+                Value::String(s.to_lowercase())
+            } else {
+                Value::Null
+            }
+        }
+        "len" | "length" => match args.get(0) {
+            Some(Value::String(s)) => Value::Int(s.len() as i64),
+            Some(Value::Array(a)) => Value::Int(a.len() as i64),
+            Some(Value::Object(o)) => Value::Int(o.len() as i64),
+            _ => Value::Null,
+        },
+        _ => Value::Null,
+    }
+}
+
+/// Simple `$fieldName` or `${fieldName}` template evaluator
 fn eval_template(template: &str, data: &HashMap<String, Value>) -> String {
     let mut result = template.to_string();
     for (k, v) in data {
-        let placeholder = format!("${}", k);
-        if result.contains(&placeholder) {
-            result = result.replace(&placeholder, &v.to_string());
+        let p1 = format!("${{{}}}", k);
+        let p2 = format!("${}", k);
+        let v_str = v.to_string();
+        if result.contains(&p1) {
+            result = result.replace(&p1, &v_str);
+        }
+        if result.contains(&p2) {
+            result = result.replace(&p2, &v_str);
         }
     }
     result
@@ -1726,6 +2199,9 @@ async fn execute_mutation(
 
     validate_required_variables(&mutation.variable_definitions, vars)?;
 
+    // RBAC: Check mutation level permissions
+    check_permissions(&mutation.directives, options, true)?;
+
     // If there's already an active transaction in scope, run ops directly inside
     // it — the caller owns commit/rollback. Creating a nested transaction would
     // shadow the outer ACTIVE_TRANSACTION_ID and prevent the outer rollback from
@@ -1817,6 +2293,9 @@ fn execute_mutation_op<'a>(
 ) -> futures::future::BoxFuture<'a, Result<MutationResult>> {
     use futures::future::FutureExt;
     async move {
+        // RBAC: Check mutation level permissions
+        check_permissions(&mut_op.directives, options, true)?;
+
         match &mut_op.operation {
             MutationOp::Insert { collection, data } => {
                 let resolved = resolve_value(data, variables, context);
@@ -1831,10 +2310,11 @@ fn execute_mutation_op<'a>(
                         Some(collection),
                     )
                     .unwrap_or_default();
-                    vec![apply_projection(doc, &fields, options)]
+                    vec![apply_projection(doc, &fields, options)?]
                 } else {
                     vec![doc]
                 };
+
                 Ok(MutationResult {
                     operation: "insert".to_string(),
                     collection: collection.clone(),
@@ -1903,7 +2383,7 @@ fn execute_mutation_op<'a>(
 
                     affected += 1;
                     if let Some(ref f) = fields {
-                        returned.push(apply_projection(updated_doc, f, options));
+                        returned.push(apply_projection(updated_doc, f, options)?);
                     }
                 }
 
@@ -1950,12 +2430,22 @@ fn execute_mutation_op<'a>(
                 })
             }
             MutationOp::InsertMany { collection, data } => {
+                let resolved = resolve_value(data, variables, context);
+                let items = match resolved {
+                    ast::Value::Array(arr) => arr,
+                    _ => {
+                        return Err(AqlError::new(
+                            ErrorCode::QueryError,
+                            "insertMany data must be an array".to_string(),
+                        ));
+                    }
+                };
+
                 let mut affected = 0;
                 let mut returned = Vec::new();
-                for item in data {
-                    let resolved = resolve_value(item, variables, context);
+                for item in items {
                     let doc = db
-                        .aql_insert(collection, aql_value_to_hashmap(&resolved, variables)?)
+                        .aql_insert(collection, aql_value_to_hashmap(&item, variables)?)
                         .await?;
                     affected += 1;
                     if !mut_op.selection_set.is_empty() && options.apply_projections {
@@ -1966,7 +2456,7 @@ fn execute_mutation_op<'a>(
                             Some(collection),
                         )
                         .unwrap_or_default();
-                        returned.push(apply_projection(doc, &fields, options));
+                        returned.push(apply_projection(doc, &fields, options)?);
                     } else {
                         returned.push(doc);
                     }
@@ -2009,11 +2499,25 @@ fn execute_mutation_op<'a>(
                 } else {
                     db.aql_insert(collection, update_data).await?
                 };
+
+                let returned = if !mut_op.selection_set.is_empty() && options.apply_projections {
+                    let fields = collect_fields(
+                        &mut_op.selection_set,
+                        fragments,
+                        variables,
+                        Some(collection),
+                    )
+                    .unwrap_or_default();
+                    vec![apply_projection(doc, &fields, options)?]
+                } else {
+                    vec![doc]
+                };
+
                 Ok(MutationResult {
                     operation: "upsert".to_string(),
                     collection: collection.clone(),
                     affected_count: 1,
-                    returned_documents: vec![doc],
+                    returned_documents: returned,
                 })
             }
             MutationOp::Transaction { operations } => {
@@ -2109,7 +2613,7 @@ fn execute_mutation_op<'a>(
                     let doc = db.aql_insert(collection, map).await?;
                     affected += 1;
                     if let Some(ref f) = fields {
-                        returned.push(apply_projection(doc, f, options));
+                        returned.push(apply_projection(doc, f, options)?);
                     }
                 }
                 Ok(MutationResult {
@@ -2137,11 +2641,14 @@ fn execute_mutation_op<'a>(
                 } else {
                     None
                 };
-                let returned: Vec<Document> = if let Some(ref f) = fields {
-                    docs.into_iter().map(|d| apply_projection(d, f, options)).collect()
+                let mut returned = Vec::with_capacity(docs.len());
+                if let Some(ref f) = fields {
+                    for d in docs {
+                        returned.push(apply_projection(d, f, options)?);
+                    }
                 } else {
-                    docs
-                };
+                    returned = docs;
+                }
                 let count = returned.len();
                 Ok(MutationResult {
                     operation: "export".to_string(),
@@ -2578,6 +3085,7 @@ fn build_field_def(field: &ast::FieldDef) -> FieldDefinition {
     let field_type = map_ast_type(&field.field_type);
     let mut indexed = false;
     let mut unique = false;
+    let mut relation = None;
     let mut validations = Vec::new();
     for directive in &field.directives {
         match directive.name.as_str() {
@@ -2590,6 +3098,35 @@ fn build_field_def(field: &ast::FieldDef) -> FieldDefinition {
                 indexed = true;
                 unique = true;
             }
+            "relation" => {
+                let to = directive
+                    .arguments
+                    .iter()
+                    .find(|a| a.name == "to" || a.name == "collection")
+                    .and_then(|a| {
+                        if let ast::Value::String(s) = &a.value {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                let key = directive
+                    .arguments
+                    .iter()
+                    .find(|a| a.name == "key" || a.name == "field")
+                    .and_then(|a| {
+                        if let ast::Value::String(s) = &a.value {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| "id".to_string());
+                if !to.is_empty() {
+                    relation = Some(crate::types::Relation { to, key });
+                }
+            }
             "validate" => validations.extend(parse_validate_directive(directive)),
             _ => {}
         }
@@ -2600,6 +3137,7 @@ fn build_field_def(field: &ast::FieldDef) -> FieldDefinition {
         indexed,
         nullable: !field.field_type.is_required,
         validations,
+        relation,
     }
 }
 
@@ -2935,7 +3473,7 @@ fn execute_connection(
     fragments: &HashMap<String, FragmentDef>,
     variables: &HashMap<String, ast::Value>,
     options: &ExecutionOptions,
-) -> QueryResult {
+) -> Result<QueryResult> {
     let has_next_page = if let Some(l) = limit {
         docs.len() > l
     } else {
@@ -2964,7 +3502,7 @@ fn execute_connection(
         Vec::new()
     };
 
-    for doc in &docs {
+    for doc in docs {
         let cursor = doc._sid.clone();
         end_cursor = cursor.clone();
 
@@ -2972,9 +3510,9 @@ fn execute_connection(
         edge_data.insert("cursor".to_string(), Value::String(cursor));
 
         let node_doc = if node_fields.is_empty() {
-            doc.clone()
+            doc
         } else {
-            apply_projection(doc.clone(), &node_fields, options)
+            apply_projection(doc, &node_fields, options)?
         };
 
         edge_data.insert("node".to_string(), Value::Object(node_doc.data));
@@ -2989,7 +3527,7 @@ fn execute_connection(
     conn_data.insert("edges".to_string(), Value::Array(edges));
     conn_data.insert("pageInfo".to_string(), Value::Object(page_info));
 
-    QueryResult {
+    Ok(QueryResult {
         collection: String::new(),
         documents: vec![Document {
             _sid: "connection".to_string(),
@@ -2998,7 +3536,7 @@ fn execute_connection(
         total_count: None,
         deferred_fields: vec![],
         explain: None,
-    }
+    })
 }
 
 pub fn matches_filter(
@@ -3027,7 +3565,11 @@ pub fn matches_filter(
         }
         CompiledFilter::Gt(f, v) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             dv_opt.map_or(false, |dv| {
                 if let Ok(bv) = aql_value_to_db_value(v, vars) {
@@ -3038,7 +3580,11 @@ pub fn matches_filter(
         }
         CompiledFilter::Gte(f, v) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             dv_opt.map_or(false, |dv| {
                 if let Ok(bv) = aql_value_to_db_value(v, vars) {
@@ -3049,7 +3595,11 @@ pub fn matches_filter(
         }
         CompiledFilter::Lt(f, v) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             dv_opt.map_or(false, |dv| {
                 if let Ok(bv) = aql_value_to_db_value(v, vars) {
@@ -3060,7 +3610,11 @@ pub fn matches_filter(
         }
         CompiledFilter::Lte(f, v) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             dv_opt.map_or(false, |dv| {
                 if let Ok(bv) = aql_value_to_db_value(v, vars) {
@@ -3071,7 +3625,11 @@ pub fn matches_filter(
         }
         CompiledFilter::In(f, v) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             dv_opt.map_or(false, |dv| {
                 if let Ok(Value::Array(arr)) = aql_value_to_db_value(v, vars) {
@@ -3082,7 +3640,11 @@ pub fn matches_filter(
         }
         CompiledFilter::NotIn(f, v) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             dv_opt.map_or(true, |dv| {
                 if let Ok(Value::Array(arr)) = aql_value_to_db_value(v, vars) {
@@ -3093,7 +3655,11 @@ pub fn matches_filter(
         }
         CompiledFilter::Contains(f, v) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             if let Some(dv) = dv_opt {
                 match (dv, resolve_if_variable(v, vars)) {
@@ -3113,7 +3679,11 @@ pub fn matches_filter(
         // Field array must contain at least one of the provided values
         CompiledFilter::ContainsAny(f, v) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             if let (Some(Value::Array(field_arr)), Ok(Value::Array(check_arr))) =
                 (dv_opt, aql_value_to_db_value(v, vars))
@@ -3126,7 +3696,11 @@ pub fn matches_filter(
         // Field array must contain all of the provided values
         CompiledFilter::ContainsAll(f, v) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             if let (Some(Value::Array(field_arr)), Ok(Value::Array(check_arr))) =
                 (dv_opt, aql_value_to_db_value(v, vars))
@@ -3138,7 +3712,11 @@ pub fn matches_filter(
         }
         CompiledFilter::StartsWith(f, v) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             if let (Some(Value::String(s)), ast::Value::String(pre)) =
                 (dv_opt, resolve_if_variable(v, vars))
@@ -3150,7 +3728,11 @@ pub fn matches_filter(
         }
         CompiledFilter::EndsWith(f, v) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             if let (Some(Value::String(s)), ast::Value::String(suf)) =
                 (dv_opt, resolve_if_variable(v, vars))
@@ -3162,7 +3744,11 @@ pub fn matches_filter(
         }
         CompiledFilter::Matches(f, re) => {
             let dv_opt = doc.data.get(f).cloned().or_else(|| {
-                if f == "_sid" { Some(Value::String(doc._sid.clone())) } else { None }
+                if f == "_sid" {
+                    Some(Value::String(doc._sid.clone()))
+                } else {
+                    None
+                }
             });
             if let Some(Value::String(s)) = dv_opt {
                 re.is_match(&s)
@@ -3261,9 +3847,9 @@ pub fn apply_projection(
     doc: Document,
     fields: &[ast::Field],
     options: &ExecutionOptions,
-) -> Document {
-    let (projected, _) = apply_projection_and_defer(doc, fields, options);
-    projected
+) -> Result<Document> {
+    let (projected, _) = apply_projection_and_defer(doc, fields, &options.variables, options)?;
+    Ok(projected)
 }
 
 /// Apply projections, resolving lookup fields from foreign collections.
@@ -3271,9 +3857,12 @@ pub fn apply_projection(
 async fn apply_projection_with_lookups(
     db: &Aurora,
     mut doc: Document,
+    collection_name: &str,
     fields: &[ast::Field],
+    fragments: &HashMap<String, FragmentDef>,
     vars: &HashMap<String, ast::Value>,
     options: &ExecutionOptions,
+    pinned_fields: &[String],
 ) -> Result<(Document, Vec<String>)> {
     if fields.is_empty() {
         return Ok((doc, vec![]));
@@ -3281,41 +3870,49 @@ async fn apply_projection_with_lookups(
     let mut proj = HashMap::new();
     let mut deferred = Vec::new();
 
+    // 1. Process all fields (including pinning dependencies)
     for f in fields {
+        // RBAC Check
+        check_permissions(&f.directives, options, false)?;
+
         // @defer
         if f.directives.iter().any(|d| d.name == "defer") {
             deferred.push(f.alias.as_ref().unwrap_or(&f.name).clone());
             continue;
         }
 
-        // Lookup field: has collection + localField + foreignField arguments
+        let mut lookup_info: Option<(String, String, String)> = None;
         let coll_arg = f.arguments.iter().find(|a| a.name == "collection");
         let local_arg = f.arguments.iter().find(|a| a.name == "localField");
         let foreign_arg = f.arguments.iter().find(|a| a.name == "foreignField");
 
         if let (Some(c), Some(lf), Some(ff)) = (coll_arg, local_arg, foreign_arg) {
-            // Resolve variable references in lookup arguments
             let c_val = resolve_if_variable(&c.value, vars);
             let lf_val = resolve_if_variable(&lf.value, vars);
             let ff_val = resolve_if_variable(&ff.value, vars);
-            let foreign_coll = if let ast::Value::String(s) = c_val {
-                s.as_str()
-            } else {
-                continue;
-            };
-            let local_field = if let ast::Value::String(s) = lf_val {
-                s.as_str()
-            } else {
-                continue;
-            };
-            let foreign_field = if let ast::Value::String(s) = ff_val {
-                s.as_str()
-            } else {
-                continue;
-            };
 
-            // Get the local field value to match against the foreign collection
-            let local_val = doc.data.get(local_field).cloned().or_else(|| {
+            if let (
+                ast::Value::String(foreign_coll),
+                ast::Value::String(local_field),
+                ast::Value::String(foreign_field),
+            ) = (c_val, lf_val, ff_val)
+            {
+                lookup_info = Some((
+                    foreign_coll.clone(),
+                    local_field.clone(),
+                    foreign_field.clone(),
+                ));
+            }
+        } else if let Ok(col_def) = db.get_collection_definition(collection_name) {
+            if let Some(f_def) = col_def.fields.get(&f.name) {
+                if let Some(rel) = &f_def.relation {
+                    lookup_info = Some((rel.to.clone(), f.name.clone(), rel.key.clone()));
+                }
+            }
+        }
+
+        if let Some((foreign_coll, local_field, foreign_field)) = lookup_info {
+            let local_val = doc.data.get(local_field.as_str()).cloned().or_else(|| {
                 if local_field == "_sid" {
                     Some(Value::String(doc._sid.clone()))
                 } else {
@@ -3324,7 +3921,6 @@ async fn apply_projection_with_lookups(
             });
 
             if let Some(match_val) = local_val {
-                // Optional filter — deeply resolve variables inside it before compiling
                 let extra_filter = f
                     .arguments
                     .iter()
@@ -3336,13 +3932,15 @@ async fn apply_projection_with_lookups(
 
                 let vars_arc = Arc::new(vars.clone());
                 let foreign_docs = db.scan_and_filter(
-                    foreign_coll,
+                    &foreign_coll,
                     |fdoc| {
                         let field_match = fdoc
                             .data
-                            .get(foreign_field)
+                            .get(foreign_field.as_str())
                             .map(|v| values_equal_db(v, &match_val))
-                            .unwrap_or(foreign_field == "_sid" && fdoc._sid == match_val.to_string());
+                            .unwrap_or(
+                                foreign_field == "_sid" && fdoc._sid == match_val.to_string(),
+                            );
                         if !field_match {
                             return false;
                         }
@@ -3357,35 +3955,24 @@ async fn apply_projection_with_lookups(
                     None,
                 )?;
 
-                // Apply sub-projection to foreign docs
                 let sub_projected: Vec<Value> = if f.selection_set.is_empty() {
                     foreign_docs
                         .into_iter()
                         .map(|fd| Value::Object(fd.data))
                         .collect()
                 } else {
-                    let sub_fields: Vec<ast::Field> = f
-                        .selection_set
-                        .iter()
-                        .filter_map(|sel| {
-                            if let Selection::Field(sf) = sel {
-                                Some(sf.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    foreign_docs
-                        .into_iter()
-                        .map(|fd| {
-                            let (proj_fd, _) = apply_projection_and_defer(fd, &sub_fields, options);
-                            Value::Object(proj_fd.data)
-                        })
-                        .collect()
+                    let sub_fields: Vec<ast::Field> =
+                        collect_fields(&f.selection_set, fragments, vars, Some(&foreign_coll))?;
+                    let mut sub_results = Vec::with_capacity(foreign_docs.len());
+                    for fd in foreign_docs {
+                        let (proj_fd, _) =
+                            apply_projection_and_defer(fd, &sub_fields, vars, options)?;
+                        sub_results.push(Value::Object(proj_fd.data));
+                    }
+                    sub_results
                 };
 
-                let alias = f.alias.as_ref().unwrap_or(&f.name).clone();
-                proj.insert(alias, Value::Array(sub_projected));
+                proj.insert(f.alias.as_ref().unwrap_or(&f.name).clone(), Value::Array(sub_projected));
             }
             continue;
         }
@@ -3393,11 +3980,13 @@ async fn apply_projection_with_lookups(
         // Computed field
         if f.name == "__compute__" {
             let alias = f.alias.as_deref().unwrap_or("computed");
-            if let Some(expr) = f.arguments.iter().find(|a| a.name == "expr") {
-                let resolved_expr = resolve_if_variable(&expr.value, vars);
-                if let ast::Value::String(template) = resolved_expr {
+            if let Some(expr_arg) = f.arguments.iter().find(|a| a.name == "expr") {
+                if let ast::Value::String(template) = &expr_arg.value {
                     let result = eval_template(template, &doc.data);
                     proj.insert(alias.to_string(), Value::String(result));
+                } else if let Some(expr) = f.computed_expression.as_ref() {
+                    let result = eval_expression(expr, &doc.data, vars);
+                    proj.insert(alias.to_string(), result);
                 }
             }
             continue;
@@ -3405,11 +3994,8 @@ async fn apply_projection_with_lookups(
 
         // Normal field
         if f.name == "id" {
-            if let Some(v) = doc.data.get("id") {
-                proj.insert(f.alias.as_ref().unwrap_or(&f.name).clone(), v.clone());
-            } else {
-                proj.insert(f.alias.as_ref().unwrap_or(&f.name).clone(), Value::Null);
-            }
+            let v = doc.data.get("id").cloned().unwrap_or(Value::String(doc._sid.clone()));
+            proj.insert(f.alias.as_ref().unwrap_or(&f.name).clone(), v);
         } else if f.name == "_sid" {
             proj.insert(
                 f.alias.as_ref().unwrap_or(&f.name).clone(),
@@ -3419,6 +4005,16 @@ async fn apply_projection_with_lookups(
             proj.insert(f.alias.as_ref().unwrap_or(&f.name).clone(), v.clone());
         }
     }
+
+    // 2. Add pinned fields if missing (needed for outer lookups)
+    for pinned in pinned_fields {
+        if !proj.contains_key(pinned) {
+            if let Some(v) = doc.data.get(pinned) {
+                proj.insert(pinned.clone(), v.clone());
+            }
+        }
+    }
+
     doc.data = proj;
     Ok((doc, deferred))
 }

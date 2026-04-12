@@ -243,7 +243,9 @@ fn bench_query_by_index(c: &mut Criterion) {
             rt.block_on(async {
                 aurora_db
                     .query("users")
-                    .filter(|f: &aurora_db::query::FilterBuilder| f.gt("age", Value::Int(30)) & f.lt("age", Value::Int(40)))
+                    .filter(|f: &aurora_db::query::FilterBuilder| {
+                        f.gt("age", Value::Int(30)) & f.lt("age", Value::Int(40))
+                    })
                     .collect()
                     .await
                     .unwrap()
@@ -415,8 +417,8 @@ fn bench_reactive_subscription(c: &mut Criterion) {
         });
 
         // Create the subscription once — we benchmark notification delivery, not setup cost
-        let mut listener = rt.block_on(
-            db.stream(
+        let mut listener = rt
+            .block_on(db.stream(
                 r#"
                 subscription {
                     events {
@@ -426,8 +428,8 @@ fn bench_reactive_subscription(c: &mut Criterion) {
                     }
                 }
             "#,
-            )
-        ).unwrap();
+            ))
+            .unwrap();
 
         b.iter(|| {
             rt.block_on(async {

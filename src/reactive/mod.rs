@@ -9,8 +9,8 @@ pub mod watcher;
 pub use updates::{QueryUpdate, UpdateType};
 pub use watcher::{QueryWatcher, ThrottledQueryWatcher};
 
-use crate::types::Document;
 use crate::query::Filter;
+use crate::types::Document;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -155,9 +155,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reactive_state_add_if_matches() {
-        let state = ReactiveQueryState::new(vec![
-            Filter::Eq("active".to_string(), Value::Bool(true))
-        ]);
+        let state =
+            ReactiveQueryState::new(vec![Filter::Eq("active".to_string(), Value::Bool(true))]);
 
         let mut data = HashMap::new();
         data.insert("active".to_string(), Value::Bool(true));
@@ -173,9 +172,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reactive_state_filter() {
-        let state = ReactiveQueryState::new(vec![
-            Filter::Eq("active".to_string(), Value::Bool(true))
-        ]);
+        let state =
+            ReactiveQueryState::new(vec![Filter::Eq("active".to_string(), Value::Bool(true))]);
 
         let mut active_data = HashMap::new();
         active_data.insert("active".to_string(), Value::Bool(true));
@@ -202,9 +200,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reactive_state_update_transitions() {
-        let state = ReactiveQueryState::new(vec![
-            Filter::Eq("active".to_string(), Value::Bool(true))
-        ]);
+        let state =
+            ReactiveQueryState::new(vec![Filter::Eq("active".to_string(), Value::Bool(true))]);
 
         // Add initial active document
         let mut data = HashMap::new();

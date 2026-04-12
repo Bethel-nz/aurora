@@ -135,7 +135,9 @@ fn run_baseline_bench(c: &mut Criterion, enable_wal: bool, group_name: &str) {
             b.iter(|| {
                 rt.block_on(async {
                     db.query("bench")
-                        .filter(|f: &aurora_db::query::FilterBuilder| f.gt("index", Value::Int((s / 2) as i64)))
+                        .filter(|f: &aurora_db::query::FilterBuilder| {
+                            f.gt("index", Value::Int((s / 2) as i64))
+                        })
                         .limit(100)
                         .collect()
                         .await

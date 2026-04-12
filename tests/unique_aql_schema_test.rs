@@ -17,9 +17,12 @@ async fn test_unique_field_aql_schema_equality() {
             }
         }
     "#;
-    
+
     let res = db.execute(schema_query).await.unwrap();
-    assert!(matches!(res, ExecutionResult::Schema(_)), "Schema should be created");
+    assert!(
+        matches!(res, ExecutionResult::Schema(_)),
+        "Schema should be created"
+    );
 
     // Insert a document using AQL
     let insert_query = r#"
@@ -45,8 +48,15 @@ async fn test_unique_field_aql_schema_equality() {
     "#;
     let res = db.execute(select_query).await.unwrap();
     if let ExecutionResult::Query(q) = res {
-        assert_eq!(q.documents.len(), 1, "Expected 1 document to be returned via AQL for unique field lookup");
-        assert_eq!(q.documents[0].data.get("email").unwrap().as_str().unwrap(), "test@example.com");
+        assert_eq!(
+            q.documents.len(),
+            1,
+            "Expected 1 document to be returned via AQL for unique field lookup"
+        );
+        assert_eq!(
+            q.documents[0].data.get("email").unwrap().as_str().unwrap(),
+            "test@example.com"
+        );
     } else {
         panic!("Expected Query result");
     }
@@ -58,5 +68,8 @@ async fn test_unique_field_aql_schema_equality() {
         }
     "#;
     let duplicate_res = db.execute(duplicate_insert_query).await;
-    assert!(duplicate_res.is_err(), "Expected unique constraint violation error on duplicate insert");
+    assert!(
+        duplicate_res.is_err(),
+        "Expected unique constraint violation error on duplicate insert"
+    );
 }

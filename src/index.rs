@@ -79,7 +79,9 @@ impl Index {
     }
 
     pub fn search(&self, value: &Value) -> Option<Vec<String>> {
-        self.data.get(value).map(|e| e.value().iter().map(|v| v.to_string()).collect())
+        self.data
+            .get(value)
+            .map(|e| e.value().iter().map(|v| v.to_string()).collect())
     }
 
     pub fn remove(&self, doc: &Document) -> Result<()> {
@@ -96,10 +98,13 @@ impl Index {
 
     /// Return all IDs in the index, sorted by key value (Lock-free iteration)
     pub fn iter_ids(&self) -> Vec<String> {
-        self.data.iter().flat_map(|e| {
-            let ids: Vec<String> = e.value().iter().map(|v| v.to_string()).collect();
-            ids
-        }).collect()
+        self.data
+            .iter()
+            .flat_map(|e| {
+                let ids: Vec<String> = e.value().iter().map(|v| v.to_string()).collect();
+                ids
+            })
+            .collect()
     }
 
     pub fn search_text(&self, query: &str) -> Option<Vec<(String, f32)>> {

@@ -6,7 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, timeout};
 
@@ -28,7 +28,7 @@ impl Default for WorkerConfig {
         Self {
             storage_path: "./aurora_workers".to_string(),
             concurrency: 4,
-            poll_interval_ms: 10, // Faster polling fallback
+            poll_interval_ms: 10,           // Faster polling fallback
             cleanup_interval_seconds: 3600, // 1 hour
         }
     }
@@ -129,7 +129,11 @@ impl WorkerExecutor {
     }
 
     /// Spawn a worker task
-    fn spawn_worker(&self, worker_id: usize, mut shutdown_rx: broadcast::Receiver<()>) -> JoinHandle<()> {
+    fn spawn_worker(
+        &self,
+        worker_id: usize,
+        mut shutdown_rx: broadcast::Receiver<()>,
+    ) -> JoinHandle<()> {
         let queue = Arc::clone(&self.queue);
         let handlers = Arc::clone(&self.handlers);
         let running = Arc::clone(&self.running);
@@ -172,9 +176,15 @@ impl WorkerExecutor {
                         };
 
                         match result {
-                            Ok(Ok(())) => { job.mark_completed(); }
-                            Ok(Err(e)) => { job.mark_failed(e.to_string()); }
-                            Err(_) => { job.mark_failed("Timeout".to_string()); }
+                            Ok(Ok(())) => {
+                                job.mark_completed();
+                            }
+                            Ok(Err(e)) => {
+                                job.mark_failed(e.to_string());
+                            }
+                            Err(_) => {
+                                job.mark_failed("Timeout".to_string());
+                            }
                         }
 
                         let job_id = job.id.clone();

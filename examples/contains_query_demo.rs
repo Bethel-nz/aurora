@@ -16,11 +16,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.new_collection(
         "products",
         vec![
-            ("name".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("description".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("category".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("price".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("in_stock".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_BOOL, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            (
+                "name".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "description".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "category".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "price".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_FLOAT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "in_stock".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_BOOL,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
     )
     .await?;
@@ -214,8 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let start = Instant::now();
         let results = db
             .query("products")
-            .filter(|f: &aurora_db::query::FilterBuilder| f.contains(
-"description", term))
+            .filter(|f: &aurora_db::query::FilterBuilder| f.contains("description", term))
             .collect()
             .await?;
         let duration = start.elapsed();
@@ -239,8 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let start = Instant::now();
         let results = db
             .query("products")
-            .filter(|f: &aurora_db::query::FilterBuilder| f.contains(
-"description", variant))
+            .filter(|f: &aurora_db::query::FilterBuilder| f.contains("description", variant))
             .collect()
             .await?;
         let duration = start.elapsed();
@@ -272,8 +320,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let start = Instant::now();
         let results = db
             .query("products")
-            .filter(|f: &aurora_db::query::FilterBuilder| f.contains(
-field, term))
+            .filter(|f: &aurora_db::query::FilterBuilder| f.contains(field, term))
             .collect()
             .await?;
         let duration = start.elapsed();
@@ -302,8 +349,9 @@ field, term))
     let start = Instant::now();
     let complex_results = db
         .query("products")
-        .filter(|f: &aurora_db::query::FilterBuilder| f.contains("description", "wireless") & f.eq("category", "Electronics"))
-
+        .filter(|f: &aurora_db::query::FilterBuilder| {
+            f.contains("description", "wireless") & f.eq("category", "Electronics")
+        })
         .collect()
         .await?;
     let duration = start.elapsed();
@@ -364,8 +412,7 @@ field, term))
     let start = Instant::now();
     let large_results = db
         .query("products")
-        .filter(|f: &aurora_db::query::FilterBuilder| f.contains(
-"description", "premium"))
+        .filter(|f: &aurora_db::query::FilterBuilder| f.contains("description", "premium"))
         .collect()
         .await?;
     let large_duration = start.elapsed();

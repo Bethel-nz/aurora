@@ -37,7 +37,7 @@ fn create_test_schema() -> MockSchemaProvider {
             unique: false,
             indexed: false,
             nullable: false,
-        ..Default::default()
+            ..Default::default()
         },
     );
     fields.insert(
@@ -47,7 +47,7 @@ fn create_test_schema() -> MockSchemaProvider {
             unique: false,
             indexed: false,
             nullable: true,
-        ..Default::default()
+            ..Default::default()
         },
     );
 
@@ -70,7 +70,7 @@ fn test_validation_type_mismatch() {
         }
     "#;
 
-    let doc = parse_with_variables(mutation, json!({})).unwrap();
+    let doc = parse_with_variables(mutation, &std::collections::HashMap::new()).unwrap();
     let res = validator::validate_document(&doc, &schema, HashMap::new());
 
     assert!(res.is_err());
@@ -90,7 +90,7 @@ fn test_validation_unknown_field() {
         }
     "#;
 
-    let doc = parse_with_variables(mutation, json!({})).unwrap();
+    let doc = parse_with_variables(mutation, &std::collections::HashMap::new()).unwrap();
     let res = validator::validate_document(&doc, &schema, HashMap::new());
 
     assert!(res.is_err());
@@ -114,7 +114,7 @@ fn test_validation_not_an_object() {
         }
     "#;
 
-    let doc = parse_with_variables(mutation, json!({})).unwrap();
+    let doc = parse_with_variables(mutation, &std::collections::HashMap::new()).unwrap();
     let res = validator::validate_document(&doc, &schema, HashMap::new());
 
     assert!(res.is_err());
@@ -133,7 +133,7 @@ fn test_validation_missing_required() {
         }
     "#;
 
-    let doc = parse_with_variables(mutation, json!({})).unwrap();
+    let doc = parse_with_variables(mutation, &std::collections::HashMap::new()).unwrap();
     let res = validator::validate_document(&doc, &schema, HashMap::new());
 
     assert!(res.is_err());
@@ -155,7 +155,7 @@ fn test_validation_array_type() {
                 unique: false,
                 indexed: false,
                 nullable: true,
-            ..Default::default()
+                ..Default::default()
             },
         );
     }
@@ -167,7 +167,7 @@ fn test_validation_array_type() {
         }
     "#;
 
-    let doc = parse_with_variables(mutation, json!({})).unwrap();
+    let doc = parse_with_variables(mutation, &std::collections::HashMap::new()).unwrap();
     let res = validator::validate_document(&doc, &schema, HashMap::new());
 
     assert!(res.is_err());

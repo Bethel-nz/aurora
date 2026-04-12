@@ -6,7 +6,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 pub enum WriteOp {
-    Write { key: Arc<String>, value: Arc<Vec<u8>> },
+    Write {
+        key: Arc<String>,
+        value: Arc<Vec<u8>>,
+    },
     Flush(mpsc::SyncSender<Result<()>>),
     Shutdown,
 }
@@ -80,14 +83,16 @@ impl WriteBuffer {
                         // Periodic flush
                         if !batch.is_empty() && last_flush.elapsed() >= flush_duration {
                             let batch_to_write = std::mem::take(&mut batch);
-                            
+
                             // Use a match to handle the error cleanly
                             match cold.batch_set_arc(batch_to_write) {
                                 Ok(_) => last_flush = Instant::now(),
                                 Err(_) => {
-                                    eprintln!("Write buffer periodic flush error: Disk Full. Pausing writes.");
+                                    eprintln!(
+                                        "Write buffer periodic flush error: Disk Full. Pausing writes."
+                                    );
                                     // PAUSE OR RETURN ERROR
-                                    std::thread::sleep(Duration::from_millis(100)); 
+                                    std::thread::sleep(Duration::from_millis(100));
                                 }
                             }
                         }
@@ -189,7 +194,10 @@ mod tests {
         let buffer = WriteBuffer::new(Arc::clone(&cold), 5, 1000);
 
         for i in 0..10 {
-            buffer.write(Arc::new(format!("key{}", i)), Arc::new(format!("value{}", i).into_bytes()))?;
+            buffer.write(
+                Arc::new(format!("key{}", i)),
+                Arc::new(format!("value{}", i).into_bytes()),
+            )?;
         }
 
         // Wait for flush interval (1000ms) plus some buffer

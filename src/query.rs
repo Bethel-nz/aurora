@@ -6,10 +6,10 @@
 use crate::Aurora;
 use crate::error::Result;
 use crate::types::{Document, Value};
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use roaring::RoaringBitmap;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SimpleQueryBuilder {
@@ -49,7 +49,10 @@ impl FilterBuilder {
     }
 
     pub fn in_values<T: Into<Value> + Clone>(&self, field: &str, values: &[T]) -> Filter {
-        Filter::In(field.to_string(), values.iter().cloned().map(|v| v.into()).collect())
+        Filter::In(
+            field.to_string(),
+            values.iter().cloned().map(|v| v.into()).collect(),
+        )
     }
 
     pub fn starts_with(&self, field: &str, value: &str) -> Filter {
@@ -77,7 +80,10 @@ impl FilterBuilder {
     }
 
     pub fn in_vec<T: Into<Value>>(&self, field: &str, values: Vec<T>) -> Filter {
-        Filter::In(field.to_string(), values.into_iter().map(|v| v.into()).collect())
+        Filter::In(
+            field.to_string(),
+            values.into_iter().map(|v| v.into()).collect(),
+        )
     }
 
     pub fn between<T: Into<Value> + Clone>(&self, field: &str, min: T, max: T) -> Filter {
@@ -229,14 +235,19 @@ impl<'a> QueryBuilder<'a> {
 
         let mut docs = if let Some(bitmap) = candidate_bitmap {
             // OPTIMIZATION: If the query only requests 'id', we can bypass Sled hydration entirely
-            let id_only = self.fields.as_ref().map(|f| f.len() == 1 && f[0] == "id").unwrap_or(false);
-            
+            let id_only = self
+                .fields
+                .as_ref()
+                .map(|f| f.len() == 1 && f[0] == "id")
+                .unwrap_or(false);
+
             // Check active transaction buffer for collection members
             let tx_id = crate::transaction::ACTIVE_TRANSACTION_ID
                 .try_with(|id| *id)
                 .ok();
-            
-            let tx_buffer = tx_id.and_then(|id| self.db.transaction_manager.active_transactions.get(&id));
+
+            let tx_buffer =
+                tx_id.and_then(|id| self.db.transaction_manager.active_transactions.get(&id));
 
             // Hydrate only the final matching IDs
             let mut final_docs = Vec::with_capacity(bitmap.len() as usize);
@@ -252,7 +263,10 @@ impl<'a> QueryBuilder<'a> {
 
                     if id_only && self.filters.is_empty() {
                         // ULTRA FAST PATH: No filters and id only
-                        final_docs.push(Document { _sid: external_id, data: HashMap::new() });
+                        final_docs.push(Document {
+                            _sid: external_id,
+                            data: HashMap::new(),
+                        });
                         continue;
                     }
 
@@ -271,7 +285,6 @@ impl<'a> QueryBuilder<'a> {
                 for item in buffer.writes.iter() {
                     let key: &String = item.key();
                     if let Some(external_id) = key.strip_prefix(&prefix) {
-                        
                         // If it's already in final_docs (from bitmap index), skip it
                         if final_docs.iter().any(|d| d._sid == external_id) {
                             continue;
@@ -298,11 +311,13 @@ impl<'a> QueryBuilder<'a> {
             } else {
                 None
             };
-            
+
             let db_filters = self.filters.clone();
-            self.db.scan_and_filter(&self.collection, move |doc| {
-                db_filters.iter().all(|f| f.matches(doc))
-            }, scan_limit)?
+            self.db.scan_and_filter(
+                &self.collection,
+                move |doc| db_filters.iter().all(|f| f.matches(doc)),
+                scan_limit,
+            )?
         };
 
         // Apply Sorting
@@ -317,10 +332,14 @@ impl<'a> QueryBuilder<'a> {
 
         // Apply Offset/Limit
         let mut start = self.offset.unwrap_or(0);
-        if start > docs.len() { start = docs.len(); }
+        if start > docs.len() {
+            start = docs.len();
+        }
         let mut end = docs.len();
         if let Some(max) = self.limit {
-            if start + max < end { end = start + max; }
+            if start + max < end {
+                end = start + max;
+            }
         }
 
         let mut result = docs[start..end].to_vec();
@@ -394,14 +413,22 @@ pub struct SearchBuilder<'a> {
 
 /// Score a document against tokenised query terms using per-word Levenshtein distance.
 /// Returns 0.0 if no query token is within `max_dist` edits of any doc token.
-fn fuzzy_score(doc: &Document, query_tokens: &[&str], max_dist: usize, fields: Option<&[String]>) -> f32 {
+fn fuzzy_score(
+    doc: &Document,
+    query_tokens: &[&str],
+    max_dist: usize,
+    fields: Option<&[String]>,
+) -> f32 {
     let mut score = 0.0f32;
     for (field, value) in &doc.data {
         if let Some(allowed) = fields {
-            if !allowed.contains(field) { continue; }
+            if !allowed.contains(field) {
+                continue;
+            }
         }
         if let crate::types::Value::String(text) = value {
-            let doc_tokens: Vec<String> = text.split_whitespace().map(|t| t.to_lowercase()).collect();
+            let doc_tokens: Vec<String> =
+                text.split_whitespace().map(|t| t.to_lowercase()).collect();
             for q in query_tokens {
                 for d in &doc_tokens {
                     let dist = crate::search::levenshtein_distance(q, d);
@@ -454,7 +481,10 @@ impl<'a> SearchBuilder<'a> {
     /// Like collect() but accepts an optional field filter inline
     pub async fn collect_with_fields(self, fields: Option<&[String]>) -> Result<Vec<Document>> {
         let builder = if let Some(f) = fields {
-            Self { search_fields: Some(f.to_vec()), ..self }
+            Self {
+                search_fields: Some(f.to_vec()),
+                ..self
+            }
         } else {
             self
         };
@@ -484,11 +514,15 @@ impl<'a> SearchBuilder<'a> {
                     }
                 }
 
-                scored.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+                scored.sort_by(|(a, _), (b, _)| {
+                    b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
+                });
                 for (_, doc) in scored {
                     results.push(doc);
                     if let Some(l) = self.limit {
-                        if results.len() >= l { break; }
+                        if results.len() >= l {
+                            break;
+                        }
                     }
                 }
             } else {
@@ -502,7 +536,9 @@ impl<'a> SearchBuilder<'a> {
                                 let fields_to_check = self.search_fields.as_deref();
                                 doc.data.iter().any(|(k, v)| {
                                     if let Some(ref allowed) = fields_to_check {
-                                        if !allowed.contains(k) { return false; }
+                                        if !allowed.contains(k) {
+                                            return false;
+                                        }
                                     }
                                     if let crate::types::Value::String(s) = v {
                                         s.to_lowercase().contains(&query)
@@ -514,7 +550,9 @@ impl<'a> SearchBuilder<'a> {
                             if matches {
                                 results.push(doc);
                                 if let Some(l) = self.limit {
-                                    if results.len() >= l { break; }
+                                    if results.len() >= l {
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -526,7 +564,6 @@ impl<'a> SearchBuilder<'a> {
         Ok(results)
     }
 }
-
 
 fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
     match (a, b) {
@@ -612,13 +649,23 @@ impl Filter {
             Filter::Lte(f, v) => get_field_owned(doc, f).map_or(false, |dv| dv <= *v),
             Filter::In(f, v) => get_field_owned(doc, f).map_or(false, |dv| v.contains(&dv)),
             Filter::Contains(f, v) => get_field_owned(doc, f).map_or(false, |dv| {
-                if let Value::String(s) = dv { s.contains(v.as_str()) } else { false }
+                if let Value::String(s) = dv {
+                    s.contains(v.as_str())
+                } else {
+                    false
+                }
             }),
             Filter::StartsWith(f, v) => get_field_owned(doc, f).map_or(false, |dv| {
-                if let Value::String(s) = dv { s.starts_with(v.as_str()) } else { false }
+                if let Value::String(s) = dv {
+                    s.starts_with(v.as_str())
+                } else {
+                    false
+                }
             }),
             Filter::IsNull(f) => get_field_owned(doc, f).map_or(true, |v| matches!(v, Value::Null)),
-            Filter::IsNotNull(f) => get_field_owned(doc, f).map_or(false, |v| !matches!(v, Value::Null)),
+            Filter::IsNotNull(f) => {
+                get_field_owned(doc, f).map_or(false, |v| !matches!(v, Value::Null))
+            }
             Filter::Not(f) => !f.matches(doc),
             Filter::And(fs) => fs.iter().all(|f| f.matches(doc)),
             Filter::Or(fs) => fs.iter().any(|f| f.matches(doc)),
@@ -630,9 +677,18 @@ impl std::ops::BitAnd for Filter {
     type Output = Filter;
     fn bitand(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
-            (Filter::And(mut a), Filter::And(mut b)) => { a.append(&mut b); Filter::And(a) }
-            (Filter::And(mut a), b) => { a.push(b); Filter::And(a) }
-            (a, Filter::And(mut b)) => { b.insert(0, a); Filter::And(b) }
+            (Filter::And(mut a), Filter::And(mut b)) => {
+                a.append(&mut b);
+                Filter::And(a)
+            }
+            (Filter::And(mut a), b) => {
+                a.push(b);
+                Filter::And(a)
+            }
+            (a, Filter::And(mut b)) => {
+                b.insert(0, a);
+                Filter::And(b)
+            }
             (a, b) => Filter::And(vec![a, b]),
         }
     }
@@ -642,9 +698,18 @@ impl std::ops::BitOr for Filter {
     type Output = Filter;
     fn bitor(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
-            (Filter::Or(mut a), Filter::Or(mut b)) => { a.append(&mut b); Filter::Or(a) }
-            (Filter::Or(mut a), b) => { a.push(b); Filter::Or(a) }
-            (a, Filter::Or(mut b)) => { b.insert(0, a); Filter::Or(b) }
+            (Filter::Or(mut a), Filter::Or(mut b)) => {
+                a.append(&mut b);
+                Filter::Or(a)
+            }
+            (Filter::Or(mut a), b) => {
+                a.push(b);
+                Filter::Or(a)
+            }
+            (a, Filter::Or(mut b)) => {
+                b.insert(0, a);
+                Filter::Or(b)
+            }
             (a, b) => Filter::Or(vec![a, b]),
         }
     }

@@ -47,23 +47,14 @@ impl Hash for FieldValidationConstraint {
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ScalarType {
     String,
     Int,
     Uuid,
     Bool,
     Float,
+    DateTime,
     Object,
     Array,
     Any,
@@ -105,6 +96,7 @@ impl fmt::Display for ScalarType {
             ScalarType::Uuid => write!(f, "Uuid"),
             ScalarType::Bool => write!(f, "Bool"),
             ScalarType::Float => write!(f, "Float"),
+            ScalarType::DateTime => write!(f, "DateTime"),
             ScalarType::Object => write!(f, "Object"),
             ScalarType::Array => write!(f, "Array"),
             ScalarType::Any => write!(f, "Any"),
@@ -139,7 +131,11 @@ impl fmt::Display for FieldDefinition {
 
 impl fmt::Display for Collection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
+        write!(
+            f,
+            "{}",
+            serde_json::to_string_pretty(self).unwrap_or_default()
+        )
     }
 }
 
@@ -165,7 +161,11 @@ impl fmt::Display for ColdStoreMode {
 
 impl fmt::Display for AuroraConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
+        write!(
+            f,
+            "{}",
+            serde_json::to_string_pretty(self).unwrap_or_default()
+        )
     }
 }
 
@@ -185,6 +185,12 @@ impl FieldType {
     pub const SCALAR_ARRAY: FieldType = FieldType::Scalar(ScalarType::Array);
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct Relation {
+    pub to: String,
+    pub key: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub struct FieldDefinition {
     pub field_type: FieldType,
@@ -194,6 +200,8 @@ pub struct FieldDefinition {
     /// Validation constraints applied on insert/update.
     #[serde(default)]
     pub validations: Vec<FieldValidationConstraint>,
+    /// Relationship metadata for foreign keys.
+    pub relation: Option<Relation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,11 +224,31 @@ impl Document {
             data: HashMap::new(),
         }
     }
+
+    /// Maps the document data into a user-defined struct that implements `Deserialize`.
+    /// This automatically aliases the internal `_sid` to `id` if not present in the data,
+    /// and also provides `_sid` explicitly.
+    pub fn bind<T: serde::de::DeserializeOwned>(mut self) -> crate::error::Result<T> {
+        self.data
+            .insert("_sid".to_string(), Value::String(self._sid.clone()));
+
+        if !self.data.contains_key("id") {
+            self.data
+                .insert("id".to_string(), Value::String(self._sid.clone()));
+        }
+
+        let json = serde_json::to_value(&self.data)?;
+        Ok(serde_json::from_value(json)?)
+    }
 }
 
 impl fmt::Display for Document {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", serde_json::to_string_pretty(self).unwrap_or_default())
+        write!(
+            f,
+            "{}",
+            serde_json::to_string_pretty(self).unwrap_or_default()
+        )
     }
 }
 
@@ -244,11 +272,14 @@ impl PartialEq for Value {
             (Value::Null, Value::Null) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Int(a), Value::Float(b)) => *a as f64 == *b,
+            (Value::Float(a), Value::Int(b)) => *a == *b as f64,
             (Value::Float(a), Value::Float(b)) => (a - b).abs() < f64::EPSILON,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Uuid(a), Value::Uuid(b)) => a == b,
-            (Value::Uuid(u), Value::String(s)) => &u.to_string() == s,
-            (Value::String(s), Value::Uuid(u)) => s == &u.to_string(),
+            (Value::Uuid(u), Value::String(s)) | (Value::String(s), Value::Uuid(u)) => {
+                u.to_string() == *s
+            }
             (Value::DateTime(a), Value::DateTime(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => a == b,
             (Value::Object(a), Value::Object(b)) => a == b,
@@ -271,27 +302,28 @@ impl Ord for Value {
             (Value::Null, Value::Null) => Ordering::Equal,
             (Value::Null, _) => Ordering::Less,
             (_, Value::Null) => Ordering::Greater,
-            
+
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
             (Value::Bool(_), _) => Ordering::Less,
             (_, Value::Bool(_)) => Ordering::Greater,
 
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
-            (Value::Int(_), _) => Ordering::Less,
-            (_, Value::Int(_)) => Ordering::Greater,
-
+            (Value::Int(a), Value::Float(b)) => (*a as f64).total_cmp(b),
+            (Value::Float(a), Value::Int(b)) => a.total_cmp(&(*b as f64)),
             (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
-            (Value::Float(_), _) => Ordering::Less,
-            (_, Value::Float(_)) => Ordering::Greater,
+            (Value::Int(_) | Value::Float(_), _) => Ordering::Less,
+            (_, Value::Int(_) | Value::Float(_)) => Ordering::Greater,
 
             (Value::String(a), Value::String(b)) => a.cmp(b),
+            (Value::Uuid(u), Value::String(s)) => u.to_string().cmp(s),
+            (Value::String(s), Value::Uuid(u)) => s.cmp(&u.to_string()),
             (Value::String(_), _) => Ordering::Less,
             (_, Value::String(_)) => Ordering::Greater,
-            
+
             (Value::Uuid(a), Value::Uuid(b)) => a.cmp(b),
             (Value::Uuid(_), _) => Ordering::Less,
             (_, Value::Uuid(_)) => Ordering::Greater,
-            
+
             (Value::DateTime(a), Value::DateTime(b)) => a.cmp(b),
             (Value::DateTime(_), _) => Ordering::Less,
             (_, Value::DateTime(_)) => Ordering::Greater,
@@ -300,7 +332,7 @@ impl Ord for Value {
             (Value::Array(_), _) => Ordering::Less,
             (_, Value::Array(_)) => Ordering::Greater,
 
-            (Value::Object(_), Value::Object(_)) => Ordering::Equal, // Simplified for brevity
+            (Value::Object(_), Value::Object(_)) => Ordering::Equal, // Object ordering not strictly defined
         }
     }
 }
@@ -315,38 +347,132 @@ impl fmt::Display for Value {
             Value::String(s) => write!(f, "{}", s),
             Value::Uuid(u) => write!(f, "{}", u),
             Value::DateTime(dt) => write!(f, "{}", dt),
-            Value::Array(arr) => write!(f, "{}", serde_json::to_string(arr).unwrap_or_else(|_| "[]".to_string())),
-            Value::Object(obj) => write!(f, "{}", serde_json::to_string(obj).unwrap_or_else(|_| "{}".to_string())),
+            Value::Array(arr) => write!(
+                f,
+                "{}",
+                serde_json::to_string(arr).unwrap_or_else(|_| "[]".to_string())
+            ),
+            Value::Object(obj) => write!(
+                f,
+                "{}",
+                serde_json::to_string(obj).unwrap_or_else(|_| "{}".to_string())
+            ),
         }
     }
 }
 
 impl Value {
     pub fn as_str(&self) -> Option<&str> {
-        if let Value::String(s) = self { Some(s) } else { None }
+        if let Value::String(s) = self {
+            Some(s)
+        } else {
+            None
+        }
     }
     pub fn as_i64(&self) -> Option<i64> {
-        if let Value::Int(i) = self { Some(*i) } else { None }
+        if let Value::Int(i) = self {
+            Some(*i)
+        } else {
+            None
+        }
     }
     pub fn as_f64(&self) -> Option<f64> {
-        if let Value::Float(f) = self { Some(*f) } else { None }
+        if let Value::Float(f) = self {
+            Some(*f)
+        } else {
+            None
+        }
     }
     pub fn as_bool(&self) -> Option<bool> {
-        if let Value::Bool(b) = self { Some(*b) } else { None }
+        if let Value::Bool(b) = self {
+            Some(*b)
+        } else {
+            None
+        }
     }
     pub fn as_array(&self) -> Option<&Vec<Value>> {
-        if let Value::Array(a) = self { Some(a) } else { None }
+        if let Value::Array(a) = self {
+            Some(a)
+        } else {
+            None
+        }
     }
     pub fn as_object(&self) -> Option<&HashMap<String, Value>> {
-        if let Value::Object(o) = self { Some(o) } else { None }
+        if let Value::Object(o) = self {
+            Some(o)
+        } else {
+            None
+        }
+    }
+
+    /// Coerces the value to a target field type if possible.
+    pub fn coerce_to(&self, target: &FieldType) -> Value {
+        match target {
+            FieldType::Scalar(ScalarType::String) => match self {
+                Value::String(s) => Value::String(s.clone()),
+                Value::Null => Value::Null,
+                _ => Value::String(self.to_string()),
+            },
+            FieldType::Scalar(ScalarType::Int) => match self {
+                Value::Int(i) => Value::Int(*i),
+                Value::Float(f) => Value::Int(*f as i64),
+                Value::String(s) => s.parse().map(Value::Int).unwrap_or(Value::Null),
+                _ => Value::Null,
+            },
+            FieldType::Scalar(ScalarType::Float) => match self {
+                Value::Float(f) => Value::Float(*f),
+                Value::Int(i) => Value::Float(*i as f64),
+                Value::String(s) => s.parse().map(Value::Float).unwrap_or(Value::Null),
+                _ => Value::Null,
+            },
+            FieldType::Scalar(ScalarType::Uuid) => match self {
+                Value::Uuid(u) => Value::Uuid(*u),
+                Value::String(s) => Uuid::parse_str(s).map(Value::Uuid).unwrap_or(Value::Null),
+                _ => Value::Null,
+            },
+            FieldType::Scalar(ScalarType::Bool) => match self {
+                Value::Bool(b) => Value::Bool(*b),
+                Value::String(s) => Value::Bool(s == "true"),
+                _ => Value::Null,
+            },
+            FieldType::Scalar(ScalarType::DateTime) => match self {
+                Value::DateTime(dt) => Value::DateTime(*dt),
+                Value::String(s) => s
+                    .parse::<DateTime<Utc>>()
+                    .map(Value::DateTime)
+                    .unwrap_or(Value::Null),
+                _ => Value::Null,
+            },
+            _ => self.clone(),
+        }
     }
 }
 
-impl From<String> for Value { fn from(v: String) -> Self { Value::String(v) } }
-impl From<&str> for Value { fn from(v: &str) -> Self { Value::String(v.to_string()) } }
-impl From<bool> for Value { fn from(v: bool) -> Self { Value::Bool(v) } }
-impl From<f64> for Value { fn from(v: f64) -> Self { Value::Float(v) } }
-impl From<i64> for Value { fn from(v: i64) -> Self { Value::Int(v) } }
+impl From<String> for Value {
+    fn from(v: String) -> Self {
+        Value::String(v)
+    }
+}
+impl From<&str> for Value {
+    fn from(v: &str) -> Self {
+        Value::String(v.to_string())
+    }
+}
+impl From<bool> for Value {
+    fn from(v: bool) -> Self {
+        Value::Bool(v)
+    }
+}
+impl From<f64> for Value {
+    fn from(v: f64) -> Self {
+        Value::Float(v)
+    }
+}
+impl From<i64> for Value {
+    fn from(v: i64) -> Self {
+        Value::Int(v)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DurabilityMode {

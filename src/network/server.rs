@@ -56,8 +56,7 @@ impl BincodeServer {
             let mut buffer = vec![0u8; len];
             stream.read_exact(&mut buffer).await?;
 
-            let request: Request =
-                bincode::deserialize(&buffer).map_err(AqlError::from)?;
+            let request: Request = bincode::deserialize(&buffer).map_err(AqlError::from)?;
 
             let response = db.process_network_request(request).await;
 

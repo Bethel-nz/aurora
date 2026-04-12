@@ -1,4 +1,3 @@
-
 // Aurora Query Language (AURQL)
 // This grammar defines the complete syntax for AURQL including current
 // features and all planned future enhancements.
@@ -35,12 +34,18 @@ selection_set = {
 field = {
     fragment_spread |
     inline_fragment |
-    // Try special patterns BEFORE generic identifier patterns
+    lookup_selection |
     aggregate_with_alias |
     computed_field |
     window_function |
     special_field_selection |
-    alias_name? ~ identifier ~ arguments? ~ directives? ~ sub_selection?
+    // Generic field with optional alias
+    // Negative lookahead to ensure we don't swallow special function calls
+    alias_name? ~ !(special_keyword ~ "(") ~ (keyword | identifier) ~ arguments? ~ directives? ~ sub_selection?
+}
+
+special_keyword = {
+    "lookup" | "groupBy" | "windowFunc" | "downsample" | "aggregate"
 }
 
 // Aggregate with optional alias - tried BEFORE generic field pattern
@@ -51,14 +56,13 @@ aggregate_with_alias = {
 // Special field selections for advanced queries (without aggregate)
 special_field_selection = {
     alias_name? ~ (group_by_selection |
-    lookup_selection |
     page_info_selection |
     edges_selection |
     downsample_selection)
 }
 
 alias_name = {
-    identifier ~ ":"
+    (keyword | identifier) ~ ":"
 }
 
 sub_selection = {
@@ -76,6 +80,8 @@ mutation_set = {
 }
 
 mutation_field = {
+    fragment_spread |
+    inline_fragment |
     alias_name? ~ mutation_call ~ directives?
 }
 
@@ -94,7 +100,7 @@ mutation_call = {
 
 // Insert Operations
 insert_mutation = {
-    "insertInto" ~ "(" ~ insert_args ~ ")" ~ sub_selection?
+    ("insertInto" | "insert") ~ "(" ~ insert_args ~ ")" ~ sub_selection?
 }
 
 insert_args = {
@@ -129,7 +135,7 @@ upsert_args = {
 
 // Delete Operations
 delete_mutation = {
-    "deleteFrom" ~ "(" ~ delete_args ~ ")" ~ sub_selection?
+    ("deleteFrom" | "delete") ~ "(" ~ delete_args ~ ")" ~ sub_selection?
 }
 
 delete_args = {
@@ -186,6 +192,8 @@ subscription_set = {
 }
 
 subscription_field = {
+    fragment_spread |
+    inline_fragment |
     alias_name? ~ identifier ~ arguments? ~ directives? ~ sub_selection
 }
 
@@ -216,7 +224,7 @@ argument_list = {
 }
 
 argument = {
-    identifier ~ ":" ~ value
+    (keyword | identifier) ~ ":" ~ value
 }
 
 // Special structured arguments
@@ -259,6 +267,8 @@ filter_field_list = {
 }
 
 filter_field = {
+    fragment_spread |
+    inline_fragment |
     logical_operator |
     field_filter |
     nested_field_filter
@@ -285,7 +295,7 @@ not_operator = {
 
 // Field Filters
 field_filter = {
-    identifier ~ ":" ~ filter_condition
+    (keyword | identifier) ~ ":" ~ filter_condition
 }
 
 nested_field_filter = {
@@ -348,8 +358,6 @@ matches_operator = { "matches" ~ ":" ~ value }
 is_null_operator = { "isNull" ~ ":" ~ boolean }
 is_not_null_operator = { "isNotNull" ~ ":" ~ boolean }
 
-// Geospatial Operators (Removed)
-
 // Update Field Modifiers
 increment_operator = { "increment" ~ ":" ~ number }
 decrement_operator = { "decrement" ~ ":" ~ number }
@@ -360,6 +368,8 @@ add_to_set_operator = { "addToSet" ~ ":" ~ value }
 // COMPUTED FIELDS
 
 computed_field = {
+    fragment_spread |
+    inline_fragment |
     identifier ~ ":" ~ computed_expression
 }
 
@@ -368,7 +378,8 @@ computed_expression = {
     function_call |
     pipe_expression |
     sql_expression |
-    aggregate_function
+    aggregate_function |
+    expression
 }
 
 // Template String Syntax
@@ -458,8 +469,6 @@ aggregate_args = {
     "field" ~ ":" ~ string |
     "fields" ~ ":" ~ array
 }
-
-// Geospatial Functions (Removed)
 
 // EXPRESSIONS
 
@@ -571,13 +580,13 @@ directive_name = {
 
 // SPECIAL QUERIES
 
-
-
 aggregate_field_list = {
     aggregate_field ~ (","? ~ aggregate_field)*
 }
 
 aggregate_field = {
+    fragment_spread |
+    inline_fragment |
     aggregate_field_alias? ~ aggregate_field_value
 }
 
@@ -601,17 +610,19 @@ group_by_args = {
 }
 
 group_by_fields = {
-    group_by_field ~ ("," ~ group_by_field)*
+    group_by_field+
 }
 
 group_by_field = {
-    "key" | "keys" | "count" | "timestamp" |
-    "aggregate" | "nodes" | identifier
+    fragment_spread |
+    inline_fragment |
+    aggregate_with_alias |
+    alias_name? ~ ("key" | "keys" | "count" | "timestamp" | "aggregate" | "nodes" | identifier)
 }
 
 // Lookup (Manual Joins)
 lookup_selection = {
-    "lookup" ~ "(" ~ lookup_args ~ ")" ~ sub_selection?
+    alias_name? ~ "lookup" ~ "(" ~ lookup_args ~ ")" ~ sub_selection?
 }
 
 lookup_args = {
@@ -627,10 +638,12 @@ page_info_selection = {
 }
 
 page_info_fields = {
-    page_info_field ~ ("," ~ page_info_field)*
+    page_info_field+
 }
 
 page_info_field = {
+    fragment_spread |
+    inline_fragment |
     "hasNextPage" | "hasPreviousPage" | "startCursor" | "endCursor"
 }
 
@@ -644,6 +657,8 @@ edge_fields = {
 }
 
 edge_field = {
+    fragment_spread |
+    inline_fragment |
     "cursor" |
     ("node" ~ "{" ~ selection_set ~ "}")
 }
@@ -795,7 +810,7 @@ data_transform = {
 // ENHANCED FIELD DEFINITIONS
 
 field_definition = {
-    identifier ~ ":" ~ type_annotation ~ directives?
+    (keyword | identifier) ~ ":" ~ type_annotation ~ directives?
 }
 
 // INTROSPECTION
@@ -809,6 +824,8 @@ introspection_fields = {
 }
 
 introspection_field = {
+    fragment_spread |
+    inline_fragment |
     "collections" |
     "fields" |
     "relations" |
@@ -837,7 +854,9 @@ object_field_list = {
 }
 
 object_field = {
-    (identifier | string) ~ ":" ~ value
+    fragment_spread |
+    inline_fragment |
+    (keyword | identifier | string) ~ ":" ~ value
 }
 
 array = {
@@ -922,18 +941,14 @@ literal = {
     string | number | boolean | null
 }
 
-// SPECIAL TOKENS
-
-
-
 // Reserved keywords
 keyword = @{
     ("query" | "mutation" | "subscription" | "fragment" | "on" |
     "transaction" | "schema" | "collection" | "type" | "enum" | "scalar" |
-    "insertInto" | "insertMany" | "update" | "upsert" | "deleteFrom" |
+    "insert" | "insertInto" | "insertMany" | "update" | "upsert" | "delete" | "deleteFrom" |
     "enqueueJob" | "enqueueJobs" | "import" | "export" |
     "where" | "orderBy" | "limit" | "offset" | "first" | "last" |
-    "after" | "before" | "search" | "validate" | "lookup" |
+    "after" | "before" | "search" | "validate" |
     "aggregate" | "groupBy" | "windowFunc" | "downsample" |
     "and" | "or" | "not" |
     "eq" | "ne" | "gt" | "gte" | "lt" | "lte" |
@@ -944,5 +959,3 @@ keyword = @{
     "ASC" | "DESC") ~
     !(ASCII_ALPHANUMERIC | "_")
 }
-
-

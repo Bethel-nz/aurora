@@ -1,7 +1,7 @@
 use aurora_db::{Aurora, FieldType, Value};
-use std::time::Instant;
 use std::fs::File;
 use std::io::Write as IoWrite;
+use std::time::Instant;
 
 #[tokio::test]
 async fn test_reactive_extreme_benchmark() {
@@ -56,20 +56,34 @@ async fn test_reactive_extreme_benchmark() {
 
 async fn run_reactive_benchmark(num_updates: usize) -> (String, f64) {
     let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join(format!("reactive_bench_{}.db", num_updates));
-    
+    let db_path = temp_dir
+        .path()
+        .join(format!("reactive_bench_{}.db", num_updates));
+
     // Create a new DB instance for each scale to ensure isolation
-    let db: &'static Aurora = Box::leak(Box::new(
-        Aurora::open(db_path).await.unwrap()
-    ));
+    let db: &'static Aurora = Box::leak(Box::new(Aurora::open(db_path).await.unwrap()));
 
     let collection = "live_data";
-    db.new_collection(collection, vec![
-        ("val", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ] ).await.unwrap();
+    db.new_collection(
+        collection,
+        vec![(
+            "val",
+            aurora_db::types::FieldDefinition {
+                field_type: FieldType::SCALAR_INT,
+                unique: false,
+                indexed: false,
+                nullable: true,
+                validations: vec![],
+                relation: None,
+            },
+        )],
+    )
+    .await
+    .unwrap();
 
     // Create a watcher that matches everything
-    let mut watcher = db.query(collection)
+    let mut watcher = db
+        .query(collection)
         .filter(|f: &aurora_db::query::FilterBuilder| f.gt("val", -1))
         .watch()
         .await
@@ -80,25 +94,27 @@ async fn run_reactive_benchmark(num_updates: usize) -> (String, f64) {
         let mut count = 0;
         while let Some(_update) = watcher.next().await {
             count += 1;
-            if count >= num_updates { break; }
+            if count >= num_updates {
+                break;
+            }
         }
         count
     });
 
     let start = Instant::now();
-    
+
     // MAIN: Sender
     for i in 0..num_updates {
-        db.insert_into(collection, vec![
-            ("val", Value::Int(i as i64)),
-        ]).await.unwrap();
-        
+        db.insert_into(collection, vec![("val", Value::Int(i as i64))])
+            .await
+            .unwrap();
+
         // Pacing for high scales
         if num_updates >= 1000 && i % 100 == 0 {
             tokio::task::yield_now().await;
         }
     }
-    
+
     let total_received = receiver_handle.await.unwrap();
     let duration = start.elapsed();
     let tput = total_received as f64 / duration.as_secs_f64();

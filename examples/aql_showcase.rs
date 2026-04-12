@@ -11,7 +11,8 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 fn val(opt: Option<&Value>) -> String {
-    opt.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string())
+    opt.map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_string())
 }
 
 #[tokio::main]
@@ -22,7 +23,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Aurora::with_config(AuroraConfig {
         db_path: tmp.path().join("aurora_showcase"),
         ..Default::default()
-    }).await?;
+    })
+    .await?;
 
     // ─────────────────────────────────────────────────────────────────────────
     // 1. SCHEMA
@@ -31,7 +33,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ─────────────────────────────────────────────────────────────────────────
     println!("1. Defining schemas...");
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection users {
                 username:   String  @unique
@@ -41,9 +44,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 role:       String  @indexed
             }
         }
-    "#).await?;
+    "#,
+    )
+    .await?;
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection posts {
                 user_id:    String  @indexed
@@ -54,9 +60,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tags:       [String]
             }
         }
-    "#).await?;
+    "#,
+    )
+    .await?;
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection orders {
                 user_id:    String  @indexed
@@ -65,7 +74,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 items:      Int
             }
         }
-    "#).await?;
+    "#,
+    )
+    .await?;
 
     // ─────────────────────────────────────────────────────────────────────────
     // 2. REACTIVE WATCHER
@@ -74,7 +85,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ─────────────────────────────────────────────────────────────────────────
     println!("2. Setting up reactive watcher...");
 
-    let (watcher_ready_tx, watcher_ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let (watcher_ready_tx, watcher_ready_rx) =
+        tokio::sync::oneshot::channel::<Result<(), String>>();
     let watch_db = db.clone();
     tokio::spawn(async move {
         let mut watcher = match watch_db
@@ -120,15 +132,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("3. Inserting data...");
 
     let users = [
-        ("alice_wonder",  "alice@example.com",   28, true,  "admin"),
-        ("bob_builder",   "bob@example.com",      35, true,  "user"),
-        ("charlie_code",  "charlie@example.com",  42, true,  "moderator"),
-        ("diana_design",  "diana@example.com",    31, false, "user"),
-        ("eve_engineer",  "eve@example.com",      29, true,  "admin"),
+        ("alice_wonder", "alice@example.com", 28, true, "admin"),
+        ("bob_builder", "bob@example.com", 35, true, "user"),
+        ("charlie_code", "charlie@example.com", 42, true, "moderator"),
+        ("diana_design", "diana@example.com", 31, false, "user"),
+        ("eve_engineer", "eve@example.com", 29, true, "admin"),
     ];
 
     for (username, email, age, active, role) in &users {
-        db.execute(format!(r#"
+        db.execute(format!(
+            r#"
             mutation {{
                 insertInto(collection: "users", data: {{
                     username: "{username}",
@@ -138,19 +151,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     role:     "{role}"
                 }}) {{ id }}
             }}
-        "#)).await?;
+        "#
+        ))
+        .await?;
     }
 
     let posts = [
-        ("alice_wonder", "Welcome to Aurora",    150, true,  r#"["announcement","welcome"]"#),
-        ("alice_wonder", "Rust Performance",      89, true,  r#"["rust","performance"]"#),
-        ("bob_builder",  "Building Systems",      45, true,  r#"["architecture"]"#),
-        ("charlie_code", "Code Reviews",          23, false, r#"["best-practices"]"#),
-        ("eve_engineer", "Database Design",       78, true,  r#"["database","design"]"#),
+        (
+            "alice_wonder",
+            "Welcome to Aurora",
+            150,
+            true,
+            r#"["announcement","welcome"]"#,
+        ),
+        (
+            "alice_wonder",
+            "Rust Performance",
+            89,
+            true,
+            r#"["rust","performance"]"#,
+        ),
+        (
+            "bob_builder",
+            "Building Systems",
+            45,
+            true,
+            r#"["architecture"]"#,
+        ),
+        (
+            "charlie_code",
+            "Code Reviews",
+            23,
+            false,
+            r#"["best-practices"]"#,
+        ),
+        (
+            "eve_engineer",
+            "Database Design",
+            78,
+            true,
+            r#"["database","design"]"#,
+        ),
     ];
 
     for (user_id, title, views, published, tags) in &posts {
-        db.execute(format!(r#"
+        db.execute(format!(
+            r#"
             mutation {{
                 insertInto(collection: "posts", data: {{
                     user_id:   "{user_id}",
@@ -161,22 +207,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tags:      {tags}
                 }}) {{ id }}
             }}
-        "#)).await?;
+        "#
+        ))
+        .await?;
     }
 
     let orders = [
         ("alice_wonder", 299.99, "completed", 3),
-        ("bob_builder",   49.99, "pending",   1),
-        ("charlie_code", 149.99, "shipped",   2),
-        ("eve_engineer",  599.99, "processing", 5),
-        ("alice_wonder",  79.99, "completed",  1),
-        ("bob_builder",  199.99, "cancelled",  2),
-        ("charlie_code",  34.99, "completed",  1),
-        ("eve_engineer",  899.99, "pending",   7),
+        ("bob_builder", 49.99, "pending", 1),
+        ("charlie_code", 149.99, "shipped", 2),
+        ("eve_engineer", 599.99, "processing", 5),
+        ("alice_wonder", 79.99, "completed", 1),
+        ("bob_builder", 199.99, "cancelled", 2),
+        ("charlie_code", 34.99, "completed", 1),
+        ("eve_engineer", 899.99, "pending", 7),
     ];
 
     for (user_id, amount, status, items) in &orders {
-        db.execute(format!(r#"
+        db.execute(format!(
+            r#"
             mutation {{
                 insertInto(collection: "orders", data: {{
                     user_id: "{user_id}",
@@ -185,11 +234,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     items:   {items}
                 }}) {{ id }}
             }}
-        "#)).await?;
+        "#
+        ))
+        .await?;
     }
 
-    println!("  Inserted {} users, {} posts, {} orders",
-        users.len(), posts.len(), orders.len());
+    println!(
+        "  Inserted {} users, {} posts, {} orders",
+        users.len(),
+        posts.len(),
+        orders.len()
+    );
 
     // ─────────────────────────────────────────────────────────────────────────
     // 4. QUERIES — filters, orderBy, limit/offset
@@ -200,7 +255,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n4. Queries...");
 
     // Active admins older than 25, sorted by age descending
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         query {
             users(
                 where: {
@@ -217,7 +274,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 age
             }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
     if let ExecutionResult::Query(q) = result {
         println!("  Active admins >25: {} found", q.documents.len());
         for doc in &q.documents {
@@ -226,7 +285,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Published posts, top 3 by views
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         query {
             posts(
                 where:   { published: { eq: true } },
@@ -237,23 +298,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 views
             }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
     if let ExecutionResult::Query(q) = result {
         println!("  Top 3 published posts by views:");
         for doc in &q.documents {
-            println!("    {}  views={}", val(doc.data.get("title")), val(doc.data.get("views")));
+            println!(
+                "    {}  views={}",
+                val(doc.data.get("title")),
+                val(doc.data.get("views"))
+            );
         }
     }
 
     // Offset pagination — page 2 (skip 2, take 2)
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         query {
             users(orderBy: { age: ASC }, limit: 2, offset: 2) {
                 username
                 age
             }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
     if let ExecutionResult::Query(q) = result {
         println!("  Users page 2 (offset 2, limit 2):");
         for doc in &q.documents {
@@ -269,7 +340,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ─────────────────────────────────────────────────────────────────────────
     println!("\n5. Aggregations...");
 
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         query {
             orders {
                 aggregate {
@@ -281,7 +354,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
     if let ExecutionResult::Query(q) = result {
         if let Some(doc) = q.documents.first() {
             if let Some(aurora_db::types::Value::Object(agg)) = doc.data.get("aggregate") {
@@ -299,7 +374,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ─────────────────────────────────────────────────────────────────────────
     println!("\n6. GroupBy...");
 
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         query {
             users {
                 groupBy(field: "role") {
@@ -315,15 +392,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
     if let ExecutionResult::Query(q) = result {
         println!("  Users by role ({} groups):", q.documents.len());
         for doc in &q.documents {
-            println!("    role={}  count={}  avg_age={}",
+            println!(
+                "    role={}  count={}  avg_age={}",
                 val(doc.data.get("key")),
                 val(doc.data.get("count")),
-                val(doc.data.get("aggregate")
-                    .and_then(|v| if let Value::Object(m) = v { m.get("avg") } else { None }))
+                val(doc
+                    .data
+                    .get("aggregate")
+                    .and_then(|v| if let Value::Object(m) = v {
+                        m.get("avg")
+                    } else {
+                        None
+                    }))
             );
         }
     }
@@ -336,14 +422,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n7. Cursor pagination...");
 
     // Grab the ID of the first user to use as a cursor
-    let seed = db.execute(r#"
+    let seed = db
+        .execute(
+            r#"
         query { users(limit: 1, orderBy: { age: ASC }) { id age } }
-    "#).await?;
+    "#,
+        )
+        .await?;
 
     if let ExecutionResult::Query(q) = seed {
         if let Some(cursor_doc) = q.documents.first() {
             let cursor_id = &cursor_doc._sid;
-            let aql = format!(r#"
+            let aql = format!(
+                r#"
                 query {{
                     users(first: 3, after: "{cursor_id}", orderBy: {{ age: ASC }}) {{
                         edges {{
@@ -354,10 +445,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }}
                     }}
                 }}
-            "#);
+            "#
+            );
             let result = db.execute(aql).await?;
             if let ExecutionResult::Query(q) = result {
-                println!("  Connection query returned {} wrapper doc(s)", q.documents.len());
+                println!(
+                    "  Connection query returned {} wrapper doc(s)",
+                    q.documents.len()
+                );
             }
         }
     }
@@ -368,7 +463,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ─────────────────────────────────────────────────────────────────────────
     println!("\n8. Updates...");
 
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         mutation {
             update(
                 collection: "posts",
@@ -380,7 +477,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 views
             }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
     if let ExecutionResult::Mutation(m) = result {
         println!("  Updated {} post(s)", m.affected_count);
     }
@@ -391,27 +490,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ─────────────────────────────────────────────────────────────────────────
     println!("\n9. Deletes...");
 
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         mutation {
             deleteFrom(
                 collection: "orders",
                 where: { status: { eq: "cancelled" } }
             ) { id status }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
     if let ExecutionResult::Mutation(m) = result {
         println!("  Deleted {} cancelled order(s)", m.affected_count);
     }
 
     // Deactivate inactive users
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         mutation {
             deleteFrom(
                 collection: "users",
                 where: { active: { eq: false } }
             ) { id username }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
     if let ExecutionResult::Mutation(m) = result {
         println!("  Removed {} inactive user(s)", m.affected_count);
     }
@@ -424,7 +531,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ─────────────────────────────────────────────────────────────────────────
     println!("\n10. Subscription...");
 
-    let sub_result = db.execute(r#"
+    let sub_result = db
+        .execute(
+            r#"
         subscription {
             orders(where: { status: { eq: "pending" } }) {
                 user_id
@@ -432,14 +541,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 status
             }
         }
-    "#).await?;
+    "#,
+        )
+        .await?;
 
     if let ExecutionResult::Subscription(sub) = sub_result {
         println!("  Subscription id: {}", sub.subscription_id);
 
         if let Some(mut stream) = sub.stream {
             // Trigger an event so the stream has something to receive
-            db.execute(r#"
+            db.execute(
+                r#"
                 mutation {
                     insertInto(collection: "orders", data: {
                         user_id: "alice_wonder",
@@ -448,7 +560,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         items:   1
                     }) { id }
                 }
-            "#).await?;
+            "#,
+            )
+            .await?;
 
             match tokio::time::timeout(Duration::from_secs(2), stream.recv()).await {
                 Ok(Ok(event)) => println!("  Received event:\n{}", event),

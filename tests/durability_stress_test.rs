@@ -5,10 +5,10 @@ use tempfile::TempDir;
 #[tokio::test]
 async fn test_brutal_crash_recovery() {
     println!("\n=== DURABILITY TEST: Brutal Crash Recovery ===");
-    
+
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("durability.db");
-    
+
     let config = AuroraConfig {
         db_path: db_path.clone(),
         enable_wal: true,
@@ -21,22 +21,52 @@ async fn test_brutal_crash_recovery() {
     {
         println!("Opening database and inserting {} docs...", num_docs);
         let db = Aurora::with_config(config.clone()).await.unwrap();
-        
-        db.new_collection("users", vec![
-            ("email", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),
-            ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ]).await.unwrap();
+
+        db.new_collection(
+            "users",
+            vec![
+                (
+                    "email",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_STRING,
+                        unique: false,
+                        indexed: true,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+                (
+                    "age",
+                    aurora_db::types::FieldDefinition {
+                        field_type: FieldType::SCALAR_INT,
+                        unique: false,
+                        indexed: false,
+                        nullable: true,
+                        validations: vec![],
+                        relation: None,
+                    },
+                ),
+            ],
+        )
+        .await
+        .unwrap();
 
         for i in 0..num_docs {
-            db.insert_into("users", vec![
-                ("email", Value::String(format!("user{}@example.com", i))),
-                ("age", Value::Int(i as i64)),
-            ]).await.unwrap();
+            db.insert_into(
+                "users",
+                vec![
+                    ("email", Value::String(format!("user{}@example.com", i))),
+                    ("age", Value::Int(i as i64)),
+                ],
+            )
+            .await
+            .unwrap();
         }
-        
+
         // Wait briefly for the WAL Group Commit (10ms) but NOT for the 10s checkpoint
         tokio::time::sleep(Duration::from_millis(50)).await;
-        
+
         println!("CRASH! (Dropping database instance without graceful shutdown)");
         // Drop DB here. Since checkpoint is 10s, data MUST be in WAL, not in Hot/Cold.
     }
@@ -53,40 +83,69 @@ async fn test_brutal_crash_recovery() {
     // 3. Verification
     println!("Verifying data integrity...");
     let count = db.query("users").count().await.unwrap();
-    
+
     println!("Found {}/{} documents.", count, num_docs);
-    assert_eq!(count, num_docs, "WAL recovery failed to restore all documents!");
+    assert_eq!(
+        count, num_docs,
+        "WAL recovery failed to restore all documents!"
+    );
 
     // Spot check
-    let sample = db.query("users")
-        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("email", format!("user{}@example.com", num_docs / 2)))
-        .first_one().await.unwrap().unwrap();
-    
-    assert_eq!(sample.data.get("age"), Some(&Value::Int((num_docs / 2) as i64)));
+    let sample = db
+        .query("users")
+        .filter(|f: &aurora_db::query::FilterBuilder| {
+            f.eq("email", format!("user{}@example.com", num_docs / 2))
+        })
+        .first_one()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        sample.data.get("age"),
+        Some(&Value::Int((num_docs / 2) as i64))
+    );
     println!("SUCCESS: All data recovered and verified.");
 }
 
 #[tokio::test]
 async fn test_partial_wal_recovery() {
     println!("\n=== DURABILITY TEST: Partial WAL Recovery (Interrupted Write) ===");
-    
+
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("partial_durability.db");
-    
+
     let config = AuroraConfig {
         db_path: db_path.clone(),
         enable_wal: true,
-        cold_flush_interval_ms: Some(10000), 
+        cold_flush_interval_ms: Some(10000),
         ..Default::default()
     };
 
     // 1. Initial Load
     {
         let db = Aurora::with_config(config.clone()).await.unwrap();
-        db.new_collection("items", vec![("n", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] })]).await.unwrap();
-        
+        db.new_collection(
+            "items",
+            vec![(
+                "n",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            )],
+        )
+        .await
+        .unwrap();
+
         for i in 0..100 {
-            db.insert_into("items", vec![("n", Value::Int(i as i64))]).await.unwrap();
+            db.insert_into("items", vec![("n", Value::Int(i as i64))])
+                .await
+                .unwrap();
         }
         db.sync().await.unwrap();
         // Database is dropped here at the end of scope
@@ -102,9 +161,12 @@ async fn test_partial_wal_recovery() {
     println!("Corrupting WAL at: {:?}", wal_path);
     {
         use std::io::Write;
-        let mut file = std::fs::OpenOptions::new().append(true).open(&wal_path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&wal_path)
+            .unwrap();
         // Write a partial length (4 bytes) but no data, or just random garbage
-        file.write_all(&[0xDE, 0xAD, 0xBE, 0xEF]).unwrap(); 
+        file.write_all(&[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
         file.flush().unwrap();
     }
 
@@ -115,8 +177,11 @@ async fn test_partial_wal_recovery() {
     // 4. Verify
     let count = db.query("items").count().await.unwrap();
     println!("Found {} valid documents (Expected 100).", count);
-    
+
     // The recovery logic should stop at the first invalid entry and still return the valid ones
-    assert_eq!(count, 100, "Recovery should have restored all 100 valid documents despite trailing garbage!");
+    assert_eq!(
+        count, 100,
+        "Recovery should have restored all 100 valid documents despite trailing garbage!"
+    );
     println!("SUCCESS: Aurora gracefully handled partial WAL entry.");
 }

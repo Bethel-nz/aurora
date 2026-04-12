@@ -19,26 +19,42 @@ async fn make_db() -> (Aurora, tempfile::TempDir) {
 async fn test_migration_add_field_and_backfill() {
     let (db, _tmp) = make_db().await;
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection users {
                 name:  String!
                 email: String! @indexed
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
-    db.insert_into("users", vec![
-        ("name",  Value::String("Alice".into())),
-        ("email", Value::String("alice@example.com".into())),
-    ]).await.unwrap();
+    db.insert_into(
+        "users",
+        vec![
+            ("name", Value::String("Alice".into())),
+            ("email", Value::String("alice@example.com".into())),
+        ],
+    )
+    .await
+    .unwrap();
 
-    db.insert_into("users", vec![
-        ("name",  Value::String("Bob".into())),
-        ("email", Value::String("bob@example.com".into())),
-    ]).await.unwrap();
+    db.insert_into(
+        "users",
+        vec![
+            ("name", Value::String("Bob".into())),
+            ("email", Value::String("bob@example.com".into())),
+        ],
+    )
+    .await
+    .unwrap();
 
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         migrate {
             "v1.1.0": {
                 alter collection users {
@@ -49,7 +65,10 @@ async fn test_migration_add_field_and_backfill() {
                 }
             }
         }
-    "#).await.unwrap();
+    "#,
+        )
+        .await
+        .unwrap();
 
     if let ExecutionResult::Migration(m) = result {
         assert_eq!(m.steps_applied, 1);
@@ -62,10 +81,7 @@ async fn test_migration_add_field_and_backfill() {
     let users = db.get_all_collection("users").await.unwrap();
     assert_eq!(users.len(), 2);
     for user in &users {
-        assert_eq!(
-            user.data.get("role"),
-            Some(&Value::String("member".into())),
-        );
+        assert_eq!(user.data.get("role"), Some(&Value::String("member".into())),);
     }
 }
 
@@ -76,13 +92,17 @@ async fn test_migration_add_field_and_backfill() {
 async fn test_migration_idempotent() {
     let (db, _tmp) = make_db().await;
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection items {
                 title: String!
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
     let migration = r#"
         migrate {
@@ -101,13 +121,17 @@ async fn test_migration_idempotent() {
     if let ExecutionResult::Migration(m) = r1 {
         assert_eq!(m.steps_applied, 1);
         assert_eq!(m.status, "applied");
-    } else { panic!("Expected Migration result"); }
+    } else {
+        panic!("Expected Migration result");
+    }
 
     let r2 = db.execute(migration).await.unwrap();
     if let ExecutionResult::Migration(m) = r2 {
         assert_eq!(m.steps_applied, 0);
         assert_eq!(m.status, "skipped");
-    } else { panic!("Expected Migration result"); }
+    } else {
+        panic!("Expected Migration result");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,18 +141,25 @@ async fn test_migration_idempotent() {
 async fn test_migration_multiple_versions_incremental() {
     let (db, _tmp) = make_db().await;
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection products {
                 name: String!
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
-    db.insert_into("products", vec![("name", Value::String("Widget".into()))]).await.unwrap();
+    db.insert_into("products", vec![("name", Value::String("Widget".into()))])
+        .await
+        .unwrap();
 
     // Apply v1
-    db.execute(r#"
+    db.execute(
+        r#"
         migrate {
             "v1.0.0": {
                 alter collection products {
@@ -136,10 +167,15 @@ async fn test_migration_multiple_versions_incremental() {
                 }
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
     // Run v1 (already applied) + v2 (new)
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         migrate {
             "v1.0.0": {
                 alter collection products {
@@ -155,17 +191,25 @@ async fn test_migration_multiple_versions_incremental() {
                 }
             }
         }
-    "#).await.unwrap();
+    "#,
+        )
+        .await
+        .unwrap();
 
     if let ExecutionResult::Migration(m) = result {
         assert_eq!(m.steps_applied, 1, "only v2 should be applied");
         assert_eq!(m.version, "v2.0.0");
         assert_eq!(m.status, "applied");
-    } else { panic!("Expected Migration result"); }
+    } else {
+        panic!("Expected Migration result");
+    }
 
     let products = db.get_all_collection("products").await.unwrap();
     for p in &products {
-        assert_eq!(p.data.get("category"), Some(&Value::String("general".into())));
+        assert_eq!(
+            p.data.get("category"),
+            Some(&Value::String("general".into()))
+        );
     }
 }
 
@@ -176,7 +220,8 @@ async fn test_migration_multiple_versions_incremental() {
 async fn test_migration_data_with_where_filter() {
     let (db, _tmp) = make_db().await;
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection orders {
                 amount: Float!
@@ -184,18 +229,32 @@ async fn test_migration_data_with_where_filter() {
                 label:  String
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
-    db.insert_into("orders", vec![
-        ("amount", Value::Float(500.0)),
-        ("status", Value::String("completed".into())),
-    ]).await.unwrap();
-    db.insert_into("orders", vec![
-        ("amount", Value::Float(50.0)),
-        ("status", Value::String("pending".into())),
-    ]).await.unwrap();
+    db.insert_into(
+        "orders",
+        vec![
+            ("amount", Value::Float(500.0)),
+            ("status", Value::String("completed".into())),
+        ],
+    )
+    .await
+    .unwrap();
+    db.insert_into(
+        "orders",
+        vec![
+            ("amount", Value::Float(50.0)),
+            ("status", Value::String("pending".into())),
+        ],
+    )
+    .await
+    .unwrap();
 
-    db.execute(r#"
+    db.execute(
+        r#"
         migrate {
             "v1.0.0": {
                 migrate data in orders {
@@ -203,11 +262,18 @@ async fn test_migration_data_with_where_filter() {
                 }
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
     let orders = db.get_all_collection("orders").await.unwrap();
     for order in &orders {
-        let status = order.data.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = order
+            .data
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let label = order.data.get("label");
         if status == "completed" {
             assert_eq!(label, Some(&Value::String("done".into())));
@@ -224,16 +290,21 @@ async fn test_migration_data_with_where_filter() {
 async fn test_migration_drop_field() {
     let (db, _tmp) = make_db().await;
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection logs {
                 message:    String!
                 debug_info: String
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
-    db.execute(r#"
+    db.execute(
+        r#"
         migrate {
             "v1.0.0": {
                 alter collection logs {
@@ -241,7 +312,10 @@ async fn test_migration_drop_field() {
                 }
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
     let col = db.get_collection_definition("logs").unwrap();
     assert!(!col.fields.contains_key("debug_info"));
@@ -254,21 +328,31 @@ async fn test_migration_drop_field() {
 async fn test_migration_rename_field() {
     let (db, _tmp) = make_db().await;
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection events {
                 event_type: String!
                 ts:         String
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
-    db.insert_into("events", vec![
-        ("event_type", Value::String("click".into())),
-        ("ts",         Value::String("2026-01-01T00:00:00Z".into())),
-    ]).await.unwrap();
+    db.insert_into(
+        "events",
+        vec![
+            ("event_type", Value::String("click".into())),
+            ("ts", Value::String("2026-01-01T00:00:00Z".into())),
+        ],
+    )
+    .await
+    .unwrap();
 
-    db.execute(r#"
+    db.execute(
+        r#"
         migrate {
             "v1.0.0": {
                 alter collection events {
@@ -276,17 +360,32 @@ async fn test_migration_rename_field() {
                 }
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
     let col = db.get_collection_definition("events").unwrap();
-    assert!(!col.fields.contains_key("ts"), "old field name should be gone from schema");
-    assert!(col.fields.contains_key("timestamp"), "new field name should exist in schema");
+    assert!(
+        !col.fields.contains_key("ts"),
+        "old field name should be gone from schema"
+    );
+    assert!(
+        col.fields.contains_key("timestamp"),
+        "new field name should exist in schema"
+    );
 
     // Existing documents should also be updated
     let docs = db.get_all_collection("events").await.unwrap();
     for doc in &docs {
-        assert!(!doc.data.contains_key("ts"), "old key should be gone from document");
-        assert!(doc.data.contains_key("timestamp"), "new key should exist in document");
+        assert!(
+            !doc.data.contains_key("ts"),
+            "old key should be gone from document"
+        );
+        assert!(
+            doc.data.contains_key("timestamp"),
+            "new key should exist in document"
+        );
     }
 }
 
@@ -297,18 +396,30 @@ async fn test_migration_rename_field() {
 async fn test_migration_add_field_with_default() {
     let (db, _tmp) = make_db().await;
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection accounts {
                 username: String!
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
-    db.insert_into("accounts", vec![("username", Value::String("alice".into()))]).await.unwrap();
-    db.insert_into("accounts", vec![("username", Value::String("bob".into()))]).await.unwrap();
+    db.insert_into(
+        "accounts",
+        vec![("username", Value::String("alice".into()))],
+    )
+    .await
+    .unwrap();
+    db.insert_into("accounts", vec![("username", Value::String("bob".into()))])
+        .await
+        .unwrap();
 
-    db.execute(r#"
+    db.execute(
+        r#"
         migrate {
             "v1.0.0": {
                 alter collection accounts {
@@ -316,7 +427,10 @@ async fn test_migration_add_field_with_default() {
                 }
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
     let accounts = db.get_all_collection("accounts").await.unwrap();
     for acc in &accounts {
@@ -335,15 +449,21 @@ async fn test_migration_add_field_with_default() {
 async fn test_migration_numeric_version() {
     let (db, _tmp) = make_db().await;
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection notes {
                 body: String!
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         migrate {
             1: {
                 alter collection notes {
@@ -356,12 +476,17 @@ async fn test_migration_numeric_version() {
                 }
             }
         }
-    "#).await.unwrap();
+    "#,
+        )
+        .await
+        .unwrap();
 
     if let ExecutionResult::Migration(m) = result {
         assert_eq!(m.steps_applied, 2);
         assert_eq!(m.status, "applied");
-    } else { panic!("Expected Migration result"); }
+    } else {
+        panic!("Expected Migration result");
+    }
 
     let col = db.get_collection_definition("notes").unwrap();
     assert!(col.fields.contains_key("pinned"));
@@ -375,15 +500,20 @@ async fn test_migration_numeric_version() {
 async fn test_migration_history_queryable() {
     let (db, _tmp) = make_db().await;
 
-    db.execute(r#"
+    db.execute(
+        r#"
         schema {
             define collection things {
                 name: String!
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
-    db.execute(r#"
+    db.execute(
+        r#"
         migrate {
             "v1.0.0": {
                 alter collection things {
@@ -391,10 +521,15 @@ async fn test_migration_history_queryable() {
                 }
             }
         }
-    "#).await.unwrap();
+    "#,
+    )
+    .await
+    .unwrap();
 
     // The _migrations collection should be visible and contain the applied version
-    let result = db.execute(r#"
+    let result = db
+        .execute(
+            r#"
         query {
             _migrations {
                 version
@@ -402,7 +537,10 @@ async fn test_migration_history_queryable() {
                 applied_at
             }
         }
-    "#).await.unwrap();
+    "#,
+        )
+        .await
+        .unwrap();
 
     if let ExecutionResult::Query(q) = result {
         assert_eq!(q.documents.len(), 1);

@@ -76,9 +76,15 @@ pub enum SchemaOp {
 
 #[derive(Debug, Clone)]
 pub enum AlterAction {
-    AddField { field: FieldDef, default: Option<Value> },
+    AddField {
+        field: FieldDef,
+        default: Option<Value>,
+    },
     DropField(String),
-    RenameField { from: String, to: String },
+    RenameField {
+        from: String,
+        to: String,
+    },
     ModifyField(FieldDef),
 }
 
@@ -176,6 +182,8 @@ pub struct Field {
     pub arguments: Vec<Argument>,
     pub directives: Vec<Directive>,
     pub selection_set: Vec<Selection>,
+    /// Optional complex expression for computed fields
+    pub computed_expression: Option<Expression>,
 }
 
 /// Argument (key-value pair)
@@ -203,7 +211,7 @@ pub enum MutationOp {
     },
     InsertMany {
         collection: String,
-        data: Vec<Value>,
+        data: Value,
     },
     Update {
         collection: String,
@@ -279,7 +287,7 @@ pub enum Filter {
 }
 
 /// Value types
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
     Boolean(bool),
@@ -290,6 +298,48 @@ pub enum Value {
     Object(HashMap<String, Value>),
     Variable(String),
     Enum(String),
+}
+
+impl From<bool> for Value {
+    fn from(v: bool) -> Self {
+        Value::Boolean(v)
+    }
+}
+
+impl From<i32> for Value {
+    fn from(v: i32) -> Self {
+        Value::Int(v as i64)
+    }
+}
+
+impl From<i64> for Value {
+    fn from(v: i64) -> Self {
+        Value::Int(v)
+    }
+}
+
+impl From<f32> for Value {
+    fn from(v: f32) -> Self {
+        Value::Float(v as f64)
+    }
+}
+
+impl From<f64> for Value {
+    fn from(v: f64) -> Self {
+        Value::Float(v)
+    }
+}
+
+impl From<String> for Value {
+    fn from(v: String) -> Self {
+        Value::String(v)
+    }
+}
+
+impl From<&str> for Value {
+    fn from(v: &str) -> Self {
+        Value::String(v.to_string())
+    }
 }
 
 /// Fragment definition (top-level)
@@ -313,6 +363,7 @@ pub enum Selection {
     Field(Field),
     FragmentSpread(String),
     InlineFragment(InlineFragment),
+    ComputedField(ComputedField),
 }
 
 /// Inline fragment (... on Type { ... })
@@ -346,6 +397,7 @@ pub enum ComputedExpression {
         name: String,
         field: String,
     },
+    StandardExpression(Expression),
 }
 
 /// Pipe operation (for pipe expressions)

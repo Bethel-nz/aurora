@@ -525,7 +525,10 @@ mod tests {
             .insert("created_at".to_string(), Value::DateTime(ts));
 
         let result = expr.evaluate(&doc);
-        assert_eq!(result, Some(Value::DateTime(ts)),
-            "DateTime should survive a round-trip through value_to_dynamic / dynamic_to_value");
+        assert_eq!(
+            result,
+            Some(Value::DateTime(ts)),
+            "DateTime should survive a round-trip through value_to_dynamic / dynamic_to_value"
+        );
     }
 }

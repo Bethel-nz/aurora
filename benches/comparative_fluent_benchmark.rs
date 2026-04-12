@@ -116,9 +116,7 @@ fn bench_pure_insert(c: &mut Criterion) {
             || setup_sqlite(),
             |(conn, _temp)| {
                 let mut stmt = conn
-                    .prepare(
-                        "INSERT INTO users (name, email, age, active) VALUES (?1, ?2, ?3, ?4)",
-                    )
+                    .prepare("INSERT INTO users (name, email, age, active) VALUES (?1, ?2, ?3, ?4)")
                     .unwrap();
                 for i in 0..INSERT_COUNT {
                     stmt.execute(params![
@@ -203,7 +201,9 @@ fn bench_pure_query(c: &mut Criterion) {
             rt.block_on(async {
                 let _results = aurora_db
                     .query("users")
-                    .filter(|f: &aurora_db::query::FilterBuilder| f.gt("age", Value::Int(30)) & f.lt("age", Value::Int(40)))
+                    .filter(|f: &aurora_db::query::FilterBuilder| {
+                        f.gt("age", Value::Int(30)) & f.lt("age", Value::Int(40))
+                    })
                     .collect()
                     .await
                     .unwrap();

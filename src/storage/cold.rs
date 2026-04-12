@@ -97,7 +97,10 @@ impl ColdStore {
                 let bytes = ivec.as_ref();
                 if bytes.starts_with(&[ZSTD_MAGIC]) {
                     let decompressed = zstd::decode_all(&bytes[1..]).map_err(|e| {
-                        AqlError::new(ErrorCode::SerializationError, format!("Decompression failed: {}", e))
+                        AqlError::new(
+                            ErrorCode::SerializationError,
+                            format!("Decompression failed: {}", e),
+                        )
                     })?;
                     Ok(Some(decompressed))
                 } else {
@@ -111,9 +114,12 @@ impl ColdStore {
     pub fn set(&self, key: String, value: Vec<u8>) -> Result<()> {
         let mut compressed = vec![ZSTD_MAGIC];
         zstd::stream::copy_encode(&value[..], &mut compressed, 3).map_err(|e| {
-            AqlError::new(ErrorCode::SerializationError, format!("Compression failed: {}", e))
+            AqlError::new(
+                ErrorCode::SerializationError,
+                format!("Compression failed: {}", e),
+            )
         })?;
-        
+
         self.db.insert(key.as_bytes(), compressed)?;
         Ok(())
     }
@@ -129,7 +135,10 @@ impl ColdStore {
                 let bytes = value.as_ref();
                 let data = if bytes.starts_with(&[ZSTD_MAGIC]) {
                     zstd::decode_all(&bytes[1..]).map_err(|e| {
-                        AqlError::new(ErrorCode::SerializationError, format!("Decompression failed: {}", e))
+                        AqlError::new(
+                            ErrorCode::SerializationError,
+                            format!("Decompression failed: {}", e),
+                        )
                     })?
                 } else {
                     bytes.to_vec()
@@ -154,7 +163,10 @@ impl ColdStore {
                 let bytes = value.as_ref();
                 let data = if bytes.starts_with(&[ZSTD_MAGIC]) {
                     zstd::decode_all(&bytes[1..]).map_err(|e| {
-                        AqlError::new(ErrorCode::SerializationError, format!("Decompression failed: {}", e))
+                        AqlError::new(
+                            ErrorCode::SerializationError,
+                            format!("Decompression failed: {}", e),
+                        )
                     })?
                 } else {
                     bytes.to_vec()

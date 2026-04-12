@@ -49,7 +49,7 @@ impl JobQueue {
                 if !matches!(job.status, JobStatus::Completed) {
                     let job_id = key.strip_prefix(&prefix).unwrap_or(&key).to_string();
                     self.jobs.insert(job_id.clone(), job);
-                    
+
                     // Re-enqueue pending jobs into fast-path
                     let _ = self.pending_tx.send(job_id);
                 }
@@ -82,7 +82,7 @@ impl JobQueue {
     /// Dequeue next job (O(1) via channel instead of O(N) scan)
     pub async fn dequeue(&self) -> Result<Option<Job>> {
         let mut rx = self.pending_rx.lock().await;
-        
+
         while let Some(job_id) = rx.recv().await {
             // Check for shutdown sentinel
             if job_id == "__SHUTDOWN__" {
@@ -91,20 +91,22 @@ impl JobQueue {
 
             // Check if job is still valid and pending
             if let Some(mut job) = self.jobs.get_mut(&job_id) {
-                if matches!(job.status, JobStatus::Pending | JobStatus::Failed { .. }) && job.should_run() {
+                if matches!(job.status, JobStatus::Pending | JobStatus::Failed { .. })
+                    && job.should_run()
+                {
                     // Mark as running
                     job.mark_running();
                     let job_clone = job.clone();
                     drop(job);
-                    
+
                     // Persist state change (Pending -> Running)
                     self.update_job(&job_id, job_clone.clone()).await?;
-                    
+
                     return Ok(Some(job_clone));
                 }
             }
         }
-        
+
         Ok(None)
     }
 
@@ -149,7 +151,9 @@ impl JobQueue {
     /// Remove completed jobs (cleanup)
     pub async fn cleanup_completed(&self) -> Result<usize> {
         let mut removed = 0;
-        let to_remove: Vec<String> = self.jobs.iter()
+        let to_remove: Vec<String> = self
+            .jobs
+            .iter()
             .filter(|entry| matches!(entry.value().status, JobStatus::Completed))
             .map(|entry| entry.key().clone())
             .collect();
@@ -166,7 +170,11 @@ impl JobQueue {
     /// Get queue statistics
     pub async fn stats(&self) -> Result<super::QueueStats> {
         let mut stats = super::QueueStats {
-            pending: 0, running: 0, completed: 0, failed: 0, dead_letter: 0,
+            pending: 0,
+            running: 0,
+            completed: 0,
+            failed: 0,
+            dead_letter: 0,
         };
         for entry in self.jobs.iter() {
             match &entry.value().status {
@@ -182,7 +190,8 @@ impl JobQueue {
 
     /// Find zombie jobs
     pub async fn find_zombie_jobs(&self) -> Vec<String> {
-        self.jobs.iter()
+        self.jobs
+            .iter()
             .filter(|entry| entry.value().is_heartbeat_expired())
             .map(|entry| entry.key().clone())
             .collect()

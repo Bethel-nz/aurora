@@ -108,7 +108,11 @@ impl WorkerSystem {
         F: Fn(Job) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<()>> + Send + 'static,
     {
-        self.executor.read().await.register_handler(job_type, handler).await
+        self.executor
+            .read()
+            .await
+            .register_handler(job_type, handler)
+            .await
     }
 
     /// Start the worker system

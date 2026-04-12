@@ -1,6 +1,6 @@
 use aurora_db::Aurora;
-use aurora_db::types::{FieldDefinition, FieldType};
 use aurora_db::parser::executor::ExecutionResult;
+use aurora_db::types::{FieldDefinition, FieldType};
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -21,6 +21,7 @@ async fn test_unique_field_aql_equality() {
                     indexed: true,
                     nullable: false,
                     validations: vec![],
+                    relation: None,
                 },
             ),
             (
@@ -31,6 +32,7 @@ async fn test_unique_field_aql_equality() {
                     indexed: false,
                     nullable: true,
                     validations: vec![],
+                    relation: None,
                 },
             ),
         ],
@@ -62,8 +64,15 @@ async fn test_unique_field_aql_equality() {
     "#;
     let res = db.execute(select_query).await.unwrap();
     if let ExecutionResult::Query(q) = res {
-        assert_eq!(q.documents.len(), 1, "Expected 1 document to be returned via AQL for unique field lookup");
-        assert_eq!(q.documents[0].data.get("email").unwrap().as_str().unwrap(), "test@example.com");
+        assert_eq!(
+            q.documents.len(),
+            1,
+            "Expected 1 document to be returned via AQL for unique field lookup"
+        );
+        assert_eq!(
+            q.documents[0].data.get("email").unwrap().as_str().unwrap(),
+            "test@example.com"
+        );
     } else {
         panic!("Expected Query result");
     }

@@ -6,14 +6,14 @@ use tempfile::tempdir;
 async fn setup_products_db() -> (Aurora, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let path = dir.path().join("test_db_agg");
-    
+
     // Disable write buffering for immediate consistency in tests
     let config = AuroraConfig {
         db_path: path.clone(),
         enable_write_buffering: false,
         ..Default::default()
     };
-    
+
     let db = Aurora::with_config(config).await.unwrap();
 
     // Create collection
@@ -21,11 +21,16 @@ async fn setup_products_db() -> (Aurora, tempfile::TempDir) {
         "products",
         vec![
             ("name", aurora_db::types::FieldType::SCALAR_STRING, false),
-            ("category", aurora_db::types::FieldType::SCALAR_STRING, false),
+            (
+                "category",
+                aurora_db::types::FieldType::SCALAR_STRING,
+                false,
+            ),
             ("price", aurora_db::types::FieldType::SCALAR_FLOAT, false),
             ("stock", aurora_db::types::FieldType::SCALAR_INT, false),
         ] as Vec<(&str, aurora_db::types::FieldType, bool)>,
-    ).await
+    )
+    .await
     .unwrap();
 
     // Insert data
@@ -55,15 +60,18 @@ async fn test_aggregation_count() {
     let (db, _dir) = setup_products_db().await;
 
     // Total count
-    let result = db.execute(
-        r#"
+    let result = db
+        .execute(
+            r#"
         query {
             products {
                 total: aggregate { count }
             }
         }
         "#,
-    ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
     let query_res = match result {
         aurora_db::parser::executor::ExecutionResult::Query(r) => r,
@@ -73,7 +81,7 @@ async fn test_aggregation_count() {
     let doc = &query_res.documents[0];
     let total = doc.data.get("total").unwrap().as_object().unwrap();
     let count = total.get("count").unwrap().as_i64().unwrap();
-    
+
     // We inserted 6 products
     assert_eq!(count, 6);
 }
@@ -82,8 +90,9 @@ async fn test_aggregation_count() {
 async fn test_aggregation_sum_avg() {
     let (db, _dir) = setup_products_db().await;
 
-    let result = db.execute(
-        r#"
+    let result = db
+        .execute(
+            r#"
         query {
             products {
                 stats: aggregate {
@@ -93,7 +102,9 @@ async fn test_aggregation_sum_avg() {
             }
         }
         "#,
-    ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
     let query_res = match result {
         aurora_db::parser::executor::ExecutionResult::Query(r) => r,
@@ -102,7 +113,7 @@ async fn test_aggregation_sum_avg() {
 
     let doc = &query_res.documents[0];
     let stats = doc.data.get("stats").unwrap().as_object().unwrap();
-    
+
     // Sum stock: 50+100+30+200+50+75 = 505
     let total_stock = stats.get("totalStock").unwrap().as_f64().unwrap();
     assert_eq!(total_stock, 505.0); // sum returns float
@@ -117,8 +128,9 @@ async fn test_aggregation_min_max_filtered() {
     let (db, _dir) = setup_products_db().await;
 
     // Filter for Furniture only
-    let result = db.execute(
-        r#"
+    let result = db
+        .execute(
+            r#"
         query {
             products(where: { category: { eq: "Furniture" } }) {
                 ranges: aggregate {
@@ -128,7 +140,9 @@ async fn test_aggregation_min_max_filtered() {
             }
         }
         "#,
-    ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
     let query_res = match result {
         aurora_db::parser::executor::ExecutionResult::Query(r) => r,
@@ -137,7 +151,7 @@ async fn test_aggregation_min_max_filtered() {
 
     let doc = &query_res.documents[0];
     let ranges = doc.data.get("ranges").unwrap().as_object().unwrap();
-    
+
     // Furniture: Chair (150), Desk (300)
     let min_price = ranges.get("minPrice").unwrap().as_f64().unwrap();
     let max_price = ranges.get("maxPrice").unwrap().as_f64().unwrap();
@@ -151,8 +165,9 @@ async fn test_aggregation_empty_result() {
     let (db, _dir) = setup_products_db().await;
 
     // Filter for non-existent category
-    let result = db.execute(
-        r#"
+    let result = db
+        .execute(
+            r#"
         query {
             products(where: { category: { eq: "Cars" } }) {
                 agg: aggregate {
@@ -162,7 +177,9 @@ async fn test_aggregation_empty_result() {
             }
         }
         "#,
-    ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
     let query_res = match result {
         aurora_db::parser::executor::ExecutionResult::Query(r) => r,
@@ -171,7 +188,7 @@ async fn test_aggregation_empty_result() {
 
     let doc = &query_res.documents[0];
     let agg = doc.data.get("agg").unwrap().as_object().unwrap();
-    
+
     let count = agg.get("count").unwrap().as_i64().unwrap();
     assert_eq!(count, 0);
 

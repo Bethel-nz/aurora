@@ -19,7 +19,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: true,
                     indexed: true,
-                ..Default::default()
+                    ..Default::default()
                 },
             ),
             (
@@ -29,7 +29,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: false,
                     indexed: false,
-                ..Default::default()
+                    ..Default::default()
                 },
             ),
             (
@@ -39,7 +39,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: true,
                     indexed: true,
-                ..Default::default()
+                    ..Default::default()
                 },
             ),
             (
@@ -49,7 +49,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: true,
                     unique: false,
                     indexed: false,
-                ..Default::default()
+                    ..Default::default()
                 },
             ),
         ]
@@ -68,7 +68,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: true,
                     indexed: true,
-                ..Default::default()
+                    ..Default::default()
                 },
             ),
             (
@@ -78,7 +78,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: false,
                     indexed: false,
-                ..Default::default()
+                    ..Default::default()
                 },
             ),
             (
@@ -88,7 +88,7 @@ fn create_test_schema() -> InMemorySchema {
                     nullable: false,
                     unique: false,
                     indexed: false,
-                ..Default::default()
+                    ..Default::default()
                 },
             ),
         ]

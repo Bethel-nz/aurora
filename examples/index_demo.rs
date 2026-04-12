@@ -10,12 +10,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.new_collection(
         "users",
         vec![
-            ("id".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),
-            ("name".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("email".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),
-            ("age".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("department".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("salary".to_string(), aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_FLOAT, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            (
+                "id".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: true,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "name".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "email".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: true,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "age".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "department".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "salary".to_string(),
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_FLOAT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
     )
     .await?;
@@ -117,7 +177,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let results = db
         .query("users")
-        .filter(|f: &aurora_db::query::FilterBuilder| f.eq("department", "Sales") & f.gt("salary", Value::Float(75000.0)))
+        .filter(|f: &aurora_db::query::FilterBuilder| {
+            f.eq("department", "Sales") & f.gt("salary", Value::Float(75000.0))
+        })
         .order_by("salary", false)
         .limit(10)
         .collect()

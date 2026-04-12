@@ -1,12 +1,11 @@
 /// 1 Million Record Memory Test
 ///
 /// Tests Aurora's memory usage with 1 million documents
-
 use aurora_db::{Aurora, AuroraConfig, FieldType, Value};
-use std::sync::Arc;
-use std::time::Instant;
 use std::fs::File as StdFile;
 use std::io::Write as IoWrite;
+use std::sync::Arc;
+use std::time::Instant;
 
 #[tokio::test]
 async fn test_1_million_records_memory() {
@@ -23,19 +22,47 @@ async fn test_1_million_records_memory() {
 
     let db = Arc::new(Aurora::with_config(config).await.unwrap());
 
-    db.new_collection("million_test", vec![
-        ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ("index", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ] ).await.unwrap();
+    db.new_collection(
+        "million_test",
+        vec![
+            (
+                "data",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "index",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+        ],
+    )
+    .await
+    .unwrap();
 
     // Get initial process info
     let pid = std::process::id();
     let initial_rss = get_process_rss_mb(pid);
-    
+
     let mut report = String::new();
     report.push_str("==================================================\n");
     report.push_str("AURORA 1 MILLION RECORD MEMORY BENCHMARK\n");
-    report.push_str(&format!("Timestamp: {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
+    report.push_str(&format!(
+        "Timestamp: {}\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    ));
     report.push_str("==================================================\n\n");
     report.push_str(&format!("Initial RSS: {} MB\n\n", initial_rss));
 
@@ -57,10 +84,21 @@ async fn test_1_million_records_memory() {
         // Insert batch
         for i in 0..batch_size {
             let idx = batch * batch_size + i;
-            db.insert_into("million_test", vec![
-                ("data", Value::String(format!("Document number {} with some text content to make it realistic", idx))),
-                ("index", Value::Int(idx as i64)),
-            ]).await.unwrap();
+            db.insert_into(
+                "million_test",
+                vec![
+                    (
+                        "data",
+                        Value::String(format!(
+                            "Document number {} with some text content to make it realistic",
+                            idx
+                        )),
+                    ),
+                    ("index", Value::Int(idx as i64)),
+                ],
+            )
+            .await
+            .unwrap();
         }
 
         let duration = start.elapsed();
@@ -71,15 +109,27 @@ async fn test_1_million_records_memory() {
 
         let batch_info = format!(
             "Batch {:2}/{}: Inserted: {:7} | RSS: {:4} MB | Growth: {:4} MB | Tput: {:.0} docs/sec\n",
-            batch + 1, num_batches, total_docs, current_rss, growth, throughput
+            batch + 1,
+            num_batches,
+            total_docs,
+            current_rss,
+            growth,
+            throughput
         );
-        
+
         report.push_str(&batch_info);
         print!("{}", batch_info);
-        
+
         // Append to CSV log
-        csv_log.push_str(&format!("{},{},{:.3},{},{},{:.2}\n", 
-            batch + 1, total_docs, duration.as_secs_f64(), current_rss, growth, throughput));
+        csv_log.push_str(&format!(
+            "{},{},{:.3},{},{},{:.2}\n",
+            batch + 1,
+            total_docs,
+            duration.as_secs_f64(),
+            current_rss,
+            growth,
+            throughput
+        ));
 
         // Flush periodically
         if (batch + 1) % 5 == 0 {
@@ -118,18 +168,19 @@ async fn test_1_million_records_memory() {
     let report_filename = "memory_benchmark_report.txt";
     let mut f_txt = StdFile::create(report_filename).unwrap();
     f_txt.write_all(report.as_bytes()).unwrap();
-    
+
     // Save CSV log
     let log_filename = "memory_benchmark_batches.csv";
     let mut f_csv = StdFile::create(log_filename).unwrap();
     f_csv.write_all(csv_log.as_bytes()).unwrap();
-    
+
     println!("Results saved to:");
     println!("  - TEXT: {}", report_filename);
     println!("  - CSV:  {}", log_filename);
 
     // Query sample to verify
-    let sample = db.query("million_test")
+    let sample = db
+        .query("million_test")
         .filter(|f: &aurora_db::query::FilterBuilder| f.gt("index", Value::Int(900_000)))
         .limit(100)
         .collect()

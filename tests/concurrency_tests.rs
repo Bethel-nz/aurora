@@ -6,14 +6,16 @@
 /// - High contention scenarios
 /// - Read-after-write consistency
 /// - Concurrent collection operations
-
 use aurora_db::{Aurora, AuroraConfig, FieldType, Value};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::task::JoinSet;
 
-async fn create_test_db(path: std::path::PathBuf, enable_wal: bool) -> Result<Aurora, aurora_db::AqlError> {
+async fn create_test_db(
+    path: std::path::PathBuf,
+    enable_wal: bool,
+) -> Result<Aurora, aurora_db::AqlError> {
     let mut config = AuroraConfig::default();
     config.db_path = path;
     config.enable_wal = enable_wal;
@@ -30,15 +32,43 @@ async fn test_concurrent_same_key_writes() {
     let db_path = temp_dir.path().join("same_key.aurora");
     let db = Arc::new(create_test_db(db_path, true).await.unwrap());
 
-    db.new_collection("counter", vec![
-        ("key", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ] ).await.unwrap();
+    db.new_collection(
+        "counter",
+        vec![
+            (
+                "key",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "value",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+        ],
+    )
+    .await
+    .unwrap();
 
     let num_writers = 100;
     let writes_per_worker = 10;
 
-    println!("Spawning {} writers, each writing {} times to the same key", num_writers, writes_per_worker);
+    println!(
+        "Spawning {} writers, each writing {} times to the same key",
+        num_writers, writes_per_worker
+    );
 
     let start = Instant::now();
     let mut tasks = JoinSet::new();
@@ -49,12 +79,21 @@ async fn test_concurrent_same_key_writes() {
         tasks.spawn(async move {
             let mut successes = 0;
             for i in 0..writes_per_worker {
-                match db_clone.insert_into("counter", vec![
-                    ("key", Value::String("shared_counter".to_string())),
-                    ("value", Value::Int((writer_id * writes_per_worker + i) as i64)),
-                ]).await {
+                match db_clone
+                    .insert_into(
+                        "counter",
+                        vec![
+                            ("key", Value::String("shared_counter".to_string())),
+                            (
+                                "value",
+                                Value::Int((writer_id * writes_per_worker + i) as i64),
+                            ),
+                        ],
+                    )
+                    .await
+                {
                     Ok(_) => successes += 1,
-                    Err(_) => {},
+                    Err(_) => {}
                 }
             }
             successes
@@ -74,13 +113,20 @@ async fn test_concurrent_same_key_writes() {
     println!("  Duration: {:?}", duration);
     println!("  Successful writes: {}", total_successes);
     println!("  Expected: {}", num_writers * writes_per_worker);
-    println!("  Throughput: {:.2} writes/sec", total_successes as f64 / duration.as_secs_f64());
+    println!(
+        "  Throughput: {:.2} writes/sec",
+        total_successes as f64 / duration.as_secs_f64()
+    );
 
     // Verify data integrity
     let results = db.query("counter").collect().await.unwrap();
     println!("  Documents in DB: {}", results.len());
 
-    assert_eq!(total_successes, num_writers * writes_per_worker, "All writes should succeed");
+    assert_eq!(
+        total_successes,
+        num_writers * writes_per_worker,
+        "All writes should succeed"
+    );
     println!("SUCCESS: All concurrent writes to same key succeeded");
 }
 
@@ -92,20 +138,50 @@ async fn test_concurrent_reads_and_writes() {
     let db_path = temp_dir.path().join("concurrent_rw.aurora");
     let db = Arc::new(create_test_db(db_path, true).await.unwrap());
 
-    db.new_collection("rw_test", vec![
-        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), // Not unique!
-        ("data", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ] ).await.unwrap();
-    
+    db.new_collection(
+        "rw_test",
+        vec![
+            (
+                "id",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ), // Not unique!
+            (
+                "data",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+
     // Manually create index since new_collection above doesn't support "indexed but not unique" via the simplified tuple
     db.create_index("rw_test", "id").await.unwrap();
 
     // Pre-populate with some data
     for i in 0..50 {
-        db.insert_into("rw_test", vec![
-            ("id", Value::String(format!("init_{}", i))),
-            ("data", Value::String(format!("initial_data_{}", i))),
-        ]).await.unwrap();
+        db.insert_into(
+            "rw_test",
+            vec![
+                ("id", Value::String(format!("init_{}", i))),
+                ("data", Value::String(format!("initial_data_{}", i))),
+            ],
+        )
+        .await
+        .unwrap();
     }
 
     let num_writers = 50;
@@ -115,7 +191,10 @@ async fn test_concurrent_reads_and_writes() {
     let write_count = Arc::new(AtomicUsize::new(0));
     let read_count = Arc::new(AtomicUsize::new(0));
 
-    println!("Starting {} writers and {} readers", num_writers, num_readers);
+    println!(
+        "Starting {} writers and {} readers",
+        num_writers, num_readers
+    );
 
     let start = Instant::now();
     let mut tasks = JoinSet::new();
@@ -126,10 +205,16 @@ async fn test_concurrent_reads_and_writes() {
         let write_count_clone = Arc::clone(&write_count);
         tasks.spawn(async move {
             for j in 0..ops_per_worker {
-                db_clone.insert_into("rw_test", vec![
-                    ("id", Value::String(format!("writer_{}_{}", i, j))),
-                    ("data", Value::String(format!("data_{}_{}", i, j))),
-                ]).await.unwrap();
+                db_clone
+                    .insert_into(
+                        "rw_test",
+                        vec![
+                            ("id", Value::String(format!("writer_{}_{}", i, j))),
+                            ("data", Value::String(format!("data_{}_{}", i, j))),
+                        ],
+                    )
+                    .await
+                    .unwrap();
                 write_count_clone.fetch_add(1, Ordering::Relaxed);
             }
         });
@@ -142,9 +227,12 @@ async fn test_concurrent_reads_and_writes() {
         tasks.spawn(async move {
             for _ in 0..ops_per_worker {
                 // OPTIMIZED: Targeted point lookups instead of full table scans
-                let read_id = format!("init_{}", 0); 
-                let _ = db_clone.query("rw_test")
-                    .filter(|f: &aurora_db::query::FilterBuilder| f.eq("id", Value::String(read_id.clone())))
+                let read_id = format!("init_{}", 0);
+                let _ = db_clone
+                    .query("rw_test")
+                    .filter(|f: &aurora_db::query::FilterBuilder| {
+                        f.eq("id", Value::String(read_id.clone()))
+                    })
                     .collect()
                     .await
                     .unwrap();
@@ -165,15 +253,30 @@ async fn test_concurrent_reads_and_writes() {
     println!("  Writes completed: {}", total_writes);
     println!("  Reads completed: {}", total_reads);
     println!("  Total ops: {}", total_writes + total_reads);
-    println!("  Throughput: {:.2} ops/sec", (total_writes + total_reads) as f64 / duration.as_secs_f64());
+    println!(
+        "  Throughput: {:.2} ops/sec",
+        (total_writes + total_reads) as f64 / duration.as_secs_f64()
+    );
 
     // Verify final data integrity
     let final_results = db.query("rw_test").collect().await.unwrap();
     println!("  Final document count: {}", final_results.len());
 
-    assert_eq!(total_writes, num_writers * ops_per_worker, "All writes should complete");
-    assert_eq!(total_reads, num_readers * ops_per_worker, "All reads should complete");
-    assert_eq!(final_results.len(), 50 + total_writes, "Should have initial + written documents");
+    assert_eq!(
+        total_writes,
+        num_writers * ops_per_worker,
+        "All writes should complete"
+    );
+    assert_eq!(
+        total_reads,
+        num_readers * ops_per_worker,
+        "All reads should complete"
+    );
+    assert_eq!(
+        final_results.len(),
+        50 + total_writes,
+        "Should have initial + written documents"
+    );
 
     println!("SUCCESS: Concurrent reads and writes completed successfully");
 }
@@ -186,17 +289,45 @@ async fn test_read_after_write_consistency() {
     let db_path = temp_dir.path().join("raw_consistency.aurora");
     let db = Arc::new(create_test_db(db_path, true).await.unwrap());
 
-    db.new_collection("consistency_test", vec![
-        ("key", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-        ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ] ).await.unwrap();
-    
+    db.new_collection(
+        "consistency_test",
+        vec![
+            (
+                "key",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "value",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+
     db.create_index("consistency_test", "key").await.unwrap();
 
     let num_workers = 50;
     let ops_per_worker = 20;
 
-    println!("Testing read-after-write consistency with {} workers", num_workers);
+    println!(
+        "Testing read-after-write consistency with {} workers",
+        num_workers
+    );
 
     let start = Instant::now();
     let mut tasks = JoinSet::new();
@@ -211,15 +342,24 @@ async fn test_read_after_write_consistency() {
                 let value = worker_id * ops_per_worker + i;
 
                 // Write
-                let _doc_id = db_clone.insert_into("consistency_test", vec![
-                    ("key", Value::String(key.clone())),
-                    ("value", Value::Int(value as i64)),
-                ]).await.unwrap();
+                let _doc_id = db_clone
+                    .insert_into(
+                        "consistency_test",
+                        vec![
+                            ("key", Value::String(key.clone())),
+                            ("value", Value::Int(value as i64)),
+                        ],
+                    )
+                    .await
+                    .unwrap();
 
                 // Immediately read back
                 let key_clone = key.clone();
-                let results = db_clone.query("consistency_test")
-                    .filter(|f: &aurora_db::query::FilterBuilder| f.eq("key", Value::String(key_clone.clone())))
+                let results = db_clone
+                    .query("consistency_test")
+                    .filter(|f: &aurora_db::query::FilterBuilder| {
+                        f.eq("key", Value::String(key_clone.clone()))
+                    })
                     .collect()
                     .await
                     .unwrap();
@@ -255,7 +395,10 @@ async fn test_read_after_write_consistency() {
     println!("  Total operations: {}", num_workers * ops_per_worker);
     println!("  Consistency errors: {}", total_errors);
 
-    assert_eq!(total_errors, 0, "Read-after-write should always be consistent");
+    assert_eq!(
+        total_errors, 0,
+        "Read-after-write should always be consistent"
+    );
     println!("SUCCESS: Read-after-write consistency maintained");
 }
 
@@ -267,18 +410,46 @@ async fn test_high_contention_scenario() {
     let db_path = temp_dir.path().join("high_contention.aurora");
     let db = Arc::new(create_test_db(db_path, true).await.unwrap());
 
-    db.new_collection("hot_keys", vec![
-        ("key_id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), // NOT unique
-        ("counter", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ] ).await.unwrap();
-    
+    db.new_collection(
+        "hot_keys",
+        vec![
+            (
+                "key_id",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ), // NOT unique
+            (
+                "counter",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+
     db.create_index("hot_keys", "key_id").await.unwrap();
 
     let num_workers = 100;
     let num_hot_keys = 5; // Small number of keys = high contention
     let ops_per_worker = 50;
 
-    println!("Testing high contention: {} workers accessing {} hot keys", num_workers, num_hot_keys);
+    println!(
+        "Testing high contention: {} workers accessing {} hot keys",
+        num_workers, num_hot_keys
+    );
 
     let start = Instant::now();
     let mut tasks = JoinSet::new();
@@ -294,10 +465,16 @@ async fn test_high_contention_scenario() {
                 let key = format!("hot_key_{}", key_idx);
 
                 // Write to this hot key
-                db_clone.insert_into("hot_keys", vec![
-                    ("key_id", Value::String(key)),
-                    ("counter", Value::Int(worker_id as i64)),
-                ]).await.unwrap();
+                db_clone
+                    .insert_into(
+                        "hot_keys",
+                        vec![
+                            ("key_id", Value::String(key)),
+                            ("counter", Value::Int(worker_id as i64)),
+                        ],
+                    )
+                    .await
+                    .unwrap();
 
                 ops += 1;
             }
@@ -318,7 +495,10 @@ async fn test_high_contention_scenario() {
     println!("Results:");
     println!("  Duration: {:?}", duration);
     println!("  Total operations: {}", total_ops);
-    println!("  Throughput: {:.2} ops/sec", total_ops as f64 / duration.as_secs_f64());
+    println!(
+        "  Throughput: {:.2} ops/sec",
+        total_ops as f64 / duration.as_secs_f64()
+    );
 
     // Count writes per hot key
     let all_docs = db.query("hot_keys").collect().await.unwrap();
@@ -347,12 +527,47 @@ async fn test_concurrent_query_operations() {
     let db_path = temp_dir.path().join("concurrent_queries.aurora");
     let db = Arc::new(create_test_db(db_path, true).await.unwrap());
 
-    db.new_collection("products", vec![
-        ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), 
-        ("price", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),  
-        ("category", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), 
-    ] ).await.unwrap();
-    
+    db.new_collection(
+        "products",
+        vec![
+            (
+                "name",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "price",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "category",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+
     db.create_index("products", "name").await.unwrap();
     db.create_index("products", "price").await.unwrap();
     db.create_index("products", "category").await.unwrap();
@@ -360,11 +575,16 @@ async fn test_concurrent_query_operations() {
     // Pre-populate with diverse data
     let categories = ["electronics", "books", "clothing", "food", "toys"];
     for i in 0..1000 {
-        db.insert_into("products", vec![
-            ("name", Value::String(format!("product_{}", i))),
-            ("price", Value::Int((i % 100) as i64)),
-            ("category", Value::String(categories[i % 5].to_string())),
-        ]).await.unwrap();
+        db.insert_into(
+            "products",
+            vec![
+                ("name", Value::String(format!("product_{}", i))),
+                ("price", Value::Int((i % 100) as i64)),
+                ("category", Value::String(categories[i % 5].to_string())),
+            ],
+        )
+        .await
+        .unwrap();
     }
 
     println!("Pre-populated with 1000 products");
@@ -388,31 +608,41 @@ async fn test_concurrent_query_operations() {
                 let _ = match query_type {
                     0 => {
                         // Range query on price
-                        db_clone.query("products")
-                            .filter(|f: &aurora_db::query::FilterBuilder| f.gt("price", Value::Int(50)))
+                        db_clone
+                            .query("products")
+                            .filter(|f: &aurora_db::query::FilterBuilder| {
+                                f.gt("price", Value::Int(50))
+                            })
                             .collect()
                             .await
-                    },
+                    }
                     1 => {
                         // Category filter
-                        db_clone.query("products")
-                            .filter(|f: &aurora_db::query::FilterBuilder| f.eq("category", Value::String("electronics".to_string())))
+                        db_clone
+                            .query("products")
+                            .filter(|f: &aurora_db::query::FilterBuilder| {
+                                f.eq("category", Value::String("electronics".to_string()))
+                            })
                             .collect()
                             .await
-                    },
+                    }
                     2 => {
                         // Sorted query
-                        db_clone.query("products")
+                        db_clone
+                            .query("products")
                             .order_by("price", true)
                             .limit(10)
                             .collect()
                             .await
-                    },
+                    }
                     _ => {
                         // Targeted lookup instead of full scan
                         let read_id = format!("product_{}", 0);
-                        db_clone.query("products")
-                            .filter(move |f: &aurora_db::query::FilterBuilder| f.eq("name", Value::String(read_id.clone())))
+                        db_clone
+                            .query("products")
+                            .filter(move |f: &aurora_db::query::FilterBuilder| {
+                                f.eq("name", Value::String(read_id.clone()))
+                            })
                             .collect()
                             .await
                     }
@@ -437,7 +667,10 @@ async fn test_concurrent_query_operations() {
     println!("Results:");
     println!("  Duration: {:?}", duration);
     println!("  Total queries: {}", total_queries);
-    println!("  Query throughput: {:.2} queries/sec", total_queries as f64 / duration.as_secs_f64());
+    println!(
+        "  Query throughput: {:.2} queries/sec",
+        total_queries as f64 / duration.as_secs_f64()
+    );
 
     assert_eq!(total_queries, num_query_workers * queries_per_worker);
     println!("SUCCESS: Concurrent queries completed successfully");
@@ -449,15 +682,40 @@ async fn test_mixed_workload_stress() {
 
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("mixed_workload.aurora");
-    
+
     // TEST CHANGE: Disable WAL for max speed during benchmark
     let db = Arc::new(create_test_db(db_path, false).await.unwrap());
 
-    db.new_collection("mixed", vec![
-        ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }), 
-        ("value", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-    ] ).await.unwrap();
-    
+    db.new_collection(
+        "mixed",
+        vec![
+            (
+                "id",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "value",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+
     // INDEX ENABLED
     db.create_index("mixed", "id").await.unwrap();
 
@@ -468,7 +726,10 @@ async fn test_mixed_workload_stress() {
     let read_count = Arc::new(AtomicUsize::new(0));
     let update_count = Arc::new(AtomicUsize::new(0));
 
-    println!("Mixed workload: {} workers doing random operations (WAL DISABLED, INDEX ENABLED)", num_workers);
+    println!(
+        "Mixed workload: {} workers doing random operations (WAL DISABLED, INDEX ENABLED)",
+        num_workers
+    );
 
     let start = Instant::now();
     let mut tasks = JoinSet::new();
@@ -486,25 +747,38 @@ async fn test_mixed_workload_stress() {
 
                 if op_type < 5 {
                     // 50% writes
-                    let _ = db_clone.insert_into("mixed", vec![
-                        ("id", Value::String(format!("w_{}_{}", worker_id, i))),
-                        ("value", Value::Int((worker_id * ops_per_worker + i) as i64)),
-                    ]).await;
+                    let _ = db_clone
+                        .insert_into(
+                            "mixed",
+                            vec![
+                                ("id", Value::String(format!("w_{}_{}", worker_id, i))),
+                                ("value", Value::Int((worker_id * ops_per_worker + i) as i64)),
+                            ],
+                        )
+                        .await;
                     write_count.fetch_add(1, Ordering::Relaxed);
                 } else if op_type < 8 {
                     // 30% reads - OPTIMIZED: Targeted lookup with index
                     let read_id = format!("w_{}_{}", worker_id, i.saturating_sub(1));
-                    let _ = db_clone.query("mixed")
-                        .filter(move |f: &aurora_db::query::FilterBuilder| f.eq("id", Value::String(read_id.clone())))
+                    let _ = db_clone
+                        .query("mixed")
+                        .filter(move |f: &aurora_db::query::FilterBuilder| {
+                            f.eq("id", Value::String(read_id.clone()))
+                        })
                         .collect()
                         .await;
                     read_count.fetch_add(1, Ordering::Relaxed);
                 } else {
                     // 20% updates (insert with potential collision)
-                    let _ = db_clone.insert_into("mixed", vec![
-                        ("id", Value::String(format!("shared_{}", i % 10))),
-                        ("value", Value::Int((worker_id + i) as i64)),
-                    ]).await;
+                    let _ = db_clone
+                        .insert_into(
+                            "mixed",
+                            vec![
+                                ("id", Value::String(format!("shared_{}", i % 10))),
+                                ("value", Value::Int((worker_id + i) as i64)),
+                            ],
+                        )
+                        .await;
                     update_count.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -525,7 +799,10 @@ async fn test_mixed_workload_stress() {
     println!("  Reads: {}", reads);
     println!("  Updates: {}", updates);
     println!("  Total ops: {}", total_ops);
-    println!("  Throughput: {:.2} ops/sec", total_ops as f64 / duration.as_secs_f64());
+    println!(
+        "  Throughput: {:.2} ops/sec",
+        total_ops as f64 / duration.as_secs_f64()
+    );
 
     let final_count = db.query("mixed").collect().await.unwrap().len();
     println!("  Final document count: {}", final_count);

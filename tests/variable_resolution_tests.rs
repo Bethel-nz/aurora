@@ -1,6 +1,6 @@
+use aurora_db::parser::executor::ExecutionResult;
 use aurora_db::types::{DurabilityMode, FieldType};
 use aurora_db::{Aurora, AuroraConfig};
-use aurora_db::parser::executor::ExecutionResult;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -57,11 +57,15 @@ async fn test_variable_filters_query_results() {
         }
     "#;
 
-    let result = db.execute((aql, json!({ "target": "admin" }))).await.unwrap();
+    let result = db
+        .execute((aql, json!({ "target": "admin" })))
+        .await
+        .unwrap();
 
     if let ExecutionResult::Query(res) = result {
         assert_eq!(
-            res.documents.len(), 2,
+            res.documents.len(),
+            2,
             "Expected 2 admins, got {}",
             res.documents.len()
         );
@@ -195,9 +199,11 @@ async fn test_variable_in_lookup_where_filter() {
 
     // Insert users — one active, one inactive
     let alice_result = db
-        .execute(r#"mutation {
+        .execute(
+            r#"mutation {
             insertInto(collection: "users", data: { name: "Alice", active: true }) { id }
-        }"#)
+        }"#,
+        )
         .await
         .unwrap();
 
@@ -208,9 +214,11 @@ async fn test_variable_in_lookup_where_filter() {
     };
 
     let bob_result = db
-        .execute(r#"mutation {
+        .execute(
+            r#"mutation {
             insertInto(collection: "users", data: { name: "Bob", active: false }) { id }
-        }"#)
+        }"#,
+        )
         .await
         .unwrap();
 
@@ -274,7 +282,10 @@ async fn test_variable_in_lookup_where_filter() {
             }
         }
         // Only Alice is active, so exactly one order has a non-empty user array
-        assert_eq!(active_user_count, 1, "Exactly one active user should appear across all lookups");
+        assert_eq!(
+            active_user_count, 1,
+            "Exactly one active user should appear across all lookups"
+        );
     } else {
         panic!("Expected Query result");
     }
@@ -376,10 +387,7 @@ async fn test_same_variable_reused_in_filter() {
     "#;
 
     // Should find exactly "rust" (not "rust-async")
-    let result = db
-        .execute((aql, json!({ "t": "rust" })))
-        .await
-        .unwrap();
+    let result = db.execute((aql, json!({ "t": "rust" }))).await.unwrap();
 
     if let ExecutionResult::Query(res) = result {
         assert_eq!(res.documents.len(), 1);

@@ -170,11 +170,8 @@ impl HotStore {
     }
 
     pub fn set(&self, key: Arc<String>, value: Arc<Vec<u8>>, ttl: Option<Duration>) {
-        let cached = CachedValue {
-            data: value,
-            ttl,
-        };
-        // Moka requires String keys, so we deref the Arc<String>. 
+        let cached = CachedValue { data: value, ttl };
+        // Moka requires String keys, so we deref the Arc<String>.
         // This is a small clone (just the key string), unavoidable with Moka, but cheap.
         self.cache.insert(key.to_string(), cached);
     }
@@ -266,7 +263,11 @@ mod tests {
     #[test]
     fn test_basic_get_set() {
         let store = HotStore::new_with_size_limit(1);
-        store.set(Arc::new("key1".to_string()), Arc::new(vec![1, 2, 3, 4]), None);
+        store.set(
+            Arc::new("key1".to_string()),
+            Arc::new(vec![1, 2, 3, 4]),
+            None,
+        );
 
         let result = store.get("key1");
         assert!(result.is_some());

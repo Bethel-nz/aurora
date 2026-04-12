@@ -49,15 +49,20 @@
 
 // Re-export primary types and modules
 pub use crate::db::Aurora;
-pub use crate::error::{AqlError, Result};
-pub use crate::query::{QueryBuilder, SimpleQueryBuilder, SearchBuilder};
+pub use crate::error::{AqlError, ErrorCode, Result};
+pub use crate::query::{QueryBuilder, SearchBuilder, SimpleQueryBuilder};
 pub use types::{
     AuroraConfig, ColdStoreMode, Collection, Document, DurabilityMode, FieldDefinition, FieldType,
     Value,
 };
 
 pub use crate::parser::validator::{
-    ErrorCode, InMemorySchema, SchemaProvider, ValidationError, ValidationResult, validate_document,
+    InMemorySchema, SchemaProvider, ValidationError, ValidationResult, validate_document,
+};
+
+// Re-export AQL execution types for convenience
+pub use crate::parser::executor::{
+    ExecutionResult, MigrationResult, MutationResult, QueryResult, SchemaResult, SubscriptionResult,
 };
 
 // Re-export commonly used storage types
@@ -79,6 +84,8 @@ pub mod computed;
 pub mod db;
 pub mod error;
 pub mod index;
+#[macro_use]
+pub mod macros;
 pub mod network;
 pub mod parser; // AQL parser module
 pub mod pubsub;

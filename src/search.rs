@@ -53,15 +53,19 @@ use unicode_segmentation::UnicodeSegmentation;
 pub fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     let s1: Vec<char> = s1.chars().collect();
     let s2: Vec<char> = s2.chars().collect();
-    if s1.is_empty() { return s2.len(); }
-    if s2.is_empty() { return s1.len(); }
+    if s1.is_empty() {
+        return s2.len();
+    }
+    if s2.is_empty() {
+        return s1.len();
+    }
     let mut prev: Vec<usize> = (0..=s2.len()).collect();
     let mut curr = vec![0usize; s2.len() + 1];
     for i in 1..=s1.len() {
         curr[0] = i;
         for j in 1..=s2.len() {
-            let cost = if s1[i-1] == s2[j-1] { 0 } else { 1 };
-            curr[j] = (curr[j-1] + 1).min((prev[j] + 1).min(prev[j-1] + cost));
+            let cost = if s1[i - 1] == s2[j - 1] { 0 } else { 1 };
+            curr[j] = (curr[j - 1] + 1).min((prev[j] + 1).min(prev[j - 1] + cost));
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -522,53 +526,53 @@ impl FullTextIndex {
 
         // Use FST for efficient fuzzy matching
         if let Ok(fst_guard) = self.term_fst.read()
-            && let Some(ref fst) = *fst_guard {
-                for query_term in query_terms {
-                    // Create Levenshtein automaton for efficient fuzzy matching
-                    if let Ok(lev) = Levenshtein::new(&query_term, max_distance as u32) {
-                        let mut stream = fst.search(lev).into_stream();
+            && let Some(ref fst) = *fst_guard
+        {
+            for query_term in query_terms {
+                // Create Levenshtein automaton for efficient fuzzy matching
+                if let Ok(lev) = Levenshtein::new(&query_term, max_distance as u32) {
+                    let mut stream = fst.search(lev).into_stream();
 
-                        // Process all fuzzy matches
-                        while let Some(term_bytes) = stream.next() {
-                            let term = String::from_utf8_lossy(term_bytes);
+                    // Process all fuzzy matches
+                    while let Some(term_bytes) = stream.next() {
+                        let term = String::from_utf8_lossy(term_bytes);
 
-                            if let Some(term_entry) = self.index.get(term.as_ref()) {
-                                // Calculate distance penalty
-                                let distance = self.levenshtein_distance(&query_term, &term) as f32;
-                                let distance_penalty = 1.0 / (1.0 + distance * 0.3); // Gentle penalty
+                        if let Some(term_entry) = self.index.get(term.as_ref()) {
+                            // Calculate distance penalty
+                            let distance = self.levenshtein_distance(&query_term, &term) as f32;
+                            let distance_penalty = 1.0 / (1.0 + distance * 0.3); // Gentle penalty
 
-                                // Calculate BM25 score with distance penalty
-                                let doc_freq = term_entry.len() as f32;
-                                let idf = if doc_freq >= total_docs {
-                                    // When all documents contain the term, use a small positive value
-                                    0.1
-                                } else {
-                                    ((total_docs - doc_freq + 0.5) / (doc_freq + 0.5))
-                                        .ln()
-                                        .max(0.1)
-                                };
+                            // Calculate BM25 score with distance penalty
+                            let doc_freq = term_entry.len() as f32;
+                            let idf = if doc_freq >= total_docs {
+                                // When all documents contain the term, use a small positive value
+                                0.1
+                            } else {
+                                ((total_docs - doc_freq + 0.5) / (doc_freq + 0.5))
+                                    .ln()
+                                    .max(0.1)
+                            };
 
-                                for (doc_id, tf) in term_entry.iter() {
-                                    let doc_len = self
-                                        .doc_lengths
-                                        .get(doc_id)
-                                        .map(|entry| *entry.value() as f32)
-                                        .unwrap_or(avg_doc_len);
+                            for (doc_id, tf) in term_entry.iter() {
+                                let doc_len = self
+                                    .doc_lengths
+                                    .get(doc_id)
+                                    .map(|entry| *entry.value() as f32)
+                                    .unwrap_or(avg_doc_len);
 
-                                    let tf_numerator = tf * (self.k1 + 1.0);
-                                    let tf_denominator = tf
-                                        + self.k1
-                                            * (1.0 - self.b + self.b * (doc_len / avg_doc_len));
-                                    let tf_bm25 = tf_numerator / tf_denominator;
+                                let tf_numerator = tf * (self.k1 + 1.0);
+                                let tf_denominator = tf
+                                    + self.k1 * (1.0 - self.b + self.b * (doc_len / avg_doc_len));
+                                let tf_bm25 = tf_numerator / tf_denominator;
 
-                                    let score = tf_bm25 * idf * distance_penalty;
-                                    *scores.entry(doc_id.clone()).or_insert(0.0) += score;
-                                }
+                                let score = tf_bm25 * idf * distance_penalty;
+                                *scores.entry(doc_id.clone()).or_insert(0.0) += score;
                             }
                         }
                     }
                 }
             }
+        }
 
         // Sort by relevance score
         let mut results: Vec<_> = scores.into_iter().collect();
@@ -633,9 +637,10 @@ impl FullTextIndex {
             sorted_terms.sort();
 
             if let Ok(fst) = fst::Set::from_iter(sorted_terms)
-                && let Ok(mut fst_guard) = self.term_fst.write() {
-                    *fst_guard = Some(fst);
-                }
+                && let Ok(mut fst_guard) = self.term_fst.write()
+            {
+                *fst_guard = Some(fst);
+            }
         }
     }
 

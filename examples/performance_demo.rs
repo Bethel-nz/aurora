@@ -14,36 +14,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test 2: Read-optimized configuration (large hot cache, no write buffer)
     println!("\nTest 2: Read-Optimized Configuration");
-    test_config("Read-Optimized", AuroraConfig {
-        hot_cache_size_mb: 256,
-        enable_write_buffering: false,
-        ..Default::default()
-    }).await?;
+    test_config(
+        "Read-Optimized",
+        AuroraConfig {
+            hot_cache_size_mb: 256,
+            enable_write_buffering: false,
+            ..Default::default()
+        },
+    )
+    .await?;
 
     // Test 3: Write-optimized configuration (write buffering enabled)
     println!("\nTest 3: Write-Optimized Configuration (Write Buffering Enabled)");
-    test_config("Write-Optimized", AuroraConfig {
-        enable_write_buffering: true,
-        write_buffer_size: 10_000,
-        hot_cache_size_mb: 64,
-        ..Default::default()
-    }).await?;
+    test_config(
+        "Write-Optimized",
+        AuroraConfig {
+            enable_write_buffering: true,
+            write_buffer_size: 10_000,
+            hot_cache_size_mb: 64,
+            ..Default::default()
+        },
+    )
+    .await?;
 
     // Test 4: Real-time configuration (small cache, no buffering for low latency)
     println!("\nTest 4: Real-Time Configuration");
-    test_config("Realtime", AuroraConfig {
-        enable_write_buffering: false,
-        hot_cache_size_mb: 32,
-        ..Default::default()
-    }).await?;
+    test_config(
+        "Realtime",
+        AuroraConfig {
+            enable_write_buffering: false,
+            hot_cache_size_mb: 32,
+            ..Default::default()
+        },
+    )
+    .await?;
 
     // Test 5: Low memory configuration
     println!("\nTest 5: Low-Memory Configuration");
-    test_config("Low-Memory", AuroraConfig {
-        hot_cache_size_mb: 8,
-        enable_write_buffering: false,
-        ..Default::default()
-    }).await?;
+    test_config(
+        "Low-Memory",
+        AuroraConfig {
+            hot_cache_size_mb: 8,
+            enable_write_buffering: false,
+            ..Default::default()
+        },
+    )
+    .await?;
 
     println!("\nAll tests completed successfully!");
     println!("\n Key Improvements:");
@@ -68,13 +84,64 @@ async fn test_config(
     db.new_collection(
         "users",
         vec![
-            ("id", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),
-            ("name", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("email", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_STRING, unique: false, indexed: true, nullable: true, validations: vec![] }),
-            ("age", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_INT, unique: false, indexed: false, nullable: true, validations: vec![] }),
-            ("active", aurora_db::types::FieldDefinition { field_type: FieldType::SCALAR_BOOL, unique: false, indexed: false, nullable: true, validations: vec![] }),
+            (
+                "id",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: true,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "name",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "email",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_STRING,
+                    unique: false,
+                    indexed: true,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "age",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_INT,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
+            (
+                "active",
+                aurora_db::types::FieldDefinition {
+                    field_type: FieldType::SCALAR_BOOL,
+                    unique: false,
+                    indexed: false,
+                    nullable: true,
+                    validations: vec![],
+                    relation: None,
+                },
+            ),
         ],
-    ).await?;
+    )
+    .await?;
 
     // === WRITE PERFORMANCE TEST ===
     let write_count = 1000;

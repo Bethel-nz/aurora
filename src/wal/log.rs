@@ -82,7 +82,7 @@ impl WriteAheadLog {
 
         self.file.write_all(&len.to_le_bytes())?;
         self.file.write_all(&serialized)?;
-        
+
         // Ensure data is flushed to the file so it can be recovered even if not synced to disk
         self.file.flush()?;
 

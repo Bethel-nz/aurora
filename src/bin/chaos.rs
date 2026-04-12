@@ -141,13 +141,15 @@ async fn run_worker(db_path: PathBuf) {
 
     // Ensure collection exists. The boolean flag is `unique`; use false so
     // counter divergence can't cause an infinite unique-constraint retry loop.
-    let _ = db.new_collection(
-        "records",
-        vec![
-            ("seq".to_string(), FieldType::SCALAR_INT, false),
-            ("payload".to_string(), FieldType::SCALAR_STRING, false),
-        ],
-    ).await;
+    let _ = db
+        .new_collection(
+            "records",
+            vec![
+                ("seq".to_string(), FieldType::SCALAR_INT, false),
+                ("payload".to_string(), FieldType::SCALAR_STRING, false),
+            ],
+        )
+        .await;
 
     // Read existing counter so we resume from where we left off
     let start = read_counter(&db_path);
@@ -156,7 +158,10 @@ async fn run_worker(db_path: PathBuf) {
     loop {
         let mut data = HashMap::new();
         data.insert("seq".to_string(), Value::Int(seq as i64));
-        data.insert("payload".to_string(), Value::String(format!("record-{}", seq)));
+        data.insert(
+            "payload".to_string(),
+            Value::String(format!("record-{}", seq)),
+        );
 
         if db.insert_map("records", data).await.is_ok() {
             seq += 1;
@@ -183,10 +188,10 @@ fn random_delay(min: u64, max: u64) -> u64 {
 fn clean_db(base: &PathBuf) {
     let cold_dir = base.with_extension("db");
     let wal_file = base.with_extension("wal");
-    let counter  = counter_path(base);
+    let counter = counter_path(base);
 
-    let _ = std::fs::remove_dir_all(base);      // workers.db directory
-    let _ = std::fs::remove_dir_all(&cold_dir);  // sled cold store
+    let _ = std::fs::remove_dir_all(base); // workers.db directory
+    let _ = std::fs::remove_dir_all(&cold_dir); // sled cold store
     let _ = std::fs::remove_file(&wal_file);
     let _ = std::fs::remove_file(&counter);
 }
@@ -209,7 +214,8 @@ async fn verify_database(db_path: &PathBuf, expected_count: u64) -> Result<(u64,
     .await
     .map_err(|e| format!("verifier: failed to open db: {e}"))?;
 
-    let docs = db.get_all_collection("records")
+    let docs = db
+        .get_all_collection("records")
         .await
         .map_err(|e| format!("verifier: get_all_collection failed: {e}"))?;
 
@@ -218,13 +224,19 @@ async fn verify_database(db_path: &PathBuf, expected_count: u64) -> Result<(u64,
 
     for doc in &docs {
         match doc.data.get("seq") {
-            Some(Value::Int(seq)) => { found_seqs.insert(*seq as u64); }
-            _ => { corrupted += 1; }
+            Some(Value::Int(seq)) => {
+                found_seqs.insert(*seq as u64);
+            }
+            _ => {
+                corrupted += 1;
+            }
         }
     }
 
-    let recovered = (0..expected_count).filter(|s| found_seqs.contains(s)).count() as u64;
-    let missing   = expected_count.saturating_sub(recovered);
+    let recovered = (0..expected_count)
+        .filter(|s| found_seqs.contains(s))
+        .count() as u64;
+    let missing = expected_count.saturating_sub(recovered);
 
     Ok((recovered, missing + corrupted))
 }
@@ -234,7 +246,10 @@ async fn run_supervisor(cfg: Config) {
     println!("║        AURORA CHAOS SUITE                  ║");
     println!("╠════════════════════════════════════════════╣");
     println!("║  Rounds:           {:>6}                  ║", cfg.rounds);
-    println!("║  Kill window:   {:>4}-{:<4}ms               ║", cfg.kill_delay_ms_min, cfg.kill_delay_ms_max);
+    println!(
+        "║  Kill window:   {:>4}-{:<4}ms               ║",
+        cfg.kill_delay_ms_min, cfg.kill_delay_ms_max
+    );
     println!("╚════════════════════════════════════════════╝\n");
 
     clean_db(&cfg.db_path);
@@ -278,7 +293,12 @@ async fn run_supervisor(cfg: Config) {
             kill_after, written_this_round, committed_after, recovered, lost
         );
 
-        results.push(RoundResult { round, committed: committed_after, recovered, duration });
+        results.push(RoundResult {
+            round,
+            committed: committed_after,
+            recovered,
+            duration,
+        });
     }
 
     // ── Final report ────────────────────────────────────────────────────────
@@ -288,15 +308,24 @@ async fn run_supervisor(cfg: Config) {
     let total_recovered = results.iter().map(|r| r.recovered).max().unwrap_or(0);
     // Compute loss from the final cumulative state, not by summing per-round
     // values (which would double-count any seq missing across consecutive rounds).
-    let total_data_loss  = total_committed.saturating_sub(total_recovered);
+    let total_data_loss = total_committed.saturating_sub(total_recovered);
 
     println!("\n╔════════════════════════════════════════════╗");
     println!("║              CHAOS RESULTS                 ║");
     println!("╠════════════════════════════════════════════╣");
     println!("║  Rounds completed:   {:>6}                ║", cfg.rounds);
-    println!("║  Total committed:    {:>6}                ║", total_committed);
-    println!("║  Total recovered:    {:>6}                ║", total_recovered);
-    println!("║  Total lost:         {:>6}                ║", total_data_loss);
+    println!(
+        "║  Total committed:    {:>6}                ║",
+        total_committed
+    );
+    println!(
+        "║  Total recovered:    {:>6}                ║",
+        total_recovered
+    );
+    println!(
+        "║  Total lost:         {:>6}                ║",
+        total_data_loss
+    );
     println!("╠════════════════════════════════════════════╣");
 
     if total_data_loss == 0 {
