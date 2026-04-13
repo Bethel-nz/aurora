@@ -1448,84 +1448,16 @@ impl Aurora {
         true // Cache by default
     }
 
-    /// Get cache statistics
+    /// Retrieves metrics about hot cache performance.
     ///
-    /// Returns detailed metrics about cache performance including hit/miss rates,
-    /// memory usage, and access patterns. Useful for monitoring, optimization,
-    /// and understanding database performance characteristics.
-    ///
-    /// # Returns
-    /// `CacheStats` struct containing:
-    /// - `hits`: Number of cache hits (data found in memory)
-    /// - `misses`: Number of cache misses (had to read from disk)
-    /// - `hit_rate`: Percentage of requests served from cache (0.0-1.0)
-    /// - `size`: Current number of entries in cache
-    /// - `capacity`: Maximum cache capacity
-    /// - `evictions`: Number of entries evicted due to capacity
-    ///
-    /// # Examples
-    ///
-
-    /// use aurora_db::Aurora;
-    ///
-    /// let db = Aurora::open("mydb.db")?;
-
+    /// # Example
+    /// ```rust
+    /// # use aurora_db::Aurora;
+    /// # async fn example(db: Aurora) {
     /// let stats = db.get_cache_stats();
-    /// println!("Cache hit rate: {:.1}%", stats.hit_rate * 100.0);
-    /// println!("Cache size: {} / {} entries", stats.size, stats.capacity);
-    /// println!("Total hits: {}, misses: {}", stats.hits, stats.misses);
-    ///
-    /// // Monitor performance during operations
-    /// let before = db.get_cache_stats();
-    ///
-    /// // Perform many reads
-    /// for i in 0..1000 {
-    ///     db.get_document("users", &format!("user-{}", i))?;
-    /// }
-    ///
-    /// let after = db.get_cache_stats();
-    /// let hit_rate = (after.hits - before.hits) as f64 / 1000.0;
-    /// println!("Read hit rate: {:.1}%", hit_rate * 100.0);
-    ///
-    /// // Performance tuning
-    /// let stats = db.get_cache_stats();
-    /// if stats.hit_rate < 0.80 {
-    ///     println!("Low cache hit rate! Consider:");
-    ///     println!("- Increasing cache size in config");
-    ///     println!("- Prewarming cache with prewarm_cache()");
-    ///     println!("- Reviewing query patterns");
-    /// }
-    ///
-    /// if stats.evictions > stats.size {
-    ///     println!("High eviction rate! Cache may be too small.");
-    ///     println!("Consider increasing cache capacity.");
-    /// }
-    ///
-    /// // Production monitoring
-    /// use std::time::Duration;
-    /// use std::thread;
-    ///
-    /// loop {
-    ///     let stats = db.get_cache_stats();
-    ///
-    ///     // Log to monitoring system
-    ///     if stats.hit_rate < 0.90 {
-    ///         eprintln!("Warning: Cache hit rate dropped to {:.1}%",
-    ///                   stats.hit_rate * 100.0);
-    ///     }
-    ///
-    ///     thread::sleep(Duration::from_secs(60));
-    /// }
+    /// println!("Hit ratio: {:.2}%", stats.hit_rate * 100.0);
+    /// # }
     /// ```
-    ///
-    /// # Typical Performance Metrics
-    /// - **Excellent**: 95%+ hit rate (most reads from memory)
-    /// - **Good**: 80-95% hit rate (acceptable performance)
-    /// - **Poor**: <80% hit rate (consider cache tuning)
-    ///
-    /// # See Also
-    /// - `prewarm_cache()` to improve hit rates by preloading data
-    /// - `Aurora::with_config()` to adjust cache capacity
     pub fn get_cache_stats(&self) -> crate::storage::hot::CacheStats {
         self.hot.get_stats()
     }
@@ -1745,154 +1677,29 @@ impl Aurora {
     ///     .filter(EventFilter::FieldEquals("role".to_string(), Value::String("admin".into())));
     /// ```
     ///
-    /// # Important Notes
-    /// - Listener stays active until dropped
-    /// - Events are delivered in order
-    /// - Each listener has its own event stream
-    /// - Use filters to reduce unnecessary event processing
-    /// - Listeners don't affect write performance
+    /// Listens for real-time changes in a specific collection.
     ///
-    /// # See Also
-    /// - `listen_all()` to listen to all collections
-    /// - `ChangeListener::filter()` to filter events
-    /// - `query().watch()` for reactive queries with filtering
+    /// Returns a `ChangeListener` stream that yields events for inserts, updates, and deletes.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use aurora_db::{Aurora, Value};
+    /// # async fn example(db: Aurora) -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut listener = db.listen("users");
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = listener.recv().await {
+    ///         println!("Change detected: {:?}", event);
+    ///     }
+    /// });
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn listen(&self, collection: impl Into<String>) -> crate::pubsub::ChangeListener {
         self.pubsub.listen(collection)
     }
 
-    /// Listen for all changes across all collections
-    ///
-    /// Returns a stream of change events for every insert, update, and delete
-    /// operation across the entire database. Useful for global audit logging,
-    /// replication, and monitoring systems.
-    ///
-    /// # Performance
-    /// - Same performance as single collection listener
-    /// - Filter events by collection in your handler
-    /// - Consider using `listen(collection)` if only watching specific collections
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use aurora_db::Aurora;
-    ///
-    /// let db = Aurora::open("mydb.db")?;
-    ///
-    /// // Listen to everything
-    /// let mut listener = db.listen_all();
-    ///
-    /// tokio::spawn(async move {
-    ///     while let Ok(event) = listener.recv().await {
-    ///         println!("Change in {}: {:?}", event.collection, event.change_type);
-    ///     }
-    /// });
-    /// ```
-    ///
-    /// # Real-World Use Cases
-    ///
-    /// **Global Audit Trail:**
-    /// ```ignore
-    /// let mut listener = db.listen_all();
-    ///
-    /// tokio::spawn(async move {
-    ///     while let Ok(event) = listener.recv().await {
-    ///         // Log every database change
-    ///         audit_logger.log(AuditEntry {
-    ///             timestamp: chrono::Utc::now(),
-    ///             collection: event.collection,
-    ///             action: event.change_type,
-    ///             document_id: event._sid,
-    ///             user_id: get_current_user_id(),
-    ///         }).await;
-    ///     }
-    /// });
-    /// ```
-    ///
-    /// **Database Replication:**
-    /// ```ignore
-    /// let mut listener = db.listen_all();
-    ///
-    /// tokio::spawn(async move {
-    ///     while let Ok(event) = listener.recv().await {
-    ///         // Replicate to secondary database
-    ///         replica_db.apply_change(event).await?;
-    ///     }
-    /// });
-    /// ```
-    ///
-    /// **Change Data Capture (CDC):**
-    /// ```ignore
-    /// let mut listener = db.listen_all();
-    ///
-    /// tokio::spawn(async move {
-    ///     while let Ok(event) = listener.recv().await {
-    ///         // Stream changes to Kafka/RabbitMQ
-    ///         kafka_producer.send(
-    ///             &format!("cdc.{}", event.collection),
-    ///             serde_json::to_string(&event)?
-    ///         ).await?;
-    ///     }
-    /// });
-    /// ```
-    ///
-    /// **Monitoring & Metrics:**
-    /// ```ignore
-    /// use std::sync::atomic::{AtomicUsize, Ordering};
-    ///
-    /// let write_counter = Arc::new(AtomicUsize::new(0));
-    /// let counter_clone = Arc::clone(&write_counter);
-    ///
-    /// let mut listener = db.listen_all();
-    ///
-    /// tokio::spawn(async move {
-    ///     while let Ok(_event) = listener.recv().await {
-    ///         counter_clone.fetch_add(1, Ordering::Relaxed);
-    ///     }
-    /// });
-    ///
-    /// // Report metrics every 60 seconds
-    /// tokio::spawn(async move {
-    ///     loop {
-    ///         tokio::time::sleep(Duration::from_secs(60)).await;
-    ///         let count = write_counter.swap(0, Ordering::Relaxed);
-    ///         println!("Writes per minute: {}", count);
-    ///     }
-    /// });
-    /// ```
-    ///
-    /// **Selective Processing:**
-    /// ```ignore
-    /// let mut listener = db.listen_all();
-    ///
-    /// tokio::spawn(async move {
-    ///     while let Ok(event) = listener.recv().await {
-    ///         // Handle different collections differently
-    ///         match event.collection.as_str() {
-    ///             "users" => handle_user_change(event).await,
-    ///             "orders" => handle_order_change(event).await,
-    ///             "payments" => handle_payment_change(event).await,
-    ///             _ => {} // Ignore others
-    ///         }
-    ///     }
-    /// });
-    /// ```
-    ///
-    /// # When to Use
-    /// - Global audit logging
-    /// - Database replication
-    /// - Change data capture (CDC)
-    /// - Monitoring and metrics
-    /// - Event sourcing systems
-    ///
-    /// # When NOT to Use
-    /// - Only need to watch 1-2 collections → Use `listen(collection)` instead
-    /// - High write volume with selective interest → Use collection-specific listeners
-    /// - Need complex filtering → Use `query().watch()` instead
-    ///
-    /// # See Also
-    /// - `listen()` for single collection listening
-    /// - `listener_count()` to check active listeners
-    /// - `query().watch()` for filtered reactive queries
+    /// Listens for all changes across all collections in the database.
     pub fn listen_all(&self) -> crate::pubsub::ChangeListener {
         self.pubsub.listen_all()
     }
@@ -1997,8 +1804,14 @@ impl Aurora {
     /// - After flush(), WAL is truncated (data is in main storage)
     ///
     /// # See Also
-    /// - `Aurora::with_config()` to set durability mode
-    /// - WAL (Write-Ahead Log) provides durability without explicit flushes
+    /// Flushes all buffered writes to disk to ensure durability.
+    ///
+    /// This method forces all pending writes from the write buffer and cold storage
+    /// internal buffers to the physical disk.
+    ///
+    /// # Performance
+    /// Adding explicit flushes can significantly slow down write performance. 
+    /// Aurora typically manages flushes automatically via the WAL.
     pub fn flush(&self) -> Result<()> {
         // Flush write buffer if present
         if let Some(ref write_buffer) = self.write_buffer {
@@ -2021,8 +1834,9 @@ impl Aurora {
         Ok(())
     }
 
-    /// Async flush — waits for all pending writes to reach durable storage.
-    /// Equivalent to `flush()` but callable from async contexts with `.await`.
+    /// Asynchronously flushes all buffered writes to disk.
+    ///
+    /// This is the async-friendly version of `flush()`.
     pub async fn sync(&self) -> Result<()> {
         self.flush()
     }
@@ -2847,15 +2661,22 @@ impl Aurora {
     /// * `data` - New field values to set
     ///
     /// # Returns
-    /// Ok(()) on success, or an error if the document doesn't exist
+    /// Updates specific fields in an existing document.
     ///
-    /// # Examples
+    /// # Arguments
+    /// * `collection` - The collection name.
+    /// * `doc_id` - The ID of the document to update.
+    /// * `updates` - a vector of field-value pairs to update.
     ///
-    /// ```ignore
-    /// db.update_document("users", &user_id, vec![
-    ///     ("status", Value::String("active".to_string())),
-    ///     ("last_login", Value::String(chrono::Utc::now().to_rfc3339())),
+    /// # Example
+    /// ```rust
+    /// # use aurora_db::{Aurora, Value};
+    /// # async fn example(db: Aurora) -> Result<(), Box<dyn std::error::Error>> {
+    /// db.update_document("users", "u123", vec![
+    ///     ("active", Value::Bool(false)),
     /// ]).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn update_document(
         &self,
@@ -2991,76 +2812,37 @@ impl Aurora {
     ///     db.rollback_transaction()?;
     /// }
     /// ```ignore
-    /// Begin a new transaction for atomic operations
+    /// Starts a new ACID-compliant transaction.
     ///
-    /// Transactions ensure all-or-nothing execution: either all operations succeed,
-    /// or none of them are applied. Perfect for maintaining data consistency.
+    /// Transactions allow you to group multiple operations together. Either all
+    /// operations succeed and are committed, or none of them are applied.
     ///
-    /// # Examples
+    /// # Returns
+    /// A unique `TransactionId` to identify this transaction in subsequent calls.
     ///
-
-    /// use aurora_db::{Aurora, types::Value};
+    /// # Example
+    /// ```rust
+    /// # use aurora_db::{Aurora, Value};
+    /// # async fn example(db: Aurora) -> Result<(), Box<dyn std::error::Error>> {
+    /// let tx_id = db.begin_transaction().await;
     ///
-    /// let db = Aurora::open("mydb.db")?;
+    /// // ... perform operations ...
     ///
-    /// // Start transaction
-    /// let tx_id = db.begin_transaction();
-    ///
-    /// // Perform multiple operations
-    /// db.insert_into("accounts", vec![
-    ///     ("user_id", Value::String("alice".into())),
-    ///     ("balance", Value::Int(1000)),
-    /// ]).await?;
-    ///
-    /// db.insert_into("accounts", vec![
-    ///     ("user_id", Value::String("bob".into())),
-    ///     ("balance", Value::Int(500)),
-    ///     ])).await?;
-    ///
-    /// // Commit if all succeeded
-    /// db.commit_transaction(tx_id)?;
-    ///
-    /// // Or rollback on error
-    /// // db.rollback_transaction(tx_id)?;
+    /// db.commit_transaction(tx_id).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn begin_transaction(&self) -> crate::transaction::TransactionId {
         let buffer = self.transaction_manager.begin();
         buffer._sid
     }
 
-    /// Commit a transaction, making all changes permanent
+    /// Commits a transaction, making all changes permanent.
     ///
     /// All operations within the transaction are atomically applied to the database.
-    /// If any operation fails, none are applied.
     ///
     /// # Arguments
-    /// * `tx_id` - Transaction ID returned from begin_transaction()
-    ///
-    /// # Examples
-    ///
-
-    /// use aurora_db::{Aurora, types::Value};
-    ///
-    /// let db = Aurora::open("mydb.db")?;
-    ///
-    /// // Transfer money between accounts
-    /// let tx_id = db.begin_transaction();
-    ///
-    /// // Deduct from Alice
-    /// db.update_document("accounts", "alice", vec![
-    ///     ("balance", Value::Int(900)),  // Was 1000
-    /// ]).await?;
-    ///
-    /// // Add to Bob
-    /// db.update_document("accounts", "bob", vec![
-    ///     ("balance", Value::Int(600)),  // Was 500
-    /// ]).await?;
-    ///
-    /// // Both updates succeed - commit them
-    /// db.commit_transaction(tx_id)?;
-    ///
-    /// println!("Transfer completed!");
-    /// ```ignore
+    /// * `tx_id` - The ID of the transaction to commit.
     pub async fn commit_transaction(&self, tx_id: crate::transaction::TransactionId) -> Result<()> {
         let buffer = self
             .transaction_manager
@@ -3172,6 +2954,10 @@ impl Aurora {
     ///     }
     /// }
     /// ```
+    /// Aborts a transaction and discards all pending changes.
+    ///
+    /// # Arguments
+    /// * `tx_id` - The ID of the transaction to roll back.
     pub async fn rollback_transaction(
         &self,
         tx_id: crate::transaction::TransactionId,
@@ -3355,33 +3141,36 @@ impl Aurora {
     ///     .await?;
     ///
     /// // Text search in a field
-    /// let matching = db.query("articles")
-    ///     .filter(|f| f.contains("title", "rust"))
+    /// Starts a fluent query builder for the specified collection.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use aurora_db::{Aurora, Value};
+    /// # async fn example(db: Aurora) -> Result<(), Box<dyn std::error::Error>> {
+    /// let users = db.query("users")
+    ///     .filter(|f| f.eq("active", true))
     ///     .collect()
     ///     .await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn query<'a>(&'a self, collection: &str) -> QueryBuilder<'a> {
         QueryBuilder::new(self, collection)
     }
 
-    /// Create a search builder for full-text search
+    /// Starts a full-text search builder for the specified collection.
     ///
-    /// # Arguments
-    /// * `collection` - Name of the collection to search
-    ///
-    /// # Returns
-    /// A `SearchBuilder` for configuring and executing searches
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// // Search for documents containing text
-    /// let search_results = db.search("articles")
-    ///     .field("content")
-    ///     .matching("quantum computing")
-    ///     .fuzzy(true)  // Enable fuzzy matching for typo tolerance
+    /// # Example
+    /// ```rust
+    /// # use aurora_db::{Aurora, Value};
+    /// # async fn example(db: Aurora) -> Result<(), Box<dyn std::error::Error>> {
+    /// let results = db.search("products")
+    ///     .query("wireless headphones")
+    ///     .fuzzy(1)
     ///     .collect()
     ///     .await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn search<'a>(&'a self, collection: &str) -> SearchBuilder<'a> {
         SearchBuilder::new(self, collection)
@@ -3453,10 +3242,25 @@ impl Aurora {
     /// - Need fastest possible lookup (1M reads/sec)
     /// - Fetching a single document
     ///
-    /// # When NOT to Use
-    /// - Searching by other fields → Use `query().filter()` instead
-    /// - Need multiple documents by criteria → Use `query().collect()` instead
-    /// - Don't know the ID → Use `find_by_field()` or `query()` instead
+    /// Retrieves a single document by its ID.
+    ///
+    /// # Arguments
+    /// * `collection` - The collection name.
+    /// * `sid` - The document system ID.
+    ///
+    /// # Returns
+    /// `Ok(Some(Document))` if found, `Ok(None)` if not found, or an error.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use aurora_db::{Aurora, Value};
+    /// # async fn example(db: Aurora) -> Result<(), Box<dyn std::error::Error>> {
+    /// if let Some(user) = db.get_document("users", "u123")? {
+    ///     println!("Found user: {:?}", user);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn get_document(&self, collection: &str, sid: &str) -> Result<Option<Document>> {
         let key = format!("{}:{}", collection, sid);
         if let Some(data) = self.get(&key)? {
