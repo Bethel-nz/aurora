@@ -1,109 +1,108 @@
-# Aurora CRUD Operations Guide
+# Aurora DB CRUD Operations Guide
 
-This guide covers the basic Create, Read, Update, and Delete operations using the Aurora Query Language (AQL).
+This guide details how to perform Create, Read, Update, and Delete operations using the Aurora Query Language (AQL) and the Rust API.
 
-## Creating Documents
+## 1. Creating Documents
 
-Use the `insertInto` mutation to add single documents.
+### Single Insert
+Use `insertInto` to add a single document. Aurora automatically validates the data against the collection schema.
 
 ```graphql
 mutation {
     insertInto(
         collection: "users",
         data: {
-            name: "John Doe",
-            email: "john@example.com",
-            age: 32,
-            active: true
+            id: "u1",
+            name: "Alice",
+            email: "alice@example.com",
+            tags: ["new-user", "beta-tester"]
         }
     ) {
-        id # Returns the ID provided in data (or generated internal _sid if missing)
+        id
     }
 }
 ```
 
-> **Note on IDs**: Aurora uses a decoupled internal System ID (`_sid`) for tracking. When you request `id` in a selection set, Aurora returns the value from your JSON data object. This ensures data purity. For more details, see [Schema Management](./schema.md#system-id--data-purity).
-
-### Batch Inserts
-
-For better performance, use `insertMany` to add multiple documents at once.
+### Batch Insert (`insertMany`)
+For high-volume ingestion, use `insertMany`. This is significantly faster than multiple single inserts as it minimizes write-ahead log (WAL) overhead.
 
 ```graphql
 mutation {
     insertMany(
         collection: "products",
         data: [
-            { name: "Widget A", price: 10.0 },
-            { name: "Widget B", price: 20.0 }
+            { id: "p1", name: "Laptop", price: 1200.0 },
+            { id: "p2", name: "Mouse", price: 25.0 }
         ]
     ) {
-        count # Return number of inserted documents
-        ids   # Return list of generated IDs
+        affected # Number of documents inserted
     }
 }
 ```
 
-## Reading Documents
+## 2. Reading Documents
 
-Retrieving documents is done via the `query` operation.
+Querying is performed via the `query` operation.
 
-### Get Document by ID
-
+### Basic Retrieval
 ```graphql
 query {
-    users(where: { id: { eq: "550e8400-e29b-41d4-a716-446655440000" } }) {
-        id
+    users {
         name
         email
     }
 }
 ```
 
-### Flexible Querying
-
+### Filtering & Sorting
 ```graphql
 query {
-    users(
-        where: { active: { eq: true } },
-        orderBy: { field: "age", direction: DESC },
-        limit: 5
+    products(
+        where: { price: { lt: 50.0 } },
+        orderBy: { field: "price", direction: ASC },
+        limit: 10
     ) {
         name
-        age
+        price
     }
 }
 ```
 
-## Updating Documents
+## 3. Updating Documents
 
-Use the `update` mutation to modify existing documents.
-
-### Update by Filter
+### Update by ID or Filter
+The `update` mutation modifies existing documents that match a specific criteria.
 
 ```graphql
 mutation {
     update(
-        collection: "products",
-        where: { stock: { lt: 5 } },
+        collection: "users",
+        where: { id: { eq: "u1" } },
         data: {
-            status: "low_stock",
-            needs_reorder: true
+            active: true,
+            last_login: "now"
         }
     ) {
-        affected # Returns the number of updated documents
+        affected
     }
 }
 ```
 
-### Atomic Field Modifiers
+### Atomic Modifiers
+Aurora supports atomic field operations, preventing race conditions when multiple clients update the same document.
 
-You can use special operators to modify values atomically (e.g., incrementing counters).
+| Operator | Description |
+| -------- | ----------- |
+| `increment: N` | Adds N to a numeric field. |
+| `decrement: N` | Subtracts N from a numeric field. |
+| `push: val` | Appends a value to an array. |
+| `pull: val` | Removes all instances of a value from an array. |
 
 ```graphql
 mutation {
     update(
         collection: "posts",
-        where: { id: { eq: "123" } },
+        where: { id: { eq: "post-123" } },
         data: {
             views: { increment: 1 },
             tags: { push: "trending" }
@@ -112,149 +111,87 @@ mutation {
 }
 ```
 
-## Deleting Documents
+## 4. Upsert (Update or Insert)
 
-Use the `deleteFrom` mutation to remove documents.
+Upsert is an "idempotent" operation. If a document matching the `where` filter exists, it is updated. If not, a new document is created using the provided `data`.
+
+```graphql
+mutation {
+    upsert(
+        collection: "user_stats",
+        where: { user_id: { eq: "u1" } },
+        data: {
+            user_id: "u1",
+            login_count: { increment: 1 }
+        }
+    )
+}
+```
+
+## 5. Deleting Documents
+
+Use `deleteFrom` to permanently remove documents.
 
 ```graphql
 mutation {
     deleteFrom(
-        collection: "users",
-        where: { id: { eq: "some-uuid" } }
+        collection: "sessions",
+        where: { expires_at: { lt: "now" } }
     ) {
         affected
     }
 }
 ```
 
-## Upsert (Update or Insert)
+## 6. ACID Transactions
 
-The `upsert` operation tries to find a document matching the filter. If found, it updates it; otherwise, it inserts a new one.
+Transactions ensure that a group of operations are treated as a single atomic unit. If any operation fails, the entire transaction is rolled back.
 
-```graphql
-mutation {
-    upsert(
-        collection: "stats",
-        where: { date: { eq: "2023-10-27" } },
-        data: {
-            date: "2023-10-27",
-            daily_visits: 100
-        }
-    )
-}
-```
-
-## Transactions
-
-Aurora supports ACID transactions using the `transaction` block. All operations inside the block succeed or fail together.
-
+### The `transaction` Block
 ```graphql
 mutation {
     transaction {
-        # Deduct balance
+        # Operation 1: Deduct from sender
         debit: update(
             collection: "accounts",
             where: { id: { eq: "acc-1" } },
-            data: { balance: { decrement: 50.0 } }
+            data: { balance: { decrement: 100.0 } }
         )
 
-        # Credit balance
+        # Operation 2: Add to receiver
         credit: update(
             collection: "accounts",
             where: { id: { eq: "acc-2" } },
-            data: { balance: { increment: 50.0 } }
-        )
-
-        # Record transaction log
-        log: insertInto(
-            collection: "transfers",
-            data: {
-                from: "acc-1",
-                to: "acc-2",
-                amount: 50.0,
-                timestamp: "2023-10-27T10:00:00Z"
-            }
+            data: { balance: { increment: 100.0 } }
         )
     }
 }
 ```
 
-## Using Variables with Mutations
+### Why use transactions?
+- **Consistency**: Prevents partial updates (e.g., money leaving one account but not arriving in the other).
+- **Isolation**: Changes made within a transaction are invisible to other clients until the transaction is committed.
+- **Durability**: Aurora's WAL ensures that committed transactions survive system crashes.
 
-For secure, reusable mutations, use variable bindings. This approach is highly recommended instead of string concatenation.
+## 7. Using the Rust API
 
-```graphql
-mutation CreateUser($name: String!, $email: String!, $age: Int!) {
-    insertInto(
-        collection: "users",
-        data: {
-            name: $name,
-            email: $email,
-            age: $age,
-            active: true
-        }
-    ) {
-        id
-    }
-}
-```
+The Rust API provides macros for ultra-efficient CRUD operations.
 
-### The `doc!` and `object!` Macros
-
-In Rust, you can use the `doc!` macro to effortlessly execute parametrized mutations. This uses the `value!`, `object!`, and `array!` macros internally to construct native AST values, skipping JSON parsing entirely.
-
-**Why this matters:** Because these macros construct Aurora's native `Value` types directly, the engine can perform immediate runtime type-checking and strict schema validation before the mutation even begins, making your database operations far safer and more efficient.
-
+### Efficient Parametrized Mutation
 ```rust
-use aurora_db::{doc, object, value, array};
+use aurora_db::doc;
 
-let user_name = "Jane Smith";
-let user_email = "jane@example.com";
-let user_age = 28;
+let user_id = "u1";
+let new_name = "Alice Updated";
 
-let result = db.execute(doc!(
-    "mutation CreateUser($name: String!, $email: String!, $age: Int!) {
-        insertInto(
-            collection: \"users\",
-            data: {
-                name: $name,
-                email: $email,
-                age: $age,
-                active: true
-            }
-        ) {
-            id
+db.execute(doc!(
+    "mutation($id: String, $name: String) {
+        update(collection: \"users\", where: { id: { eq: $id } }, data: { name: $name }) {
+            affected
         }
     }",
-    {
-        "name": user_name,
-        "email": user_email,
-        "age": user_age
-    }
-)).await?;
-
-// You can also construct Aurora values explicitly for direct API usage, 
-// ensuring data is schema-valid at runtime:
-let settings = object!({
-    "theme": "dark",
-    "notifications": true,
-    "tags": array!["new", "user"]
-});
-```
-
-Alternatively, `db.execute()` accepts a tuple of `(&str, serde_json::Value)` representing the query and its variables:
-
-```rust
-use serde_json::json;
-
-let vars = json!({
-    "name": "Jane Smith",
-    "email": "jane@example.com",
-    "age": 28
-});
-
-let result = db.execute((
-    "mutation CreateUser($name: String!, $email: String!, $age: Int!) { ... }", 
-    vars
+    { "id": user_id, "name": new_name }
 )).await?;
 ```
+
+For more details on macros, see [Variables and Macros](./querying.md#variables-and-macros).

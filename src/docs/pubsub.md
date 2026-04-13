@@ -1,115 +1,89 @@
-# Aurora DB PubSub System
+# Aurora DB PubSub Guide
 
-This guide covers Aurora's real-time change notification system using the AQL `subscription` operation.
+Aurora DB's PubSub (Publish-Subscribe) system is the engine behind its real-time capabilities. It provides a low-latency, asynchronous way to react to data changes across the entire database.
 
-## Overview
+## 1. Core Concepts
 
-Aurora's PubSub system allows you to listen for changes to your data in real-time. When documents are inserted, updated, or deleted, change events are automatically pushed to connected clients.
+-   **Topic**: In Aurora, topics are mapped to **Collection Names**.
+-   **Events**: Every mutation (`insertInto`, `update`, `deleteFrom`, `upsert`) generates a `ChangeEvent`.
+-   **Listeners**: Asynchronous consumers that receive events for specific collections or the entire database.
 
-## Basic Subscriptions
+## 2. Using PubSub in Rust
 
-To listen for changes on a collection, use the `subscription` operation.
+The `Aurora` handle provides methods to create `ChangeListener` streams.
+
+### Listening to a Specific Collection
+```rust
+let mut listener = db.listen("orders");
+
+tokio::spawn(async move {
+    while let Ok(event) = listener.recv().await {
+        println!("Order {} was {}", event._sid, event.change_type);
+    }
+});
+```
+
+### Listening to All Changes
+Perfect for global audit logs or system monitoring.
+```rust
+let mut global_listener = db.listen_all();
+```
+
+## 3. The `ChangeEvent` Structure
+
+When a change occurs, listeners receive a `ChangeEvent` object:
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `collection` | `String` | The name of the affected collection. |
+| `change_type` | `ChangeType` | `Insert`, `Update`, or `Delete`. |
+| `_sid` | `String` | The internal system ID of the affected document. |
+| `document` | `Option<Document>` | The updated document data (for Insert/Update). |
+| `old_document` | `Option<Document>` | The previous version of the document (for Update). |
+
+## 4. Advanced Filtering (`EventFilter`)
+
+You can attach filters to a listener to reduce noise and improve performance. Filtering happens on the publisher side, so irrelevant events are never even sent to your listener's channel.
+
+```rust
+use aurora_db::pubsub::EventFilter;
+
+let mut admin_listener = db.listen("users")
+    .filter(EventFilter::FieldEquals("role".into(), Value::String("admin".into())));
+```
+
+### Available Filters
+-   `ChangeType(type)`: Only listen for specific operations (e.g., `Insert`).
+-   `FieldEquals(field, value)`: Only listen for documents where a field matches a specific value.
+-   `FieldChanged(field)`: Only listen for updates that modified a specific field.
+
+## 5. Subscriptions (AQL)
+
+For network-based clients (like a WebSocket-connected frontend), use the AQL `subscription` operation.
 
 ```graphql
 subscription {
-    users {
-        mutation # The type of change: INSERT, UPDATE, DELETE
-        id       # The ID of the document changed
-        node {   # The actual document data (if available)
-            name
-            email
-        }
-    }
-}
-```
-
-### Response Stream
-
-The server will keep the connection open and stream results as they happen:
-
-```json
-// Event 1: User created
-{
-    "data": {
-        "users": {
-            "mutation": "INSERT",
-            "id": "123",
-            "node": { "name": "Alice", "email": "alice@ex.com" }
-        }
-    }
-}
-
-// Event 2: User updated
-{
-    "data": {
-        "users": {
-            "mutation": "UPDATE",
-            "id": "123",
-            "node": { "name": "Alice Cooper", "email": "alice@ex.com" }
-        }
-    }
-}
-```
-
-## Filtered Subscriptions
-
-You can subscribe to specific changes using the `where` argument. This reduces network traffic by only sending events you care about.
-
-```graphql
-subscription {
-    # Only listen for changes to active admins
-    users(where: {
-        and: [
-            { role: { eq: "admin" } },
-            { active: { eq: true } }
-        ]
-    }) {
-        mutation
+    # Listen for new high-value orders
+    orders(where: { total: { gt: 1000.0 } }) {
+        mutation # "INSERT", "UPDATE", "DELETE"
         id
         node {
-            name
-            role
+            total
+            customer_name
         }
     }
 }
 ```
 
-## Event Types
+## 6. Performance & Architecture
 
-The `mutation` field (or `operation` field) indicates what happened:
+-   **Asynchronous Delivery**: Change events are published to an internal broadcast channel. This ensures that write operations (mutations) are not slowed down by slow listeners.
+-   **Zero-Copy when possible**: Aurora uses `Arc` internally to share document data between multiple listeners without expensive cloning.
+-   **Channel Capacity**: Each listener has a bounded internal buffer. If a listener is too slow and its buffer fills up, it will start missing events (lag detection).
 
-*   `INSERT`: A new document was added.
-*   `UPDATE`: An existing document was modified.
-*   `DELETE`: A document was removed.
+## 7. Best Practices
 
-## Use Cases
-
-### 1. Real-time Notifications
-
-```graphql
-subscription {
-    notifications(where: { user_id: { eq: "current-user-id" } }) {
-        mutation
-        node {
-            title
-            message
-            read
-        }
-    }
-}
-```
-
-### 2. Live Chat
-
-```graphql
-subscription {
-    messages(where: { room_id: { eq: "room-123" } }) {
-        mutation
-        node {
-            sender
-            text
-            timestamp
-        }
-    }
-}
-```
+1.  **Filter Early**: Always use `EventFilter` or AQL `where` clauses to minimize the number of events your application logic has to process.
+2.  **Idempotent Handlers**: Design your event handlers to be idempotent. In rare crash scenarios, an event might be delivered more than once.
+3.  **Non-Blocking**: Never perform heavy I/O or long-running synchronous tasks directly inside an event loop. Spawn a new task instead.
+4.  **Use `listen_all` Sparingly**: Only use global listeners for truly cross-cutting concerns like auditing or replication.

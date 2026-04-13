@@ -16,7 +16,6 @@ pub struct AQLParser;
 
 use crate::error::{AqlError, ErrorCode, Result};
 use ast::*;
-use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 /// Reserved keywords that cannot be used as field/collection names
@@ -1149,7 +1148,7 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                                                         }
                                                         Rule::aggregate_with_alias => {
                                                             is_aggregate = true;
-                                                            let mut agg_name = "aggregate".to_string();
+                                                            let agg_name = "aggregate".to_string();
                                                             let mut agg_alias = None;
                                                             let mut agg_selection_set = Vec::new();
                                                             for sel in f_inner.into_inner() {

@@ -1,255 +1,206 @@
-# Aurora DB Query System
+# Aurora DB Querying Guide
 
-This guide explains Aurora DB's powerful query capabilities using the Aurora Query Language (AQL).
+This guide provides a comprehensive deep dive into the Aurora Query Language (AQL), exploring everything from basic retrieval to advanced aggregations and full-text search.
 
-## Basic Queries
+## 1. AQL Query Structure
 
-To retrieve data, use the `query` operation and select the fields you need:
+AQL is inspired by GraphQL but optimized for document-database performance. A query consists of an operation name (`query`), a target collection, optional arguments (`where`, `limit`), and a **selection set** (the fields you want back).
+
+```graphql
+query {
+    users(limit: 5) {
+        name
+        email
+    }
+}
+```
+
+## 2. Advanced Filtering (`where`)
+
+Aurora supports rich, nested filtering logic using operator objects.
+
+### Comparison Operators
+| Operator | Description |
+| -------- | ----------- |
+| `eq` | Equal to |
+| `ne` | Not equal to |
+| `gt` / `gte` | Greater than / Greater than or equal to |
+| `lt` / `lte` | Less than / Less than or equal to |
+| `in` | Value exists in a provided list |
+| `contains` | Substring match (strings) or element exists (arrays) |
+| `startsWith` | Prefix match |
+
+### Logical Operators (`and`, `or`, `not`)
+```graphql
+query {
+    users(where: {
+        or: [
+            { and: [ { age: { gte: 18 } }, { status: { eq: "active" } } ] },
+            { role: { eq: "admin" } }
+        ]
+    }) {
+        name
+    }
+}
+```
+
+## 3. Projections & Aliases
+
+You can rename fields in your result set using aliases.
+
+```graphql
+query {
+    products {
+        displayName: name
+        current_price: price
+    }
+}
+```
+
+### The `@defer` Directive
+If a field is computationally expensive or large (like a long `bio`), you can mark it with `@defer`. Aurora will exclude it from the primary document result and list it in the `deferred_fields` metadata.
 
 ```graphql
 query {
     users {
-        id
         name
-        email
+        bio @defer
     }
 }
 ```
 
-This returns a JSON list of users with only the requested fields.
+## 4. Sorting & Pagination
 
-## Filtering
-
-### Simple Filters
-
-Use the `where` argument to filter results. The filter syntax uses operator objects (e.g., `eq`, `gt`, `contains`).
-
+### Ordering
 ```graphql
 query {
-    # Equality
-    active_users: users(where: { active: { eq: true } }) {
-        name
-    }
-
-    # Greater than
-    adults: users(where: { age: { gt: 18 } }) {
-        name
-        age
-    }
-
-    # Contains (Arrays or Strings)
-    admins: users(where: { roles: { contains: "admin" } }) {
-        name
-    }
-}
-```
-
-### Combining Filters
-
-Combine conditions using `and`, `or`, and `not` operators.
-
-```graphql
-query {
-    target_users: users(where: {
-        and: [
-            { age: { gt: 18 } },
-            { age: { lt: 65 } },
-            { or: [
-                { subscription: { eq: "premium" } },
-                { purchase_count: { gt: 5 } }
-            ]}
-        ]
-    }) {
-        name
-        email
-    }
-}
-```
-
-## Sorting
-
-Sort results using the `orderBy` argument.
-
-```graphql
-query {
-    users(orderBy: { field: "age", direction: ASC }) {
-        name
-        age
-    }
-}
-```
-
-For multiple sort fields, pass a list:
-
-```graphql
-query {
-    users(orderBy: [
-        { field: "status", direction: DESC },
-        { field: "name", direction: ASC }
-    ]) {
-        name
-        status
-    }
-}
-```
-
-## Pagination
-
-Use `limit` and `offset` for traditional pagination.
-
-```graphql
-query {
-    # Get page 2 (items 11-20)
-    users(limit: 10, offset: 10) {
-        id
-        name
-    }
-}
-```
-
-Aurora also supports cursor-based pagination via the `edges` selection (Relay-style).
-
-## Full-Text Search
-
-Perform full-text search using the `search` argument. This requires a text index on the target field.
-
-```graphql
-query {
-    articles(search: {
-        query: "quantum computing",
-        fields: ["title", "content"],
-        fuzzy: true
-    }) {
+    posts(orderBy: { field: "created_at", direction: DESC }) {
         title
-        snippet: content # You can alias fields
     }
 }
 ```
 
-## Aggregation
-
-You can perform aggregations directly within your query.
-
+### Offset Pagination
 ```graphql
 query {
-    orders {
-        # Get individual order data
-        id
-        amount
-        
-        # Get aggregate stats for this query result
+    products(limit: 10, offset: 20) {
+        name
+    }
+}
+```
+
+## 5. Aggregation & Grouping
+
+Aurora can perform calculations across entire collections or result sets.
+
+### Global Aggregation
+```graphql
+query {
+    sales {
         stats: aggregate {
             count
             total_revenue: sum(field: "amount")
-            avg_order: avg(field: "amount")
+            average_sale: avg(field: "amount")
+            max_sale: max(field: "amount")
         }
     }
 }
 ```
 
-## Group By
-
-Group results by a specific field.
+### Group By
+Group documents by a field and perform aggregations per group.
 
 ```graphql
 query {
-    orders {
-        groupBy(field: "status") {
-            key          # The status value (e.g., "shipped")
-            count        # Number of orders in this group
-            aggregate {  # Aggregates per group
-                sum(field: "amount")
+    products {
+        groupBy(field: "category") {
+            key          # The category name
+            count        # Number of products in this category
+            stats: aggregate {
+                avg_price: avg(field: "price")
             }
         }
     }
 }
 ```
 
-## Computed Fields
+## 6. Manual Joins (`lookup`)
 
-You can define temporary computed fields in your query using pipe syntax or functions.
+While Aurora is a document store, you can perform manual joins using the `lookup` selection. This is highly efficient when the join field is indexed.
 
 ```graphql
 query {
-    users {
-        name
-        # Create a new field on the fly
-        display_name: "${name} (${email})"
-        
-        # Transform existing data
-        upper_role: role | uppercase
+    orders {
+        id
+        total
+        # "Join" with the users collection
+        user: lookup(collection: "users", localField: "user_id", foreignField: "id") {
+            name
+            email
+        }
     }
 }
 ```
 
-## Variables and Macros
+## 7. Full-Text Search
 
-Aurora DB provides an elegant way to pass variables into your AQL queries, protecting against injection attacks and keeping your queries clean.
-
-You can declare variables in your query header and reference them with `$varName`:
+Aurora features a built-in search engine. To use it, you must first create a text index on the target fields.
 
 ```graphql
-query($minAge: Int, $role: String) {
-    users(where: {
-        and: [
-            { age: { gt: $minAge } },
-            { role: { eq: $role } }
-        ]
+query {
+    articles(search: {
+        query: "distributed systems",
+        fields: ["title", "content"],
+        fuzzy: 1  # Allows for 1-character typos
     }) {
-        name
-        age
+        title
+        score  # Aurora returns a relevance score for search results
     }
 }
 ```
 
-### The `doc!` and `object!` Macros
+## 8. Computed Fields
 
-In Rust, you can execute parametrized queries using the `doc!` macro, which seamlessly binds Rust variables to your AQL query options. Under the hood, this uses the `value!`, `object!`, and `array!` macros to construct native, strongly-typed AST values. 
+You can generate new fields on the fly using **Templates** or **Pipes**.
 
-**Why this matters:** Because these macros construct Aurora's native `Value` types directly, they completely bypass JSON parsing. This allows Aurora DB's engine to perform strict runtime type-checking and schema validation instantly and efficiently.
-
-```rust
-use aurora_db::{doc, object, value, array};
-
-let min_age = 18;
-let user_role = "admin";
-
-// doc! creates a (String, ExecutionOptions) tuple
-let result = db.execute(doc!(
-    "query($minAge: Int, $role: String) {
-        users(where: { age: { gt: $minAge }, role: { eq: $role } }) {
-            name
-            age
-        }
-    }",
-    {
-        "minAge": min_age,
-        "role": user_role
+### Template Strings
+```graphql
+query {
+    users {
+        # String interpolation
+        fullName: "${firstName} ${lastName}"
     }
-)).await?;
-
-// You can also use object!, array!, and value! for manual construction, 
-// ensuring immediate schema validation at runtime:
-let my_obj = object!({
-    "id": 1,
-    "tags": array!["rust", "database"],
-    "active": value!(true),
-    "metadata": { "key": "val" }
-});
+}
 ```
 
-Alternatively, you can pass a standard tuple to `execute()` if you prefer constructing variables using `serde_json::json!`:
+### Pipe Transformations
+```graphql
+query {
+    users {
+        # Transform data using built-in functions
+        upperName: name | uppercase
+        preview: bio | truncate(length: 50)
+    }
+}
+```
 
+## 9. Variables and Rust Integration
+
+Never concatenate strings to build queries. Use **Variables** for safety and speed.
+
+```graphql
+query($id: Uuid!) {
+    users(where: { id: { eq: $id } }) {
+        name
+    }
+}
+```
+
+In Rust, use the `doc!` macro to bind values:
 ```rust
-use serde_json::json;
-
-let variables = json!({
-    "minAge": 18,
-    "role": "admin"
-});
-
-let result = db.execute((
-    "query($minAge: Int, $role: String) { ... }", 
-    variables
+let id = "550e8400-e29b-41d4-a716-446655440000";
+let result = db.execute(doc!(
+    "query($id: Uuid!) { users(where: { id: { eq: $id } }) { name } }",
+    { "id": id }
 )).await?;
 ```

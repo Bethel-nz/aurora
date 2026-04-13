@@ -1,110 +1,87 @@
-# Aurora Computed Fields
+# Aurora DB Computed Fields Guide
 
-This guide covers how to use computed fields in Aurora Query Language (AQL) to derive values at query time.
+Computed fields allow you to derive new values from existing document data at retrieval time. This is perfect for formatting, aggregations, or business logic that doesn't need to be persisted but is frequently needed by the application.
 
-## Overview
+## 1. Defining Computed Fields in AQL
 
-Computed fields allow you to transform data or calculate new values directly in your query selection. These values are calculated on-the-fly and are not stored in the database.
+The simplest way to use computed fields is directly within your query selection set.
 
-## Syntax
-
-Computed fields are defined in the selection set using the `alias: expression` syntax.
-
-```graphql
-query {
-    users {
-        name
-        email
-        
-        # Computed field: Template String
-        display_label: "${name} <${email}>"
-        
-        # Computed field: Pipe Expression
-        upper_name: name | uppercase
-    }
-}
-```
-
-## Expression Types
-
-### 1. Template Strings
-
-Use `${field}` syntax to interpolate field values into strings.
+### Template Strings
+Ideal for basic string concatenation and interpolation.
 
 ```graphql
 query {
     users {
-        full_name: "${first_name} ${last_name}"
-        profile_url: "https://app.com/u/${username}"
+        # Combine fields into a display label
+        label: "${firstName} ${lastName} (${email})"
     }
 }
 ```
 
-### 2. Pipe Expressions
+### Pipe Expressions
+Inspired by Unix pipes, this syntax allows you to chain transformations in a readable way.
 
-Chain functions using the `|` operator for cleaner data transformations.
+```graphql
+query {
+    posts {
+        title
+        # Convert to uppercase and truncate for a preview
+        header: title | uppercase | truncate(length: 20)
+    }
+}
+```
+
+### Logical & Math Functions
+You can use standard functional syntax for more complex logic.
 
 ```graphql
 query {
     products {
         name
-        # Format price and ensure it's a string
-        price_tag: price | toString | format("$%s")
-        
-        # Normalize tags
-        clean_tags: tags | sort | join(", ")
+        # Calculate final price after tax
+        total: multiply(price, 1.15) | round(decimals: 2)
+        # Conditional labels
+        status: if(gt(stock, 0), "In Stock", "Out of Stock")
     }
 }
 ```
 
-### 3. Function Calls
+## 2. Permanent Computed Fields (Retrieval-Time)
 
-Use built-in functions for logic and math.
+If you find yourself writing the same computed field in every query, you can register it permanently in the collection's schema. These fields will be automatically calculated and included in *every* query result for that collection.
 
-```graphql
-query {
-    orders {
-        id
-        
-        # Logical conditional
-        status_label: if(is_delivered, "Complete", "In Progress")
-        
-        # Math calculation
-        total_value: multiply(quantity, price)
-        
-        # Date manipulation
-        days_since: dateDiff(now(), created_at, "days")
-    }
-}
+### Registering via Rust API
+```rust
+use aurora_db::computed::ComputedExpression;
+
+db.register_computed_field(
+    "users", 
+    "fullName", 
+    ComputedExpression::TemplateString("${firstName} ${lastName}".to_string())
+).await?;
 ```
 
-## Available Functions
+### Benefits of Permanent Fields
+- **Consistency**: The logic lives in one place (the database schema).
+- **Simplicity**: Clients don't need to know the calculation logic; they just request the field name.
+- **Performance**: Aurora optimizes the calculation of registered fields during the retrieval phase.
 
-Aurora supports a wide range of built-in functions:
+## 3. Available Built-in Functions
 
-*   **String:** `concat`, `uppercase`, `lowercase`, `trim`, `substring`, `replace`, `length`
-*   **Math:** `add`, `subtract`, `multiply`, `divide`, `mod`, `round`, `floor`, `ceil`, `min`, `max`
-*   **Logic:** `if`, `and`, `or`, `not`, `eq`, `gt`, `lt`, `isNull`
-*   **Array:** `first`, `last`, `count`, `sum`, `avg`, `join`, `sort`
-*   **Date:** `now`, `dateAdd`, `dateDiff`, `year`, `month`, `day`
-*   **Type:** `toString`, `toInt`, `toFloat`, `toBoolean`
+Aurora provides a rich library of functions for your expressions:
 
-## Nested Computations
+| Category | Functions |
+| -------- | --------- |
+| **String** | `uppercase`, `lowercase`, `trim`, `truncate`, `concat`, `replace` |
+| **Math** | `add`, `subtract`, `multiply`, `divide`, `abs`, `round`, `floor`, `ceil` |
+| **Logic** | `if`, `coalesce` (returns first non-null), `isNull`, `isNotNull` |
+| **Date** | `now`, `formatDate`, `year`, `month`, `day` |
+| **Type** | `toString`, `toInt`, `toFloat` |
 
-You can use computed fields as arguments to other functions within the same expression.
+## 4. Best Practices
 
-```graphql
-query {
-    products {
-        # Calculate discount price
-        final_price: subtract(price, multiply(price, discount_rate))
-        
-        # Complex logic
-        stock_status: if(
-            lt(stock, 10),
-            "Low Stock",
-            if(gt(stock, 100), "Plentiful", "Normal")
-        )
-    }
-}
-```
+1.  **Prefer Retrieval-Time for Logic**: If the logic might change (e.g., tax rates), keep it as a computed field rather than persisting the result.
+2.  **Use `coalesce` for Defaults**: When interpolating optional fields, use `coalesce` to provide a fallback value.
+    - Example: `display: coalesce(nickname, firstName, "User")`
+3.  **Watch Selection Depth**: Computed fields that depend on `lookup` results can be expensive. Use them sparingly in large result sets.
+4.  **Use Pipes for Readability**: `name | trim | uppercase` is much easier to read than `uppercase(trim(name))`.
