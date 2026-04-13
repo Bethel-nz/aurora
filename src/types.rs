@@ -1,3 +1,15 @@
+//! # Aurora Data Types
+//!
+//! This module defines the core data structures used throughout Aurora DB, 
+//! including the fundamental `Value` enum, document schema definitions, 
+//! and configuration options.
+//!
+//! ## Key Types
+//! - **Value**: The universal data type for all document fields (String, Int, UUID, etc.).
+//! - **Document**: A collection-native document containing data and a system ID.
+//! - **FieldType / FieldDefinition**: Structures for defining and validating collection schemas.
+//! - **AuroraConfig**: The primary configuration struct for database initialization.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -210,14 +222,20 @@ pub struct Collection {
     pub fields: HashMap<String, FieldDefinition>,
 }
 
+/// Represents a single document in an Aurora collection.
+///
+/// A document consists of a unique system ID (`_sid`) and a set of key-value pairs (`data`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
+    /// The unique internal system ID for this document.
     #[serde(rename = "_sid", alias = "id")]
     pub _sid: String,
+    /// The document's fields and values.
     pub data: HashMap<String, Value>,
 }
 
 impl Document {
+    /// Creates a new document with a unique ID and empty data.
     pub fn new() -> Self {
         Self {
             _sid: Uuid::now_v7().to_string(),
@@ -225,7 +243,18 @@ impl Document {
         }
     }
 
+    /// Returns the system ID of the document.
+    pub fn id(&self) -> &str {
+        &self._sid
+    }
+
+    /// Gets a value from the document's data by field name.
+    pub fn get(&self, field: &str) -> Option<&Value> {
+        self.data.get(field)
+    }
+
     /// Maps the document data into a user-defined struct that implements `Deserialize`.
+    ///
     /// This automatically aliases the internal `_sid` to `id` if not present in the data,
     /// and also provides `_sid` explicitly.
     pub fn bind<T: serde::de::DeserializeOwned>(mut self) -> crate::error::Result<T> {
@@ -257,17 +286,29 @@ impl fmt::Display for Document {
     }
 }
 
+/// Represents any value that can be stored in an Aurora document.
+///
+/// This enum covers all supported scalar and collection types in AQL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Value {
+    /// A null value.
     Null,
+    /// A boolean value.
     Bool(bool),
+    /// A 64-bit integer.
     Int(i64),
+    /// A 64-bit floating point number.
     Float(f64),
+    /// A UTF-8 string.
     String(String),
+    /// A Universally Unique Identifier (UUID).
     Uuid(Uuid),
+    /// A UTC date and time.
     DateTime(DateTime<Utc>),
+    /// An ordered list of values.
     Array(Vec<Value>),
+    /// A map of string keys to values.
     Object(HashMap<String, Value>),
 }
 
@@ -379,6 +420,7 @@ impl fmt::Display for Value {
 }
 
 impl Value {
+    /// Returns the value as a string slice, if it is a `Value::String`.
     pub fn as_str(&self) -> Option<&str> {
         if let Value::String(s) = self {
             Some(s)
@@ -386,6 +428,8 @@ impl Value {
             None
         }
     }
+
+    /// Returns the value as an `i64`, if it is a `Value::Int`.
     pub fn as_i64(&self) -> Option<i64> {
         if let Value::Int(i) = self {
             Some(*i)
@@ -393,6 +437,8 @@ impl Value {
             None
         }
     }
+
+    /// Returns the value as an `f64`, if it is a `Value::Float`.
     pub fn as_f64(&self) -> Option<f64> {
         if let Value::Float(f) = self {
             Some(*f)
@@ -400,6 +446,8 @@ impl Value {
             None
         }
     }
+
+    /// Returns the value as a `bool`, if it is a `Value::Bool`.
     pub fn as_bool(&self) -> Option<bool> {
         if let Value::Bool(b) = self {
             Some(*b)
@@ -407,6 +455,8 @@ impl Value {
             None
         }
     }
+
+    /// Returns the value as a reference to a `Vec<Value>`, if it is a `Value::Array`.
     pub fn as_array(&self) -> Option<&Vec<Value>> {
         if let Value::Array(a) = self {
             Some(a)
@@ -414,6 +464,8 @@ impl Value {
             None
         }
     }
+
+    /// Returns the value as a reference to a `HashMap`, if it is a `Value::Object`.
     pub fn as_object(&self) -> Option<&HashMap<String, Value>> {
         if let Value::Object(o) = self {
             Some(o)
@@ -423,6 +475,8 @@ impl Value {
     }
 
     /// Coerces the value to a target field type if possible.
+    ///
+    /// This is used for type normalization during ingestion.
     pub fn coerce_to(&self, target: &FieldType) -> Value {
         match target {
             FieldType::Scalar(ScalarType::String) => match self {

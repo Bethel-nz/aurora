@@ -1,50 +1,60 @@
 //! # Aurora Database
 //!
-//! Aurora is an embedded document database with tiered storage architecture.
-//! It provides document storage, querying, indexing, and search capabilities
-//! while optimizing for both performance and durability.
+//! Aurora is a high-performance, embedded document database designed for speed, 
+//! durability, and developer ergonomics. It features a tiered storage architecture 
+//! combining a blazing-fast in-memory cache with reliable, persistent cold storage.
 //!
-//! ## Key Features
-//!
-//! * **Tiered Storage**: Hot in-memory cache + persistent cold storage
-//! * **Document Model**: Schema-flexible JSON-like document storage
-//! * **Querying**: Rich query capabilities with filtering and sorting
-//! * **Full-text Search**: Built-in search engine with relevance ranking
-//! * **Transactions**: ACID-compliant transaction support
+//! ## Core Architecture
+//! - **Tiered Storage**: Automatically manages data between a "hot" cache (DashMap/Moka) 
+//!   and "cold" storage (Sled/MMAP) for optimal performance.
+//! - **AQL (Aurora Query Language)**: A GraphQL-inspired query language for powerful 
+//!   data retrieval, manipulation, and real-time subscriptions.
+//! - **Roaring Bitmaps**: Uses Roaring Bitmaps for high-performance secondary indexing 
+//!   and bitwise query optimization.
+//! - **Write-Ahead Logging (WAL)**: Ensures crash-consistency and data durability.
 //!
 //! ## Quick Start
 //!
-
-//! use aurora_db::{Aurora, Value, FieldType};
-//!
+//! ```rust
+//! use aurora_db::{Aurora, doc, object, FieldType};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Open a database
-//! let db = Aurora::open("my_app.db")?;
+//!     // Open or create a database
+//!     let db = Aurora::open("my_database.db").await?;
 //!
-//! // Create a collection
-//! db.new_collection("users", vec![
-//!     ("name", FieldType::String, false),
-//!     ("email", FieldType::String, true),  // unique field
-//!     ("age", FieldType::Int, false),
-//! ]).await?;
+//!     // Define a collection with schema
+//!     db.new_collection("users", vec![
+//!         ("name", FieldType::SCALAR_STRING, false),
+//!         ("email", FieldType::SCALAR_STRING, true), // Unique constraint
+//!         ("age", FieldType::SCALAR_INT, false),
+//!     ]).await?;
 //!
-//! // Insert data
-//! let user_id = db.insert_into("users", vec![
-//!     ("name", Value::String("Jane Doe".to_string())),
-//!     ("email", Value::String("jane@example.com".to_string())),
-//!     ("age", Value::Int(28)),
-//! ]).await?;
+//!     // Insert a document using the object! macro
+//!     let user_id = db.insert_map("users", object!({
+//!         "name": "Jane Doe",
+//!         "email": "jane@example.com",
+//!         "age": 28
+//!     }).as_object().unwrap().clone()).await?;
 //!
-//! // Query data
-//! let users = db.query("users")
-//!     .filter(|f| f.gt("age", 21))
-//!     .collect()
-//!     .await?;
+//!     // Run a parametrized AQL query using the doc! macro
+//!     let result = db.execute(doc!(
+//!         "query($minAge: Int) {
+//!             users(where: { age: { gte: $minAge } }) {
+//!                 name
+//!                 email
+//!             }
+//!         }",
+//!         { "minAge": 21 }
+//!     )).await?;
 //!
-//! # Ok(())
-//! # }
+//!     // Bind the results back to a Rust struct
+//!     #[derive(serde::Deserialize, Debug)]
+//!     struct User { name: String, email: String }
+//!     let users: Vec<User> = result.bind()?;
+//!
+//!     Ok(())
+//! }
 //! ```
 
 // Re-export primary types and modules

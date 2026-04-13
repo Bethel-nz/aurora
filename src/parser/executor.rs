@@ -864,19 +864,28 @@ fn validate_required_variables(
     Ok(())
 }
 
-/// Result of executing an AQL operation
+/// The result of executing an AQL operation.
+///
+/// This enum encapsulates the different types of results that can be returned
+/// by the Aurora engine, such as query results, mutation effects, or schema changes.
 #[derive(Debug)]
 pub enum ExecutionResult {
+    /// Result of a `query` operation.
     Query(QueryResult),
+    /// Result of a `mutation` operation (insert, update, delete, upsert).
     Mutation(MutationResult),
+    /// Result of a `subscription` operation.
     Subscription(SubscriptionResult),
+    /// A batch of multiple results.
     Batch(Vec<ExecutionResult>),
+    /// Result of a schema definition operation.
     Schema(SchemaResult),
+    /// Result of a database migration.
     Migration(MigrationResult),
 }
 
 impl ExecutionResult {
-    /// Extracts the QueryResult if this is a Query, returning None otherwise.
+    /// Extracts the `QueryResult` if this is a `Query`, returning `None` otherwise.
     pub fn as_query(&self) -> Option<&QueryResult> {
         if let Self::Query(q) = self {
             Some(q)
@@ -885,7 +894,7 @@ impl ExecutionResult {
         }
     }
 
-    /// Consumes the result and returns the QueryResult if this is a Query.
+    /// Consumes the result and returns the `QueryResult` if this is a `Query`.
     pub fn into_query(self) -> Option<QueryResult> {
         if let Self::Query(q) = self {
             Some(q)
@@ -894,7 +903,7 @@ impl ExecutionResult {
         }
     }
 
-    /// Extracts the MutationResult if this is a Mutation, returning None otherwise.
+    /// Extracts the `MutationResult` if this is a `Mutation`, returning `None` otherwise.
     pub fn as_mutation(&self) -> Option<&MutationResult> {
         if let Self::Mutation(m) = self {
             Some(m)
@@ -903,7 +912,7 @@ impl ExecutionResult {
         }
     }
 
-    /// Consumes the result and returns the MutationResult if this is a Mutation.
+    /// Consumes the result and returns the `MutationResult` if this is a `Mutation`.
     pub fn into_mutation(self) -> Option<MutationResult> {
         if let Self::Mutation(m) = self {
             Some(m)
@@ -912,7 +921,7 @@ impl ExecutionResult {
         }
     }
 
-    /// Extracts the SubscriptionResult if this is a Subscription.
+    /// Extracts the `SubscriptionResult` if this is a `Subscription`, returning `None` otherwise.
     pub fn as_subscription(&self) -> Option<&SubscriptionResult> {
         if let Self::Subscription(s) = self {
             Some(s)
@@ -921,7 +930,7 @@ impl ExecutionResult {
         }
     }
 
-    /// Consumes the result and returns the SubscriptionResult.
+    /// Consumes the result and returns the `SubscriptionResult` if this is a `Subscription`.
     pub fn into_subscription(self) -> Option<SubscriptionResult> {
         if let Self::Subscription(s) = self {
             Some(s)
@@ -931,7 +940,9 @@ impl ExecutionResult {
     }
 
     /// Maps the result documents into a list of user-defined structs.
-    /// Works for Query, Mutation, and Batch results.
+    ///
+    /// This works for `Query`, `Mutation`, and `Batch` results. The target type `T`
+    /// must implement `serde::Deserialize`.
     pub fn bind<T: serde::de::DeserializeOwned>(self) -> Result<Vec<T>> {
         match self {
             Self::Query(q) => q.bind(),
@@ -951,6 +962,8 @@ impl ExecutionResult {
     }
 
     /// Maps the first result document into a user-defined struct.
+    ///
+    /// This is an optimized version of `bind` that only processes the first document.
     pub fn bind_first<T: serde::de::DeserializeOwned>(self) -> Result<T> {
         match self {
             Self::Query(q) => q.bind_first(),
@@ -992,15 +1005,18 @@ pub struct ExecutionPlan {
     pub estimated_cost: f64,
 }
 
-/// Query execution result
+/// The result of a `query` operation.
 #[derive(Debug, Clone)]
 pub struct QueryResult {
+    /// The name of the collection that was queried.
     pub collection: String,
+    /// The documents that matched the query.
     pub documents: Vec<Document>,
+    /// The total number of documents matching the query (if calculated).
     pub total_count: Option<usize>,
-    /// Fields marked @defer — omitted from documents, listed here
+    /// Fields marked `@defer` — omitted from documents, listed here.
     pub deferred_fields: Vec<String>,
-    /// Explain metadata when @explain is present on the query
+    /// Explain metadata when `@explain` is present on the query.
     pub explain: Option<ExplainResult>,
 }
 
@@ -1028,26 +1044,34 @@ impl QueryResult {
     }
 }
 
-/// Execution plan metadata returned by @explain
+/// Execution plan metadata returned by `@explain`.
 #[derive(Debug, Clone, Default)]
 pub struct ExplainResult {
+    /// The name of the collection that was scanned.
     pub collection: String,
+    /// The number of documents scanned during execution.
     pub docs_scanned: usize,
+    /// Whether a secondary index was used for the query.
     pub index_used: bool,
+    /// The time taken to execute the query in milliseconds.
     pub elapsed_ms: u128,
 }
 
-/// Mutation execution result
+/// The result of a `mutation` operation.
 #[derive(Debug, Clone)]
 pub struct MutationResult {
+    /// The type of operation performed (insert, update, delete, upsert).
     pub operation: String,
+    /// The name of the collection affected by the mutation.
     pub collection: String,
+    /// The number of documents affected by the operation.
     pub affected_count: usize,
+    /// The documents returned by the mutation (if any).
     pub returned_documents: Vec<Document>,
 }
 
 impl MutationResult {
-    /// Maps the returned documents into a list of user-defined structs.
+    /// Maps the documents returned by the mutation to a list of user-defined structs.
     pub fn bind<T: serde::de::DeserializeOwned>(self) -> Result<Vec<T>> {
         self.returned_documents
             .into_iter()
@@ -1055,7 +1079,7 @@ impl MutationResult {
             .collect::<Result<Vec<T>>>()
     }
 
-    /// Maps the first returned document into a user-defined struct.
+    /// Maps the first document returned by the mutation to a user-defined struct.
     pub fn bind_first<T: serde::de::DeserializeOwned>(self) -> Result<T> {
         self.returned_documents
             .into_iter()
@@ -1070,11 +1094,14 @@ impl MutationResult {
     }
 }
 
-/// Subscription result
+/// The result of a `subscription` operation.
 #[derive(Debug)]
 pub struct SubscriptionResult {
+    /// Unique identifier for the subscription.
     pub subscription_id: String,
+    /// The name of the collection being subscribed to.
     pub collection: String,
+    /// The stream of change events.
     pub stream: Option<crate::pubsub::ChangeListener>,
 }
 

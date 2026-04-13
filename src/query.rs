@@ -33,21 +33,28 @@ pub struct QueryBuilder<'a> {
 }
 
 /// Builder for constructing document filter expressions.
+///
+/// This builder provides a fluent interface for creating complex filters
+/// that can be used with `QueryBuilder`.
 pub struct FilterBuilder;
 
 impl FilterBuilder {
+    /// Creates a new `FilterBuilder`.
     pub fn new() -> Self {
         Self
     }
 
+    /// Creates an equality filter: `field == value`.
     pub fn eq<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
         Filter::Eq(field.to_string(), value.into())
     }
 
+    /// Creates a inequality filter: `field != value`.
     pub fn ne<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
         Filter::Ne(field.to_string(), value.into())
     }
 
+    /// Creates an inclusion filter: `field in [values...]`.
     pub fn in_values<T: Into<Value> + Clone>(&self, field: &str, values: &[T]) -> Filter {
         Filter::In(
             field.to_string(),
@@ -55,30 +62,37 @@ impl FilterBuilder {
         )
     }
 
+    /// Creates a prefix matching filter: `field starts with value`.
     pub fn starts_with(&self, field: &str, value: &str) -> Filter {
         Filter::StartsWith(field.to_string(), value.to_string())
     }
 
+    /// Creates a substring matching filter: `field contains value`.
     pub fn contains(&self, field: &str, value: &str) -> Filter {
         Filter::Contains(field.to_string(), value.to_string())
     }
 
+    /// Creates a greater-than filter: `field > value`.
     pub fn gt<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
         Filter::Gt(field.to_string(), value.into())
     }
 
+    /// Creates a greater-than-or-equal filter: `field >= value`.
     pub fn gte<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
         Filter::Gte(field.to_string(), value.into())
     }
 
+    /// Creates a less-than filter: `field < value`.
     pub fn lt<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
         Filter::Lt(field.to_string(), value.into())
     }
 
+    /// Creates a less-than-or-equal filter: `field <= value`.
     pub fn lte<T: Into<Value>>(&self, field: &str, value: T) -> Filter {
         Filter::Lte(field.to_string(), value.into())
     }
 
+    /// Creates an inclusion filter from a vector: `field in values`.
     pub fn in_vec<T: Into<Value>>(&self, field: &str, values: Vec<T>) -> Filter {
         Filter::In(
             field.to_string(),
@@ -86,6 +100,7 @@ impl FilterBuilder {
         )
     }
 
+    /// Creates a range filter: `min <= field <= max`.
     pub fn between<T: Into<Value> + Clone>(&self, field: &str, min: T, max: T) -> Filter {
         Filter::And(vec![
             Filter::Gte(field.to_string(), min.into()),
@@ -95,6 +110,7 @@ impl FilterBuilder {
 }
 
 impl<'a> QueryBuilder<'a> {
+    /// Creates a new `QueryBuilder` for the specified collection.
     pub fn new(db: &'a Aurora, collection: &str) -> Self {
         Self {
             db,
@@ -108,6 +124,15 @@ impl<'a> QueryBuilder<'a> {
         }
     }
 
+    /// Adds a filter to the query using the `FilterBuilder`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let users = db.query("users")
+    ///     .filter(|f| f.eq("active", true))
+    ///     .collect()
+    ///     .await?;
+    /// ```
     pub fn filter<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&FilterBuilder) -> Filter,
@@ -117,37 +142,55 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
+    /// Sets the sort order for the query.
+    ///
+    /// # Arguments
+    /// * `field` - The field to sort by.
+    /// * `ascending` - `true` for ascending order, `false` for descending.
     pub fn order_by(mut self, field: &str, ascending: bool) -> Self {
         self.order_by = Some((field.to_string(), ascending));
         self
     }
 
+    /// Limits the number of documents returned by the query.
+    ///
+    /// Using `limit` enables early termination optimizations, making queries
+    /// significantly faster on large collections.
     pub fn limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
         self
     }
 
+    /// Sets the number of matching documents to skip.
     pub fn offset(mut self, offset: usize) -> Self {
         self.offset = Some(offset);
         self
     }
 
+    /// Specifies which fields to include in the returned documents.
+    ///
+    /// This reduces memory usage and transfer size by only retrieving necessary data.
     pub fn select(mut self, fields: Vec<&str>) -> Self {
         self.fields = Some(fields.into_iter().map(|s| s.to_string()).collect());
         self
     }
 
+    /// Sets a debounce duration for reactive queries.
     pub fn debounce(mut self, duration: std::time::Duration) -> Self {
         self.debounce_duration = Some(duration);
         self
     }
 
+    /// Executes the query and returns the first matching document, if any.
+    ///
+    /// This is an optimized operation that stops after finding the first match.
     pub async fn first_one(self) -> Result<Option<Document>> {
         let docs = self.limit(1).collect().await?;
         Ok(docs.into_iter().next())
     }
 
-    /// Executes the query and returns the matching documents.
+    /// Executes the query and returns all matching documents.
+    ///
     /// Uses secondary indices (Roaring Bitmaps) for optimized filtering when possible.
     pub async fn collect(self) -> Result<Vec<Document>> {
         self.db.ensure_indices_initialized().await?;
@@ -363,11 +406,15 @@ impl<'a> QueryBuilder<'a> {
         Ok(result)
     }
 
+    /// Returns the number of documents that match the query.
     pub async fn count(self) -> Result<usize> {
         let results = self.collect().await?;
         Ok(results.len())
     }
 
+    /// Deletes all documents that match the query.
+    ///
+    /// Returns the number of documents that were deleted.
     pub async fn delete(self) -> Result<usize> {
         let db = self.db;
         let collection = self.collection.clone();
@@ -379,6 +426,10 @@ impl<'a> QueryBuilder<'a> {
         Ok(count)
     }
 
+    /// Creates a reactive query watcher.
+    ///
+    /// The watcher will emit updated result sets whenever the underlying data changes
+    /// in a way that affects the query results.
     pub async fn watch(self) -> Result<crate::reactive::QueryWatcher> {
         let collection = self.collection.clone();
         let filters = self.filters.clone();
@@ -444,6 +495,7 @@ fn fuzzy_score(
 }
 
 impl<'a> SearchBuilder<'a> {
+    /// Creates a new `SearchBuilder` for the specified collection.
     pub fn new(db: &'a Aurora, collection: &str) -> Self {
         Self {
             db,
@@ -456,29 +508,34 @@ impl<'a> SearchBuilder<'a> {
         }
     }
 
+    /// Sets the search query string.
     pub fn query(mut self, query: &str) -> Self {
         self.query = query.to_string();
         self
     }
 
+    /// Limits the number of search results returned.
     pub fn limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
         self
     }
 
+    /// Enables fuzzy matching with a specified maximum edit distance.
     pub fn fuzzy(mut self, distance: u8) -> Self {
         self.fuzzy = true;
         self.distance = distance;
         self
     }
 
-    /// Restrict search to specific field names (None = all string fields)
+    /// Restricts the search to specific field names.
+    ///
+    /// If not specified, all string fields in the documents will be searched.
     pub fn fields(mut self, fields: Vec<String>) -> Self {
         self.search_fields = Some(fields);
         self
     }
 
-    /// Like collect() but accepts an optional field filter inline
+    /// Like `collect()` but accepts an optional field filter inline.
     pub async fn collect_with_fields(self, fields: Option<&[String]>) -> Result<Vec<Document>> {
         let builder = if let Some(f) = fields {
             Self {
@@ -491,6 +548,7 @@ impl<'a> SearchBuilder<'a> {
         builder.collect().await
     }
 
+    /// Executes the search and returns matching documents ranked by relevance.
     pub async fn collect(self) -> Result<Vec<Document>> {
         let query = self.query.to_lowercase();
         let mut results = Vec::new();

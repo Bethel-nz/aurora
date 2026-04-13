@@ -1,47 +1,20 @@
-//! # Aurora Database
+//! # Aurora Core Engine
 //!
-//! Aurora is an embedded document database with tiered storage architecture.
-//! It provides document storage, querying, indexing, and search capabilities
-//! while optimizing for both performance and durability.
+//! This module contains the `Aurora` struct, which is the primary handle for 
+//! interacting with the database. It coordinates the tiered storage system, 
+//! index management, transaction lifecycle, and AQL execution.
 //!
-//! ## Key Features
+//! ## Key Responsibilities
+//! - **Collection Management**: Creating and deleting collections with defined schemas.
+//! - **CRUD Operations**: High-performance insertion, retrieval, update, and deletion of documents.
+//! - **Transaction Coordination**: Managing ACID-compliant transaction buffers and commits.
+//! - **Index Coordination**: Maintaining primary and secondary indices (including Roaring Bitmaps).
+//! - **PubSub Integration**: Publishing change events for real-time listeners.
 //!
-//! * **Tiered Storage**: Hot in-memory cache + persistent cold storage
-//! * **Document Model**: Schema-flexible JSON-like document storage
-//! * **Querying**: Rich query capabilities with filtering and sorting
-//! * **Full-text Search**: Built-in search engine with relevance ranking
-//! * **Transactions**: ACID-compliant transaction support
-//! * **Blob Storage**: Efficient storage for large binary objects
-//!
-//! ## Usage Example
-//!
-//! ```ignore
-//! use aurora::Aurora;
-//!
-//! // Open a database
-//! let db = Aurora::open("my_database.db")?;
-//!
-//! // Create a collection with schema
-//! db.new_collection("users", vec![
-//!     ("name", FieldType::Scalar(crate::types::ScalarType::String), false),
-//!     ("email", FieldType::Scalar(crate::types::ScalarType::String), true),  // unique field
-//!     ("age", FieldType::Scalar(crate::types::ScalarType::Int), false),
-//! ])?;
-//!
-//! // Insert a document
-//! let user_id = db.insert_into("users", vec![
-//!     ("name", Value::String("Jane Doe".to_string())),
-//!     ("email", Value::String("jane@example.com".to_string())),
-//!     ("age", Value::Int(28)),
-//! ])?;
-//!
-//! // Query for documents
-//! let adult_users = db.query("users")
-//!     .filter(|f| f.gt("age", 18))
-//!     .order_by("name", true)
-//!     .collect()
-//!     .await?;
-//! ```
+//! ## Thread Safety
+//! `Aurora` is designed to be wrapped in an `Arc` and shared across multiple 
+//! threads or async tasks. Internally, it uses highly concurrent data structures 
+//! (like `DashMap`) and fine-grained locking to ensure safe parallel access.
 
 use crate::error::{AqlError, ErrorCode, Result};
 use crate::index::{Index, IndexDefinition, IndexType};
@@ -932,36 +905,58 @@ impl Aurora {
         Ok(docs.into_iter().next())
     }
 
-    /// Execute AQL query (variables are optional)
+    /// Executes an AQL (Aurora Query Language) operation against the database.
     ///
-    /// Supports two forms:
-    /// 1. `db.execute("query").await`
-    /// 2. `db.execute(("query", vars)).await`
+    /// This is the primary entry point for all database operations including queries,
+    /// mutations, schema definitions, and migrations.
+    ///
+    /// # Arguments
+    /// * `input` - Anything that implements `ToExecParams`. This includes:
+    ///   - A simple query string: `"query { users { id } }"`
+    ///   - A query string with variables: `("query($id: String) { users(where: {id: {eq: $id}}) { name } }", json!({"id": "u1"}))`
+    ///   - The `doc!` macro output: `doc!("query...", {"var": 123})`
+    ///
+    /// # Returns
+    /// An `ExecutionResult` which can be bound to Rust types using `.bind()` or `.bind_first()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use aurora_db::{Aurora, doc, Value};
+    /// # async fn example(db: Aurora) -> Result<(), Box<dyn std::error::Error>> {
+    /// // Simple query
+    /// let res = db.execute("query { users { name } }").await?;
+    ///
+    /// // Query with variables using doc! macro
+    /// let res = db.execute(doc!(
+    ///     "query($minAge: Int) { users(where: { age: { gte: $minAge } }) { name } }",
+    ///     { "minAge": 18 }
+    /// )).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn execute<I: ToExecParams>(&self, input: I) -> Result<ExecutionResult> {
         let (aql, options) = input.into_params();
         parser::executor::execute(self, &aql, options).await
     }
 
-    /// Stream real-time changes using AQL subscription syntax
+    /// Subscribes to real-time changes using AQL subscription syntax.
     ///
-    /// This is a convenience method that extracts the `ChangeListener` from
-    /// an AQL subscription query, providing a cleaner API than using `execute()` directly.
+    /// This method returns a `ChangeListener` that yields events whenever documents
+    /// matching the subscription criteria are inserted, updated, or deleted.
+    ///
+    /// # Arguments
+    /// * `aql` - An AQL subscription string.
+    ///
+    /// # Returns
+    /// A `ChangeListener` (stream-like) for receiving real-time `ChangeEvent`s.
     ///
     /// # Example
-    /// ```ignore
-    /// // Stream changes from active products
-    /// let mut listener = db.stream(r#"
-    ///     subscription {
-    ///         products(where: { active: { eq: true } }) {
-    ///             id
-    ///             name
-    ///         }
-    ///     }
-    /// "#).await?;
     ///
-    /// // Receive real-time events
+    /// ```ignore
+    /// let mut listener = db.stream("subscription { users { id name } }").await?;
     /// while let Ok(event) = listener.recv().await {
-    ///     println!("Change: {:?} on {}", event.change_type, event._sid);
+    ///     println!("Change detected: {:?}", event);
     /// }
     /// ```
     pub async fn stream(&self, aql: &str) -> Result<crate::pubsub::ChangeListener> {
@@ -981,7 +976,16 @@ impl Aurora {
         }
     }
 
-    /// Explain AQL query execution plan
+    /// Explains the execution plan for an AQL query without executing it.
+    ///
+    /// This is useful for debugging performance issues and understanding how Aurora
+    /// will process a given query (e.g., whether it will use an index or a full scan).
+    ///
+    /// # Arguments
+    /// * `input` - The query to explain (accepts same formats as `execute`).
+    ///
+    /// # Returns
+    /// An `ExecutionPlan` containing the sequence of operations and estimated cost.
     pub async fn explain<I: ToExecParams>(&self, input: I) -> Result<ExecutionPlan> {
         let (aql, options) = input.into_params();
 
@@ -991,7 +995,9 @@ impl Aurora {
         self.analyze_execution_plan(&doc).await
     }
 
-    /// Analyze execution plan for a parsed query
+    /// Analyzes a parsed AQL document to produce an execution plan.
+    ///
+    /// Internal helper used by `explain`.
     pub async fn analyze_execution_plan(
         &self,
         doc: &crate::parser::ast::Document,
@@ -1006,7 +1012,8 @@ impl Aurora {
             estimated_cost: 1.0,
         })
     }
-    /// Remove stale lock files from a database directory
+
+    /// Removes stale lock files from a database directory.
     ///
     /// If Aurora crashes or is forcefully terminated, it may leave behind lock files
     /// that prevent the database from being reopened. This method safely removes
@@ -1015,48 +1022,29 @@ impl Aurora {
     /// # Safety
     /// Only call this when you're certain no other Aurora instance is using the database.
     /// Removing lock files while another process is running could cause data corruption.
-    ///
-    /// # Example
-    /// ```ignore
-    /// use aurora_db::Aurora;
-    ///
-    /// // If you get "Access denied" error when opening:
-    /// if let Err(e) = Aurora::open("my_db") {
-    ///     eprintln!("Failed to open: {}", e);
-    ///     // Try removing stale lock
-    ///     if Aurora::remove_stale_lock("my_db").unwrap_or(false) {
-    ///         println!("Removed stale lock, try opening again");
-    ///         let db = Aurora::open("my_db")?;
-    ///     }
-    /// }
-    /// # Ok::<(), aurora_db::error::AqlError>(())
-    /// ```
     pub fn remove_stale_lock<P: AsRef<Path>>(path: P) -> Result<bool> {
         let resolved_path = Self::resolve_path(path)?;
         crate::storage::cold::ColdStore::try_remove_stale_lock(resolved_path.to_str().unwrap())
     }
 
-    /// Open or create a database at the specified location
+    /// Opens or creates a database at the specified path.
+    ///
+    /// If the database doesn't exist, it will be created. If it does exist, it will
+    /// be opened and any pending WAL (Write-Ahead Log) entries will be replayed
+    /// to ensure consistency.
     ///
     /// # Arguments
-    /// * `path` - Path to the database file or directory
-    ///   - Absolute paths (like `/data/myapp.db`) are used as-is
-    ///   - Relative paths (like `./data/myapp.db`) are resolved relative to the current directory
-    ///   - Simple names (like `myapp.db`) use the current directory
-    ///
-    /// # Returns
-    /// An initialized `Aurora` database instance
+    /// * `path` - The filesystem path to the database.
     ///
     /// # Examples
     ///
-
-    /// use aurora_db::Aurora;
-    ///
-    /// let db = Aurora::open("./data/my_application.db")?;
-    ///
-    /// // Or use a relative path
-    /// let db = Aurora::open("customer_data.db")?;
-    /// ```ignore
+    /// ```no_run
+    /// # use aurora_db::Aurora;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let db = Aurora::open("my_database.db").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let config = AuroraConfig {
             db_path: Self::resolve_path(path)?,
@@ -1084,29 +1072,29 @@ impl Aurora {
         }
     }
 
-    /// Open a database with custom configuration
+    /// Opens a database with a custom configuration.
+    ///
+    /// This allows fine-tuning performance parameters like cache sizes,
+    /// durability modes, and worker settings.
     ///
     /// # Arguments
-    /// * `config` - Database configuration settings
+    /// * `config` - The `AuroraConfig` to use.
     ///
     /// # Examples
     ///
-    /// ```
-    /// use aurora_db::{Aurora, types::AuroraConfig};
-    /// use std::time::Duration;
-    ///
+    /// ```no_run
+    /// # use aurora_db::{Aurora, AuroraConfig};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let config = AuroraConfig {
-    ///     db_path: "my_data.db".into(),
-    ///     hot_cache_size_mb: 512,           // 512 MB cache
-    ///     enable_write_buffering: true,     // Batch writes for speed
-    ///     enable_wal: true,                 // Durability
-    ///     auto_compact: true,               // Background compaction
-    ///     compact_interval_mins: 60,        // Compact every hour
+    ///     db_path: "custom.db".into(),
+    ///     hot_cache_size_mb: 1024,
+    ///     enable_wal: true,
     ///     ..Default::default()
     /// };
-    ///
-    /// let db = Aurora::with_config(config)?;
-    /// ```ignore
+    /// let db = Aurora::with_config(config).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn with_config(config: AuroraConfig) -> Result<Self> {
         let path = Self::resolve_path(&config.db_path)?;
 
@@ -2931,11 +2919,28 @@ impl Aurora {
         Ok(())
     }
 
+    /// Retrieves all documents from a collection.
+    ///
+    /// # Arguments
+    /// * `collection` - The name of the collection.
+    ///
+    /// # Returns
+    /// A vector containing all documents in the collection.
+    ///
+    /// # Performance
+    /// For large collections, consider using `query().limit().collect()` instead to
+    /// avoid loading too much data into memory at once.
     pub async fn get_all_collection(&self, collection: &str) -> Result<Vec<Document>> {
         self.ensure_indices_initialized().await?;
         self.scan_collection(collection)
     }
 
+    /// Searches for raw storage keys matching a pattern.
+    ///
+    /// Returns a list of (key, data_info) pairs. This is a low-level diagnostic tool.
+    ///
+    /// # Arguments
+    /// * `pattern` - The string pattern to search for in keys.
     pub fn get_data_by_pattern(&self, pattern: &str) -> Result<Vec<(String, DataInfo)>> {
         let mut data = Vec::new();
 
@@ -3461,110 +3466,13 @@ impl Aurora {
         }
     }
 
-    /// Delete a document by ID
+    /// Deletes a document by its full internal key (format: "collection:id").
     ///
-    /// Permanently removes a document from storage, cache, and all indices.
-    /// Publishes a delete event for PubSub subscribers. This operation cannot be undone.
-    ///
-    /// # Performance
-    /// - Delete speed: ~50,000 deletes/sec
-    /// - Cleans up hot cache, cold storage, primary + secondary indices
-    /// - Triggers PubSub events for listeners
+    /// This is a low-level deletion method. It removes the document from storage,
+    /// clears it from the hot cache, and updates all associated indices.
     ///
     /// # Arguments
-    /// * `key` - Full key in format "collection:id" (e.g., "users:123")
-    ///
-    /// # Returns
-    /// Success or an error
-    ///
-    /// # Errors
-    /// - `InvalidOperation`: Invalid key format (must be "collection:id")
-    /// - `IoError`: Storage deletion failed
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use aurora_db::Aurora;
-    ///
-    /// let db = Aurora::open("mydb.db")?;
-    ///
-    /// // Basic deletion (note: requires "collection:id" format)
-    /// db.delete("users:abc123").await?;
-    ///
-    /// // Delete with existence check
-    /// let user_id = "user-456";
-    /// if db.get_document("users", user_id)?.is_some() {
-    ///     db.delete(&format!("users:{}", user_id)).await?;
-    ///     println!("User deleted");
-    /// } else {
-    ///     println!("User not found");
-    /// }
-    ///
-    /// // Error handling
-    /// match db.delete("users:nonexistent").await {
-    ///     Ok(_) => println!("Deleted successfully"),
-    ///     Err(e) => println!("Delete failed: {}", e),
-    /// }
-    ///
-    /// // Batch deletion using query
-    /// let inactive_count = db.delete_where("users", |f| {
-    ///     f.eq("active", Value::Bool(false))
-    /// }).await?;
-    /// println!("Deleted {} inactive users", inactive_count);
-    ///
-    /// // Delete with cascading (manual cascade pattern)
-    /// let user_id = "user-123";
-    ///
-    /// // Delete user's orders first
-    /// let orders = db.query("orders")
-    ///     .filter(|f| f.eq("user_id", user_id))
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// for order in orders {
-    ///     db.delete(&format!("orders:{}", order._sid)).await?;
-    /// }
-    ///
-    /// // Then delete the user
-    /// db.delete(&format!("users:{}", user_id)).await?;
-    /// println!("User and all orders deleted");
-    /// ```ignore
-    ///
-    /// # Alternative: Soft Delete Pattern
-    ///
-    /// For recoverable deletions, use soft deletes instead:
-    ///
-    /// ```
-    /// // Soft delete - mark as deleted instead of removing
-    /// db.update_document("users", &user_id, vec![
-    ///     ("deleted", Value::Bool(true)),
-    ///     ("deleted_at", Value::String(chrono::Utc::now().to_rfc3339())),
-    /// ]).await?;
-    ///
-    /// // Query excludes soft-deleted items
-    /// let active_users = db.query("users")
-    ///     .filter(|f| f.eq("deleted", Value::Bool(false)))
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// // Later: hard delete after retention period
-    /// let old_deletions = db.query("users")
-    ///     .filter(|f| f.eq("deleted", Value::Bool(true)))
-    ///     .filter(|f| f.lt("deleted_at", thirty_days_ago))
-    ///     .collect()
-    ///     .await?;
-    ///
-    /// for user in old_deletions {
-    ///     db.delete(&format!("users:{}", user._sid)).await?;
-    /// }
-    /// ```ignore
-    ///
-    /// # Important Notes
-    /// - Deletion is permanent - no undo/recovery
-    /// - Consider soft deletes for recoverable operations
-    /// - Use transactions for multi-document deletions
-    /// - PubSub subscribers will receive delete events
-    /// - All indices are automatically cleaned up
+    /// * `key` - The full key of the document (e.g., `"users:u123"`).
     pub async fn delete(&self, key: &str) -> Result<()> {
         // Extract collection and id from key (format: "collection:id")
         let (collection, id) = if let Some((coll, doc_id)) = key.split_once(':') {
@@ -3603,6 +3511,10 @@ impl Aurora {
         Ok(())
     }
 
+    /// Deletes an entire collection and all documents within it.
+    ///
+    /// This operation permanently removes all documents in the collection and
+    /// cleans up all associated primary and secondary indices.
     pub async fn delete_collection(&self, collection: &str) -> Result<()> {
         let prefix = format!("{}:", collection);
 
@@ -3965,13 +3877,14 @@ impl Aurora {
         Ok(())
     }
 
-    // Helper method to create filter-based queries
+    /// Helper method to create filter-based queries. Alias for `query()`.
     pub fn find<'a>(&'a self, collection: &str) -> QueryBuilder<'a> {
         self.query(collection)
     }
 
     // Convenience methods that build on top of the FilterBuilder
 
+    /// Finds a single document by its ID.
     pub async fn find_by_id(&self, collection: &str, id: &str) -> Result<Option<Document>> {
         self.query(collection)
             .filter(|f| f.eq("id", id))
@@ -3979,6 +3892,7 @@ impl Aurora {
             .await
     }
 
+    /// Finds a single document matching the given filter.
     pub async fn find_one<F>(&self, collection: &str, filter_fn: F) -> Result<Option<Document>>
     where
         F: FnOnce(&FilterBuilder) -> Filter + Send + Sync + 'static,
@@ -3986,6 +3900,7 @@ impl Aurora {
         self.query(collection).filter(filter_fn).first_one().await
     }
 
+    /// Finds all documents where a specific field matches a value.
     pub async fn find_by_field<T: Into<Value> + Clone + Send + Sync + 'static>(
         &self,
         collection: &str,
@@ -3999,6 +3914,7 @@ impl Aurora {
             .await
     }
 
+    /// Finds documents matching multiple field-value pairs (equality).
     pub async fn find_by_fields(
         &self,
         collection: &str,
@@ -4015,7 +3931,7 @@ impl Aurora {
         query.collect().await
     }
 
-    // Advanced example: find documents with a field value in a specific range
+    /// Finds documents where a field value is within a specified range (inclusive).
     pub async fn find_in_range<T: Into<Value> + Clone + Send + Sync + 'static>(
         &self,
         collection: &str,
@@ -4029,12 +3945,12 @@ impl Aurora {
             .await
     }
 
-    // Complex query example: build with multiple combined filters
+    /// Complex query example: build with multiple combined filters.
     pub async fn find_complex<'a>(&'a self, collection: &str) -> QueryBuilder<'a> {
         self.query(collection)
     }
 
-    // Create a full-text search query with added filter options
+    /// Create a full-text search query with added filter options.
     pub fn advanced_search<'a>(&'a self, collection: &str) -> SearchBuilder<'a> {
         self.search(collection)
     }
@@ -4431,12 +4347,15 @@ impl Aurora {
         }
     }
 
-    /// Returns the names of all registered collections.
+    /// Returns the names of all registered collections in the database.
     pub fn list_collection_names(&self) -> Vec<String> {
         self.schema_cache.iter().map(|r| r.key().clone()).collect()
     }
 
-    /// Get storage statistics and information about the database
+    /// Retrieves detailed statistics and information about the database storage and performance.
+    ///
+    /// # Returns
+    /// A `DatabaseStats` struct containing hot cache, cold storage, and per-collection metrics.
     pub fn get_database_stats(&self) -> Result<DatabaseStats> {
         let hot_stats = self.hot.get_stats();
         let cold_stats = self.cold.get_stats()?;
@@ -4449,12 +4368,18 @@ impl Aurora {
         })
     }
 
-    /// Check if a key is currently stored in the hot cache
+    /// Checks if a specific key is currently residing in the hot cache.
+    ///
+    /// # Arguments
+    /// * `key` - The full key to check.
     pub fn is_in_hot_cache(&self, key: &str) -> bool {
         self.hot.is_hot(key)
     }
 
-    /// Clear the hot cache (useful when memory needs to be freed)
+    /// Clears all entries from the hot cache.
+    ///
+    /// This is useful for manual memory management or when testing performance
+    /// from a cold start.
     pub fn clear_hot_cache(&self) {
         self.hot.clear();
         println!(
@@ -4830,7 +4755,12 @@ impl Aurora {
         Ok(())
     }
 
-    /// Scan for keys with a specific prefix
+    /// Scans the database for keys matching a specific prefix.
+    ///
+    /// This is a low-level method that returns an iterator over raw byte values.
+    ///
+    /// # Arguments
+    /// * `prefix` - The key prefix to scan for.
     pub fn scan_with_prefix(
         &self,
         prefix: &str,
@@ -4838,7 +4768,7 @@ impl Aurora {
         self.cold.scan_prefix(prefix)
     }
 
-    /// Get storage efficiency metrics for the database
+    /// Returns storage efficiency and document count metrics for each collection.
     pub fn get_collection_stats(&self) -> Result<HashMap<String, CollectionStats>> {
         let mut stats = HashMap::new();
 
@@ -4885,9 +4815,9 @@ impl Aurora {
         Ok(stats)
     }
 
-    /// Search for documents by exact value using an index
+    /// Searches for documents where a field exactly matches a value using a secondary index.
     ///
-    /// This method performs a fast lookup using a pre-created index
+    /// This is an optimized O(1) lookup path.
     pub fn search_by_value(
         &self,
         collection: &str,
@@ -4918,10 +4848,9 @@ impl Aurora {
         Ok(Vec::new())
     }
 
-    /// Perform a full-text search on an indexed text field
+    /// Performs a full-text search on an indexed text field.
     ///
-    /// This provides more advanced text search capabilities including
-    /// relevance ranking of results
+    /// Returns results ranked by relevance if supported by the underlying index.
     pub fn full_text_search(
         &self,
         collection: &str,
@@ -4961,7 +4890,9 @@ impl Aurora {
         Ok(Vec::new())
     }
 
-    /// Create a full-text search index on a text field
+    /// Creates a full-text search index on a text field.
+    ///
+    /// This enables high-performance keyword searching and relevance ranking.
     pub async fn create_text_index(
         &self,
         collection: &str,
