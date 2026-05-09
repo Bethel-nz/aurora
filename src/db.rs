@@ -840,7 +840,10 @@ impl Aurora {
             // PERFORMANCE: Automatically index 'id' if present in data
             if let Some(id_val) = doc.data.get("id") {
                 let index_key = format!("{}:id", collection);
-                let val_str = id_val.to_string();
+                let val_str = match id_val {
+                    Value::String(s) => s.clone(),
+                    _ => id_val.to_string(),
+                };
                 let index = self.secondary_indices.entry(index_key).or_default();
                 index
                     .entry(val_str)
@@ -859,7 +862,10 @@ impl Aurora {
                     .map_or(false, |f| f.indexed)
                 {
                     let index_key = format!("{}:{}", collection, field_name);
-                    let val_str = field_val.to_string();
+                    let val_str = match &field_val {
+                        Value::String(s) => s.clone(),
+                        _ => field_val.to_string(),
+                    };
 
                     let index = self.secondary_indices.entry(index_key).or_default();
                     // Use and_modify+or_insert_with so newly-created entries start as
@@ -2712,6 +2718,38 @@ impl Aurora {
         )
         .await?;
 
+        // Remove stale index entries for modified fields
+        let u = self.parse_external_id(doc_id);
+        if let Some(internal_id) = self._sid_dictionary.get(&u).map(|e| *e.value()) {
+            for (field, old_val) in &old_document.data {
+                if let Some(new_val) = document.data.get(field) {
+                    if new_val == old_val {
+                        continue;
+                    }
+                }
+                
+                let index_key = format!("{}:{}", collection, field);
+                if let Some(index_map) = self.secondary_indices.get(&index_key) {
+                    let val_str = match old_val {
+                        Value::String(s) => s.clone(),
+                        _ => old_val.to_string(),
+                    };
+                    if let Some(storage_arc) = index_map.get(&val_str) {
+                        if let Ok(mut storage) = storage_arc.value().write() {
+                            println!("REMOVING {} FROM INDEX {}", internal_id, index_key);
+                            storage.remove(internal_id);
+                        }
+                    } else {
+                        println!("STORAGE ARC NOT FOUND FOR {}", val_str);
+                    }
+                } else {
+                    println!("INDEX MAP NOT FOUND FOR {}", index_key);
+                }
+            }
+        } else {
+            println!("INTERNAL ID NOT FOUND FOR {}", doc_id);
+        }
+
         // Publish update event
         let event =
             crate::pubsub::ChangeEvent::update(collection, doc_id, old_document, document.clone());
@@ -3360,7 +3398,11 @@ impl Aurora {
         for (field, value) in &doc.data {
             let index_key = format!("{}:{}", collection, field);
             if let Some(index_map) = self.secondary_indices.get(&index_key) {
-                if let Some(storage_arc) = index_map.get(&value.to_string()) {
+                let val_str = match value {
+                    Value::String(s) => s.clone(),
+                    _ => value.to_string(),
+                };
+                if let Some(storage_arc) = index_map.get(&val_str) {
                     if let Ok(mut storage) = storage_arc.value().write() {
                         if let Some(id) = internal_id {
                             storage.remove(id);
@@ -5589,6 +5631,34 @@ impl Aurora {
 
         // Save updated document
         self.put(key, serde_json::to_vec(&doc)?, None).await?;
+
+        // Remove stale secondary-index entries for fields whose values changed.
+        // `put` adds the new value's bitmap entry but cannot know the previous
+        // value, so without this the old entry lingers and blocks reuse of that
+        // value under a unique constraint.
+        let external_u128 = self.parse_external_id(doc_id);
+        if let Some(internal_id) = self._sid_dictionary.get(&external_u128).map(|e| *e.value()) {
+            for (field, old_val) in &old_doc.data {
+                if let Some(new_val) = doc.data.get(field) {
+                    if new_val == old_val {
+                        continue;
+                    }
+                }
+
+                let index_key = format!("{}:{}", collection, field);
+                if let Some(index_map) = self.secondary_indices.get(&index_key) {
+                    let val_str = match old_val {
+                        Value::String(s) => s.clone(),
+                        _ => old_val.to_string(),
+                    };
+                    if let Some(storage_arc) = index_map.get(&val_str) {
+                        if let Ok(mut storage) = storage_arc.value().write() {
+                            storage.remove(internal_id);
+                        }
+                    }
+                }
+            }
+        }
 
         // Publish update event
         let event = crate::pubsub::ChangeEvent::update(collection, doc_id, old_doc, doc.clone());

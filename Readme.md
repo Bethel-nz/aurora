@@ -26,7 +26,7 @@ Optional features:
 
 ```toml
 # REST API via Actix-web
-aurora-db = { version = "0.6.1", features = ["http"] }
+aurora-db = { version = "0.6.2", features = ["http"] }
 ```
 
 ---
