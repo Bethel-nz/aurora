@@ -342,6 +342,36 @@ impl From<&str> for Value {
     }
 }
 
+impl From<uuid::Uuid> for Value {
+    fn from(v: uuid::Uuid) -> Self {
+        Value::String(v.to_string())
+    }
+}
+
+impl From<crate::types::Value> for Value {
+    fn from(v: crate::types::Value) -> Self {
+        match v {
+            crate::types::Value::Null => Value::Null,
+            crate::types::Value::Bool(b) => Value::Boolean(b),
+            crate::types::Value::Int(i) => Value::Int(i),
+            crate::types::Value::Float(f) => Value::Float(f),
+            crate::types::Value::String(s) => Value::String(s),
+            crate::types::Value::Uuid(u) => Value::String(u.to_string()),
+            crate::types::Value::DateTime(dt) => Value::String(dt.to_rfc3339()),
+            crate::types::Value::Array(arr) => {
+                Value::Array(arr.into_iter().map(Value::from).collect())
+            }
+            crate::types::Value::Object(obj) => {
+                let mut map = HashMap::new();
+                for (k, v) in obj {
+                    map.insert(k, Value::from(v));
+                }
+                Value::Object(map)
+            }
+        }
+    }
+}
+
 /// Fragment definition (top-level)
 #[derive(Debug, Clone)]
 pub struct FragmentDef {
@@ -599,4 +629,16 @@ pub enum ValidationConstraint {
     MinLength(i64),
     MaxLength(i64),
     Pattern(String),
+}
+
+impl From<Vec<Value>> for Value {
+    fn from(v: Vec<Value>) -> Self {
+        Value::Array(v)
+    }
+}
+
+impl<const N: usize> From<[Value; N]> for Value {
+    fn from(v: [Value; N]) -> Self {
+        Value::Array(v.into_iter().collect())
+    }
 }

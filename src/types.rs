@@ -1,7 +1,7 @@
 //! # Aurora Data Types
 //!
-//! This module defines the core data structures used throughout Aurora DB, 
-//! including the fundamental `Value` enum, document schema definitions, 
+//! This module defines the core data structures used throughout Aurora DB,
+//! including the fundamental `Value` enum, document schema definitions,
 //! and configuration options.
 //!
 //! ## Key Types
@@ -433,6 +433,15 @@ impl Value {
     pub fn as_i64(&self) -> Option<i64> {
         if let Value::Int(i) = self {
             Some(*i)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the value as a `u64`, if it is a positive `Value::Int`.
+    pub fn as_u64(&self) -> Option<u64> {
+        if let Value::Int(i) = self {
+            if *i >= 0 { Some(*i as u64) } else { None }
         } else {
             None
         }

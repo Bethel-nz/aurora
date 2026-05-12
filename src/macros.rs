@@ -127,7 +127,7 @@ macro_rules! doc {
             $crate::parser::executor::ExecutionOptions::default(),
         )
     };
-    ($query:expr, { $( $k:tt : $v:tt ),* $(,)? }) => {
+    ($query:expr, { $( $k:tt : $v:expr ),* $(,)? }) => {
         (
             $query.to_string(),
             $crate::parser::executor::ExecutionOptions {
