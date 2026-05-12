@@ -1,15 +1,15 @@
 //! # Aurora Database
 //!
-//! Aurora is a high-performance, embedded document database designed for speed, 
-//! durability, and developer ergonomics. It features a tiered storage architecture 
+//! Aurora is a high-performance, embedded document database designed for speed,
+//! durability, and developer ergonomics. It features a tiered storage architecture
 //! combining a blazing-fast in-memory cache with reliable, persistent cold storage.
 //!
 //! ## Core Architecture
-//! - **Tiered Storage**: Automatically manages data between a "hot" cache (DashMap/Moka) 
+//! - **Tiered Storage**: Automatically manages data between a "hot" cache (DashMap/Moka)
 //!   and "cold" storage (Sled/MMAP) for optimal performance.
-//! - **AQL (Aurora Query Language)**: A GraphQL-inspired query language for powerful 
+//! - **AQL (Aurora Query Language)**: A GraphQL-inspired query language for powerful
 //!   data retrieval, manipulation, and real-time subscriptions.
-//! - **Roaring Bitmaps**: Uses Roaring Bitmaps for high-performance secondary indexing 
+//! - **Roaring Bitmaps**: Uses Roaring Bitmaps for high-performance secondary indexing
 //!   and bitwise query optimization.
 //! - **Write-Ahead Logging (WAL)**: Ensures crash-consistency and data durability.
 //!

@@ -1,7 +1,7 @@
 //! # Aurora Core Engine
 //!
-//! This module contains the `Aurora` struct, which is the primary handle for 
-//! interacting with the database. It coordinates the tiered storage system, 
+//! This module contains the `Aurora` struct, which is the primary handle for
+//! interacting with the database. It coordinates the tiered storage system,
 //! index management, transaction lifecycle, and AQL execution.
 //!
 //! ## Key Responsibilities
@@ -12,8 +12,8 @@
 //! - **PubSub Integration**: Publishing change events for real-time listeners.
 //!
 //! ## Thread Safety
-//! `Aurora` is designed to be wrapped in an `Arc` and shared across multiple 
-//! threads or async tasks. Internally, it uses highly concurrent data structures 
+//! `Aurora` is designed to be wrapped in an `Arc` and shared across multiple
+//! threads or async tasks. Internally, it uses highly concurrent data structures
 //! (like `DashMap`) and fine-grained locking to ensure safe parallel access.
 
 use crate::error::{AqlError, ErrorCode, Result};
@@ -1816,7 +1816,7 @@ impl Aurora {
     /// internal buffers to the physical disk.
     ///
     /// # Performance
-    /// Adding explicit flushes can significantly slow down write performance. 
+    /// Adding explicit flushes can significantly slow down write performance.
     /// Aurora typically manages flushes automatically via the WAL.
     pub fn flush(&self) -> Result<()> {
         // Flush write buffer if present
@@ -2727,7 +2727,7 @@ impl Aurora {
                         continue;
                     }
                 }
-                
+
                 let index_key = format!("{}:{}", collection, field);
                 if let Some(index_map) = self.secondary_indices.get(&index_key) {
                     let val_str = match old_val {

@@ -573,7 +573,9 @@ fn parse_filter_field_to_map(
 
                 for field_inner in inner.into_inner() {
                     match field_inner.as_rule() {
-                        Rule::identifier | Rule::keyword => field_name = field_inner.as_str().to_string(),
+                        Rule::identifier | Rule::keyword => {
+                            field_name = field_inner.as_str().to_string()
+                        }
                         Rule::string => {
                             let s = field_inner.as_str();
                             field_name = s[1..s.len() - 1].to_string();
@@ -890,7 +892,9 @@ fn parse_directive(pair: pest::iterators::Pair<Rule>) -> Result<Directive> {
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::directive_name | Rule::identifier | Rule::keyword => name = inner.as_str().to_string(),
+            Rule::directive_name | Rule::identifier | Rule::keyword => {
+                name = inner.as_str().to_string()
+            }
             Rule::arguments => arguments = parse_arguments(inner)?,
             _ => {}
         }
@@ -978,7 +982,9 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                 for sel_inner in inner.clone().into_inner() {
                     if sel_inner.as_rule() == Rule::alias_name {
                         for alias_inner in sel_inner.into_inner() {
-                            if alias_inner.as_rule() == Rule::identifier || alias_inner.as_rule() == Rule::keyword {
+                            if alias_inner.as_rule() == Rule::identifier
+                                || alias_inner.as_rule() == Rule::keyword
+                            {
                                 alias = Some(alias_inner.as_str().to_string());
                             }
                         }
@@ -1009,13 +1015,15 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                 name = "__compute__".to_string();
                 for cf_inner in inner.into_inner() {
                     match cf_inner.as_rule() {
-                        Rule::identifier | Rule::keyword => alias = Some(cf_inner.as_str().to_string()),
+                        Rule::identifier | Rule::keyword => {
+                            alias = Some(cf_inner.as_str().to_string())
+                        }
                         Rule::computed_expression => {
                             // Add the expression as an argument for the executor to find
                             let expr_str = cf_inner.as_str().trim();
                             // Strip quotes if it's a string literal
                             let val = if expr_str.starts_with('"') && expr_str.ends_with('"') {
-                                expr_str[1..expr_str.len()-1].to_string()
+                                expr_str[1..expr_str.len() - 1].to_string()
                             } else {
                                 expr_str.to_string()
                             };
@@ -1032,7 +1040,9 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                 name = "windowFunc".to_string();
                 let mut parts = inner.into_inner();
                 if let Some(alias_pair) = parts.next() {
-                    if alias_pair.as_rule() == Rule::identifier || alias_pair.as_rule() == Rule::keyword {
+                    if alias_pair.as_rule() == Rule::identifier
+                        || alias_pair.as_rule() == Rule::keyword
+                    {
                         alias = Some(alias_pair.as_str().to_string());
                     }
                 }
@@ -1053,10 +1063,19 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                             }
                         }
                         if strings.len() >= 2 {
-                            arguments.push(ast::Argument { name: "field".to_string(), value: ast::Value::String(strings[0].clone()) });
-                            arguments.push(ast::Argument { name: "function".to_string(), value: ast::Value::String(strings[1].clone()) });
+                            arguments.push(ast::Argument {
+                                name: "field".to_string(),
+                                value: ast::Value::String(strings[0].clone()),
+                            });
+                            arguments.push(ast::Argument {
+                                name: "function".to_string(),
+                                value: ast::Value::String(strings[1].clone()),
+                            });
                         }
-                        arguments.push(ast::Argument { name: "windowSize".to_string(), value: ast::Value::Int(wsize) });
+                        arguments.push(ast::Argument {
+                            name: "windowSize".to_string(),
+                            value: ast::Value::Int(wsize),
+                        });
                     }
                 }
             }
@@ -1133,13 +1152,22 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                                                 let mut name = String::new();
                                                 let mut is_aggregate = false;
                                                 let mut agg_field = None;
-                                                
+
                                                 for f_inner in field.clone().into_inner() {
                                                     match f_inner.as_rule() {
                                                         Rule::alias_name => {
-                                                            for alias_inner in f_inner.into_inner() {
-                                                                if alias_inner.as_rule() == Rule::identifier || alias_inner.as_rule() == Rule::keyword {
-                                                                    alias = Some(alias_inner.as_str().to_string());
+                                                            for alias_inner in f_inner.into_inner()
+                                                            {
+                                                                if alias_inner.as_rule()
+                                                                    == Rule::identifier
+                                                                    || alias_inner.as_rule()
+                                                                        == Rule::keyword
+                                                                {
+                                                                    alias = Some(
+                                                                        alias_inner
+                                                                            .as_str()
+                                                                            .to_string(),
+                                                                    );
                                                                 }
                                                             }
                                                         }
@@ -1154,14 +1182,25 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                                                             for sel in f_inner.into_inner() {
                                                                 match sel.as_rule() {
                                                                     Rule::alias_name => {
-                                                                        for alias_inner in sel.into_inner() {
-                                                                            if alias_inner.as_rule() == Rule::identifier {
-                                                                                agg_alias = Some(alias_inner.as_str().to_string());
+                                                                        for alias_inner in
+                                                                            sel.into_inner()
+                                                                        {
+                                                                            if alias_inner.as_rule()
+                                                                                == Rule::identifier
+                                                                            {
+                                                                                agg_alias = Some(
+                                                                                    alias_inner
+                                                                                        .as_str()
+                                                                                        .to_string(
+                                                                                        ),
+                                                                                );
                                                                             }
                                                                         }
                                                                     }
                                                                     Rule::aggregate_field_list => {
-                                                                        for agg_f in sel.into_inner() {
+                                                                        for agg_f in
+                                                                            sel.into_inner()
+                                                                        {
                                                                             if agg_f.as_rule() == Rule::aggregate_field {
                                                                                 if let Ok(af) = parse_aggregate_field(agg_f) {
                                                                                     agg_selection_set.push(Selection::Field(af));
@@ -1184,7 +1223,7 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                                                         _ => {}
                                                     }
                                                 }
-                                                
+
                                                 if is_aggregate {
                                                     if let Some(f) = agg_field {
                                                         selection_set.push(Selection::Field(f));
@@ -1192,7 +1231,9 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                                                 } else {
                                                     if name.is_empty() {
                                                         let raw = field.as_str().trim();
-                                                        let actual_name = if let Some(colon_idx) = raw.find(':') {
+                                                        let actual_name = if let Some(colon_idx) =
+                                                            raw.find(':')
+                                                        {
                                                             raw[colon_idx + 1..].trim().to_string()
                                                         } else {
                                                             raw.to_string()
@@ -1288,12 +1329,18 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                                         for a in ds_inner.into_inner() {
                                             if a.as_rule() == Rule::string {
                                                 let s = a.as_str();
-                                                strings.push(s[1..s.len()-1].to_string());
+                                                strings.push(s[1..s.len() - 1].to_string());
                                             }
                                         }
                                         if strings.len() >= 2 {
-                                            arguments.push(ast::Argument { name: "interval".to_string(), value: ast::Value::String(strings[0].clone()) });
-                                            arguments.push(ast::Argument { name: "aggregation".to_string(), value: ast::Value::String(strings[1].clone()) });
+                                            arguments.push(ast::Argument {
+                                                name: "interval".to_string(),
+                                                value: ast::Value::String(strings[0].clone()),
+                                            });
+                                            arguments.push(ast::Argument {
+                                                name: "aggregation".to_string(),
+                                                value: ast::Value::String(strings[1].clone()),
+                                            });
                                         }
                                     }
                                     Rule::sub_selection => {
@@ -1325,7 +1372,7 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                                         match arg.as_rule() {
                                             Rule::string => {
                                                 let s = arg.as_str();
-                                                strings.push(s[1..s.len()-1].to_string());
+                                                strings.push(s[1..s.len() - 1].to_string());
                                             }
                                             Rule::number => {
                                                 wsize = arg.as_str().parse().unwrap_or(3);
@@ -1335,10 +1382,19 @@ fn parse_field_inner(pair: pest::iterators::Pair<Rule>) -> Result<Field> {
                                     }
                                     // window_args: field, function, windowSize
                                     if strings.len() >= 2 {
-                                        arguments.push(ast::Argument { name: "field".to_string(), value: ast::Value::String(strings[0].clone()) });
-                                        arguments.push(ast::Argument { name: "function".to_string(), value: ast::Value::String(strings[1].clone()) });
+                                        arguments.push(ast::Argument {
+                                            name: "field".to_string(),
+                                            value: ast::Value::String(strings[0].clone()),
+                                        });
+                                        arguments.push(ast::Argument {
+                                            name: "function".to_string(),
+                                            value: ast::Value::String(strings[1].clone()),
+                                        });
                                     }
-                                    arguments.push(ast::Argument { name: "windowSize".to_string(), value: ast::Value::Int(wsize) });
+                                    arguments.push(ast::Argument {
+                                        name: "windowSize".to_string(),
+                                        value: ast::Value::Int(wsize),
+                                    });
                                 }
                             }
                         }
@@ -1643,7 +1699,14 @@ fn parse_upsert_mutation(
         }
     }
 
-    Ok((MutationOp::Upsert { collection, filter, data }, selection_set))
+    Ok((
+        MutationOp::Upsert {
+            collection,
+            filter,
+            data,
+        },
+        selection_set,
+    ))
 }
 
 fn parse_update_mutation(
@@ -1857,7 +1920,7 @@ fn parse_search_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<Ar
                         for part in opt.into_inner() {
                             if part.as_rule() == Rule::string {
                                 let raw = part.as_str();
-                                query = raw[1..raw.len()-1].to_string();
+                                query = raw[1..raw.len() - 1].to_string();
                             }
                         }
                     } else if s.starts_with("fields") {
@@ -1885,7 +1948,10 @@ fn parse_search_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<Ar
     obj.insert("fields".to_string(), Value::Array(fields));
     obj.insert("fuzzy".to_string(), fuzzy);
 
-    Ok(Argument { name: "search".to_string(), value: Value::Object(obj) })
+    Ok(Argument {
+        name: "search".to_string(),
+        value: Value::Object(obj),
+    })
 }
 
 fn parse_validate_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<Argument> {
@@ -1899,7 +1965,9 @@ fn parse_validate_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<
                     let mut constraints_map = std::collections::HashMap::new();
                     for part in rule.into_inner() {
                         match part.as_rule() {
-                            Rule::identifier | Rule::keyword => field_name = part.as_str().to_string(),
+                            Rule::identifier | Rule::keyword => {
+                                field_name = part.as_str().to_string()
+                            }
                             Rule::validation_constraints => {
                                 for constraint in part.into_inner() {
                                     if constraint.as_rule() == Rule::validation_constraint {
@@ -1908,14 +1976,22 @@ fn parse_validate_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<
                                             for c in constraint.into_inner() {
                                                 if c.as_rule() == Rule::string {
                                                     let raw = c.as_str();
-                                                    constraints_map.insert("format".to_string(), Value::String(raw[1..raw.len()-1].to_string()));
+                                                    constraints_map.insert(
+                                                        "format".to_string(),
+                                                        Value::String(
+                                                            raw[1..raw.len() - 1].to_string(),
+                                                        ),
+                                                    );
                                                 }
                                             }
                                         } else if s.starts_with("minLength") {
                                             for c in constraint.into_inner() {
                                                 if c.as_rule() == Rule::number {
                                                     if let Ok(n) = c.as_str().parse::<i64>() {
-                                                        constraints_map.insert("minLength".to_string(), Value::Int(n));
+                                                        constraints_map.insert(
+                                                            "minLength".to_string(),
+                                                            Value::Int(n),
+                                                        );
                                                     }
                                                 }
                                             }
@@ -1923,7 +1999,10 @@ fn parse_validate_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<
                                             for c in constraint.into_inner() {
                                                 if c.as_rule() == Rule::number {
                                                     if let Ok(n) = c.as_str().parse::<i64>() {
-                                                        constraints_map.insert("maxLength".to_string(), Value::Int(n));
+                                                        constraints_map.insert(
+                                                            "maxLength".to_string(),
+                                                            Value::Int(n),
+                                                        );
                                                     }
                                                 }
                                             }
@@ -1931,7 +2010,10 @@ fn parse_validate_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<
                                             for c in constraint.into_inner() {
                                                 if c.as_rule() == Rule::number {
                                                     if let Ok(n) = c.as_str().parse::<f64>() {
-                                                        constraints_map.insert("min".to_string(), Value::Float(n));
+                                                        constraints_map.insert(
+                                                            "min".to_string(),
+                                                            Value::Float(n),
+                                                        );
                                                     }
                                                 }
                                             }
@@ -1939,7 +2021,10 @@ fn parse_validate_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<
                                             for c in constraint.into_inner() {
                                                 if c.as_rule() == Rule::number {
                                                     if let Ok(n) = c.as_str().parse::<f64>() {
-                                                        constraints_map.insert("max".to_string(), Value::Float(n));
+                                                        constraints_map.insert(
+                                                            "max".to_string(),
+                                                            Value::Float(n),
+                                                        );
                                                     }
                                                 }
                                             }
@@ -1947,7 +2032,12 @@ fn parse_validate_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<
                                             for c in constraint.into_inner() {
                                                 if c.as_rule() == Rule::string {
                                                     let raw = c.as_str();
-                                                    constraints_map.insert("pattern".to_string(), Value::String(raw[1..raw.len()-1].to_string()));
+                                                    constraints_map.insert(
+                                                        "pattern".to_string(),
+                                                        Value::String(
+                                                            raw[1..raw.len() - 1].to_string(),
+                                                        ),
+                                                    );
                                                 }
                                             }
                                         }
@@ -1965,7 +2055,10 @@ fn parse_validate_args_to_argument(pair: pest::iterators::Pair<Rule>) -> Result<
         }
     }
 
-    Ok(Argument { name: "validate".to_string(), value: Value::Object(rules_map) })
+    Ok(Argument {
+        name: "validate".to_string(),
+        value: Value::Object(rules_map),
+    })
 }
 
 /// Convert the formal `orderBy: { field: "name", direction: ASC }` (or multiple)
@@ -2058,7 +2151,12 @@ fn parse_enqueue_jobs_mutation(
     }
 
     Ok((
-        MutationOp::EnqueueJobs { job_type, payloads, priority, max_retries },
+        MutationOp::EnqueueJobs {
+            job_type,
+            payloads,
+            priority,
+            max_retries,
+        },
         selection_set,
     ))
 }
@@ -2666,10 +2764,17 @@ fn parse_handler_operation(pair: pest::iterators::Pair<Rule>) -> Result<ast::Han
     }
 
     let action = action.ok_or_else(|| {
-        AqlError::new(ErrorCode::InvalidQuery, "Handler must have an action".to_string())
+        AqlError::new(
+            ErrorCode::InvalidQuery,
+            "Handler must have an action".to_string(),
+        )
     })?;
 
-    Ok(ast::HandlerDef { name, trigger, action })
+    Ok(ast::HandlerDef {
+        name,
+        trigger,
+        action,
+    })
 }
 
 fn parse_trigger_string(s: &str) -> ast::HandlerTrigger {

@@ -441,7 +441,7 @@ impl Value {
     /// Returns the value as a `u64`, if it is a positive `Value::Int`.
     pub fn as_u64(&self) -> Option<u64> {
         if let Value::Int(i) = self {
-            if *i >= 0 { Some(*i as u64) } else { None }
+            (*i >= 0).then_some(*i as u64)
         } else {
             None
         }
@@ -618,5 +618,25 @@ impl Default for AuroraConfig {
             workers_enabled: false,
             worker_threads: 4,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Value;
+
+    #[test]
+    fn test_as_u64_positive_int() {
+        assert_eq!(Value::Int(42).as_u64(), Some(42));
+    }
+
+    #[test]
+    fn test_as_u64_negative_int_returns_none() {
+        assert_eq!(Value::Int(-1).as_u64(), None);
+    }
+
+    #[test]
+    fn test_as_u64_float_returns_none() {
+        assert_eq!(Value::Float(42.0).as_u64(), None);
     }
 }

@@ -683,7 +683,10 @@ fn collect_fields(
             Selection::ComputedField(cf) => {
                 let (expr_val, _complex_expr) = match &cf.expression {
                     ast::ComputedExpression::TemplateString(s) => (s.clone(), None),
-                    _ => ("complex".to_string(), Some(ast::Expression::Literal(ast::Value::Null))), // Handled below
+                    _ => (
+                        "complex".to_string(),
+                        Some(ast::Expression::Literal(ast::Value::Null)),
+                    ), // Handled below
                 };
 
                 let mut field = Field {
@@ -716,7 +719,9 @@ fn collect_fields(
                         // TODO: Implement Pipe to Expression conversion if needed
                     }
                     ast::ComputedExpression::SqlExpression(s) => {
-                        field.computed_expression = Some(ast::Expression::Literal(ast::Value::String(format!("SQL: {}", s))));
+                        field.computed_expression = Some(ast::Expression::Literal(
+                            ast::Value::String(format!("SQL: {}", s)),
+                        ));
                     }
                     ast::ComputedExpression::AggregateFunction { .. } => {
                         // Handled by aggregate executor
@@ -1804,7 +1809,12 @@ fn eval_expression(
         }
         ast::Expression::FieldAccess(parts) => {
             let mut current = if parts[0] == "_sid" {
-                Some(Value::String(data.get("_sid").cloned().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default()))
+                Some(Value::String(
+                    data.get("_sid")
+                        .cloned()
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .unwrap_or_default(),
+                ))
             } else {
                 data.get(&parts[0]).cloned()
             };
@@ -4015,7 +4025,10 @@ async fn apply_projection_with_lookups(
                     sub_results
                 };
 
-                proj.insert(f.alias.as_ref().unwrap_or(&f.name).clone(), Value::Array(sub_projected));
+                proj.insert(
+                    f.alias.as_ref().unwrap_or(&f.name).clone(),
+                    Value::Array(sub_projected),
+                );
             }
             continue;
         }
@@ -4037,7 +4050,11 @@ async fn apply_projection_with_lookups(
 
         // Normal field
         if f.name == "id" {
-            let v = doc.data.get("id").cloned().unwrap_or(Value::String(doc._sid.clone()));
+            let v = doc
+                .data
+                .get("id")
+                .cloned()
+                .unwrap_or(Value::String(doc._sid.clone()));
             proj.insert(f.alias.as_ref().unwrap_or(&f.name).clone(), v);
         } else if f.name == "_sid" {
             proj.insert(
